@@ -1,3 +1,4 @@
+use crate::model::{Attribution, AttributionSource};
 mod attribution;
 mod command;
 mod docker;
@@ -83,6 +84,16 @@ fn build(runtime: Runtime, containers: Vec<Container>) -> Result<Node> {
             Grouping::Container,
         );
         node.kind = "container";
+        if let Some(project) = &container.project {
+            let source = match project.source {
+                ProjectSource::Compose => AttributionSource::Compose,
+                ProjectSource::BindWorkdir => AttributionSource::BindWorkdir,
+                ProjectSource::BindProject => AttributionSource::BindProject,
+            };
+            let mut attribution = Attribution::new(source, project.path.clone());
+            attribution.inferred = !matches!(project.source, ProjectSource::Compose);
+            node.attribution = Some(attribution);
+        }
         if let (Some(project), Some(project_key)) = (&container.project, project_key) {
             let project_node = projects.entry(project_key.clone()).or_insert_with(|| {
                 let mut group = Node::group(
@@ -112,6 +123,7 @@ fn build(runtime: Runtime, containers: Vec<Container>) -> Result<Node> {
                         }
                     }
                 }
+                group.attribution = node.attribution.clone();
                 group.container_totals = Some(ContainerTotals {
                     inventory_complete: runtime.inventory_complete,
                     ..ContainerTotals::default()

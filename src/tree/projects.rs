@@ -1,5 +1,5 @@
 use super::stable_ref;
-use crate::model::{Grouping, Node};
+use crate::model::{Attribution, AttributionSource, Diagnostic, Grouping, Node};
 use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
@@ -40,6 +40,18 @@ pub(crate) struct Project {
 }
 
 impl Project {
+    pub fn attribution(&self) -> Attribution {
+        let source = if self.checkout.as_ref() == Some(&self.root) {
+            AttributionSource::GitRoot
+        } else {
+            AttributionSource::Manifest
+        };
+        let mut value = Attribution::new(source, Some(self.root.clone()));
+        value.checkout_path = self.checkout.clone();
+        value.manifest = self.manifest.map(str::to_owned);
+        value
+    }
+
     pub fn grouping(&self) -> Grouping {
         if self.checkout.as_ref() == Some(&self.root) {
             Grouping::Checkout
@@ -221,6 +233,11 @@ pub(super) fn group(projects: Vec<(Project, Node)>) -> Vec<Node> {
                 Grouping::Checkout,
             )
         };
+        if checkout.attribution.is_none() {
+            let mut attribution = Attribution::new(AttributionSource::GitRoot, Some(path.clone()));
+            attribution.checkout_path = Some(path.clone());
+            checkout.attribution = Some(attribution);
+        }
         for (_, project) in projects {
             checkout.totals.add(&project.totals);
             checkout.children.push(project);
@@ -243,6 +260,8 @@ fn group_checkouts(checkouts: Vec<(PathBuf, Node)>) -> Vec<Node> {
             Err(error) => {
                 node.evidence
                     .push(format!("Repository metadata unavailable: {error}"));
+                node.diagnostics
+                    .push(Diagnostic::io("repository_metadata", &error));
                 groups.push(node);
             }
         }
@@ -269,6 +288,10 @@ fn group_checkouts(checkouts: Vec<(PathBuf, Node)>) -> Vec<Node> {
             vec![format!("repo {}", common.display())],
             Grouping::Repo,
         );
+        repository.attribution = Some(Attribution::new(
+            AttributionSource::GitCommonDir,
+            Some(common),
+        ));
         for (label, mut node) in checkouts {
             node.name = label;
             repository.totals.add(&node.totals);

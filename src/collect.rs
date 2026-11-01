@@ -1,4 +1,4 @@
-use crate::model::{Process, SystemSummary};
+use crate::model::{Diagnostic, Process, SystemSummary};
 use anyhow::{Context, Result, bail};
 use std::{collections::HashMap, time::Duration};
 
@@ -9,7 +9,7 @@ pub struct Collection {
     pub processes: Vec<Process>,
     pub system: SystemSummary,
     pub sample_ms: u64,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Diagnostic>,
 }
 
 pub(crate) const COLLECTION_NOTES: [&str; 3] = [
@@ -54,10 +54,11 @@ pub(crate) fn collect_with_cancel(
             )
         });
         if observation.process.cpu_percent.is_none() {
-            observation
-                .process
-                .unavailable
-                .push("cpu: no valid pair of counters for this process identity".into());
+            observation.process.unavailable.push(Diagnostic::new(
+                "sample_unavailable",
+                "cpu",
+                "cpu: no valid pair of counters for this process identity",
+            ));
         }
     }
     let system = SystemSummary {
@@ -69,17 +70,34 @@ pub(crate) fn collect_with_cancel(
         memory_used_bytes: macos::used_memory(),
         swap_used_bytes: macos::swap_used(),
     };
-    let mut warnings: Vec<String> = COLLECTION_NOTES.into_iter().map(str::to_owned).collect();
-    for (name, unavailable) in [
-        ("CPU", system.cpu_percent.is_none()),
-        ("logical CPUs", system.logical_cpus.is_none()),
-        ("total memory", system.memory_total_bytes.is_none()),
-        ("used memory", system.memory_used_bytes.is_none()),
-        ("swap", system.swap_used_bytes.is_none()),
+    let mut warnings: Vec<Diagnostic> = COLLECTION_NOTES
+        .into_iter()
+        .map(|note| Diagnostic::new("collection_note", "collection", note))
+        .collect();
+    for (operation, name, unavailable) in [
+        ("host.cpu", "CPU", system.cpu_percent.is_none()),
+        (
+            "host.logical_cpus",
+            "logical CPUs",
+            system.logical_cpus.is_none(),
+        ),
+        (
+            "host.memory_total",
+            "total memory",
+            system.memory_total_bytes.is_none(),
+        ),
+        (
+            "host.memory_used",
+            "used memory",
+            system.memory_used_bytes.is_none(),
+        ),
+        ("host.swap", "swap", system.swap_used_bytes.is_none()),
     ] {
         if unavailable {
-            warnings.push(format!(
-                "Host {name}: OS query unavailable or sample incomplete."
+            warnings.push(Diagnostic::new(
+                "unavailable",
+                operation,
+                format!("Host {name}: OS query unavailable or sample incomplete."),
             ));
         }
     }
@@ -229,7 +247,7 @@ mod macos {
                     process.name = text(info.pbi_comm);
                 }
             } else if let Err(error) = &initial {
-                process.unavailable.push(format!("identity: {error}"));
+                process.unavailable.push(Diagnostic::io("identity", error));
             }
             let task: io::Result<libc::proc_taskinfo> =
                 unsafe { info(pid, libc::PROC_PIDTASKINFO) };
@@ -240,18 +258,22 @@ mod macos {
                     process.resident_bytes = Some(info.pti_resident_size);
                     cpu_ticks = info.pti_total_user.checked_add(info.pti_total_system);
                 }
-                Err(error) => process.unavailable.push(format!("task counters: {error}")),
+                Err(error) => process
+                    .unavailable
+                    .push(Diagnostic::io("task_counters", &error)),
             }
             if details {
                 if let Ok(identity) = &initial {
                     match network::collect(pid, identity.pbi_nfiles as usize) {
                         Ok(network) => process.network = Some(network),
-                        Err(error) => process.unavailable.push(format!("network: {error}")),
+                        Err(error) => process.unavailable.push(Diagnostic::io("network", &error)),
                     }
                 }
                 match executable(pid) {
                     Ok(path) => process.executable = Some(path),
-                    Err(error) => process.unavailable.push(format!("executable: {error}")),
+                    Err(error) => process
+                        .unavailable
+                        .push(Diagnostic::io("executable", &error)),
                 }
                 let cwd: io::Result<libc::proc_vnodepathinfo> =
                     unsafe { info(pid, libc::PROC_PIDVNODEPATHINFO) };
@@ -259,12 +281,16 @@ mod macos {
                     Ok(info) => {
                         let path = text(info.pvi_cdir.vip_path.into_iter().flatten());
                         if path.is_empty() {
-                            process.unavailable.push("cwd: unavailable".into());
+                            process.unavailable.push(Diagnostic::new(
+                                "unavailable",
+                                "cwd",
+                                "cwd: unavailable",
+                            ));
                         } else {
                             process.cwd = Some(PathBuf::from(path));
                         }
                     }
-                    Err(error) => process.unavailable.push(format!("cwd: {error}")),
+                    Err(error) => process.unavailable.push(Diagnostic::io("cwd", &error)),
                 }
             }
             let final_identity = bsd_info(pid);
@@ -278,9 +304,13 @@ mod macos {
                     pid: pid as u32,
                     name: format!("process {pid}"),
                     unavailable: vec![match (initial, final_identity) {
-                        (Err(error), _) => format!("identity before observation: {error}"),
-                        (_, Err(error)) => format!("identity after observation: {error}"),
-                        _ => "identity changed during observation".into(),
+                        (Err(error), _) => Diagnostic::io("identity.before", &error),
+                        (_, Err(error)) => Diagnostic::io("identity.after", &error),
+                        _ => Diagnostic::new(
+                            "identity_changed",
+                            "identity",
+                            "identity changed during observation",
+                        ),
                     }],
                     ..Process::default()
                 };

@@ -37,6 +37,13 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
     );
     assert!(result.stderr.is_empty());
     let snapshot: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(reswho::output::JSON_SCHEMA).unwrap();
+    jsonschema::validator_for(&schema)
+        .unwrap()
+        .validate(&snapshot)
+        .unwrap();
+    assert_eq!(snapshot["schema"], reswho::model::JSON_SCHEMA_VERSION);
+    assert_eq!(snapshot["root"]["attribution"]["source"], "git_root");
     assert_eq!(snapshot["scope"], reference);
     assert_eq!(snapshot["root"]["reference"], reference);
     let process = &snapshot["root"]["process"];

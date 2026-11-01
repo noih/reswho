@@ -1,6 +1,13 @@
 use serde::Serialize;
 use std::path::PathBuf;
 
+mod attribution;
+mod diagnostic;
+pub use attribution::{Attribution, AttributionSource};
+pub use diagnostic::Diagnostic;
+
+pub const JSON_SCHEMA_VERSION: &str = "reswho/8";
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Process {
     pub pid: u32,
@@ -14,7 +21,7 @@ pub struct Process {
     pub cpu_percent: Option<f64>,
     pub resident_bytes: Option<u64>,
     pub network: Option<Network>,
-    pub unavailable: Vec<String>,
+    pub unavailable: Vec<Diagnostic>,
 }
 
 impl Process {
@@ -36,7 +43,7 @@ impl Process {
 pub struct Network {
     pub complete: bool,
     pub sockets: Vec<Socket>,
-    pub unavailable: Vec<String>,
+    pub unavailable: Vec<Diagnostic>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -133,6 +140,8 @@ pub struct Node {
     pub kind: &'static str,
     pub grouping: Option<Grouping>,
     pub evidence: Vec<String>,
+    pub attribution: Option<Attribution>,
+    pub diagnostics: Vec<Diagnostic>,
     pub process: Option<Process>,
     pub container: Option<crate::containers::Container>,
     pub runtime: Option<crate::containers::Runtime>,
@@ -155,6 +164,8 @@ impl Node {
             kind: "group",
             grouping: Some(grouping),
             evidence,
+            attribution: None,
+            diagnostics: Vec::new(),
             process: None,
             container: None,
             runtime: None,
@@ -183,6 +194,6 @@ pub struct Snapshot {
     pub collection_ms: u64,
     pub system: SystemSummary,
     pub scope: String,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Diagnostic>,
     pub root: Node,
 }

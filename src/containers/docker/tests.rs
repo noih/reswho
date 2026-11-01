@@ -136,7 +136,7 @@ fn restart_and_missing_revalidation_discard_metrics() {
             containers[0]
                 .unavailable
                 .iter()
-                .any(|issue| issue.contains("revalidated"))
+                .any(|issue| issue.code == "identity_unverified")
         );
     }
 }
@@ -166,7 +166,7 @@ fn missing_cli_inventory_errors_and_stats_errors_keep_unknowns() {
         runtime
             .unavailable
             .iter()
-            .any(|issue| issue.contains("timeout"))
+            .any(|issue| issue.code == "command_failed" && issue.operation == "docker.stats")
     );
     for inventory in ["bad-id\n".to_owned(), format!("{id}\n{id}\n")] {
         let mut fake = configured(&id, "unix:///socket");
@@ -239,5 +239,5 @@ fn default_context_empty_inventory_and_inventory_limit_are_explicit() {
     let ids = inventory(&mut fake, &source, &mut runtime).unwrap();
     assert_eq!(ids.len(), 256);
     assert!(!runtime.inventory_complete);
-    assert!(runtime.unavailable[0].contains("truncated"));
+    assert_eq!(runtime.unavailable[0].code, "limit_exceeded");
 }

@@ -50,13 +50,17 @@ pub fn capture(options: &Options, cancel: &Cancellation) -> Result<Snapshot> {
         cancel.check()?;
         match containers::collect_with_cancel(cancel) {
             Ok(containers) => root.children.push(containers),
-            Err(error) => collection.warnings.push(format!("Containers: {error}")),
+            Err(error) => collection.warnings.push(crate::model::Diagnostic::new(
+                "collection_failed",
+                "containers",
+                format!("Containers: {error}"),
+            )),
         }
     }
     cancel.check()?;
     tree::validate_references(&root)?;
     Ok(Snapshot {
-        schema: "reswho/7",
+        schema: crate::model::JSON_SCHEMA_VERSION,
         captured_unix_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .context("system clock before Unix epoch")?

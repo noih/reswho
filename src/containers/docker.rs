@@ -3,6 +3,7 @@ use super::{
     command::{Output, Runner},
     model::{Container, Mount, Port, Runtime},
 };
+use crate::model::Diagnostic;
 use crate::tree::{projects::Discovery, stable_ref};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -160,9 +161,11 @@ fn inventory(
     }
     runtime.inventory_complete = ids.len() <= MAX_CONTAINERS;
     if !runtime.inventory_complete {
-        runtime
-            .unavailable
-            .push("inventory truncated at 256 containers".into());
+        runtime.unavailable.push(Diagnostic::new(
+            "limit_exceeded",
+            "docker.inventory",
+            "inventory truncated at 256 containers",
+        ));
     }
     Ok(ids.into_iter().take(MAX_CONTAINERS).collect())
 }
@@ -171,7 +174,7 @@ fn inspections(
     runner: &mut impl Runner,
     source: &Source,
     ids: &[String],
-    issues: &mut Vec<String>,
+    issues: &mut Vec<Diagnostic>,
 ) -> BTreeMap<String, Inspect> {
     let mut result = BTreeMap::new();
     for batch in ids.chunks(BATCH_SIZE) {
@@ -183,12 +186,20 @@ fn inspections(
         ) {
             Ok(output) => output,
             Err(error) => {
-                issues.push(format!("inspect: {error}"));
+                issues.push(Diagnostic::new(
+                    "command_failed",
+                    "docker.inspect",
+                    format!("inspect: {error}"),
+                ));
                 break;
             }
         };
         if let Some(issue) = output.issue {
-            issues.push(format!("inspect: {issue}"));
+            issues.push(Diagnostic::new(
+                "command_failed",
+                "docker.inspect",
+                format!("inspect: {issue}"),
+            ));
         }
         for line in output
             .stdout
@@ -199,9 +210,11 @@ fn inspections(
                 Ok(inspect) if batch.contains(&inspect.id) && !result.contains_key(&inspect.id) => {
                     result.insert(inspect.id.clone(), inspect);
                 }
-                _ => {
-                    issues.push("inspect: invalid, duplicate or unexpected container record".into())
-                }
+                _ => issues.push(Diagnostic::new(
+                    "invalid_data",
+                    "docker.inspect",
+                    "inspect: invalid, duplicate or unexpected container record",
+                )),
             }
         }
     }
@@ -237,7 +250,7 @@ fn stats(
     runner: &mut impl Runner,
     source: &Source,
     ids: &[String],
-    issues: &mut Vec<String>,
+    issues: &mut Vec<Diagnostic>,
 ) -> BTreeMap<String, Stats> {
     let mut result = BTreeMap::new();
     for batch in ids.chunks(BATCH_SIZE) {
@@ -256,12 +269,20 @@ fn stats(
         ) {
             Ok(output) => output,
             Err(error) => {
-                issues.push(format!("stats: {error}"));
+                issues.push(Diagnostic::new(
+                    "command_failed",
+                    "docker.stats",
+                    format!("stats: {error}"),
+                ));
                 break;
             }
         };
         if let Some(issue) = output.issue {
-            issues.push(format!("stats: {issue}"));
+            issues.push(Diagnostic::new(
+                "command_failed",
+                "docker.stats",
+                format!("stats: {issue}"),
+            ));
             continue;
         }
         let mut parsed = BTreeMap::new();
@@ -279,7 +300,11 @@ fn stats(
             }
         }
         if invalid {
-            issues.push("stats: invalid, duplicate or unexpected container record".into());
+            issues.push(Diagnostic::new(
+                "invalid_data",
+                "docker.stats",
+                "stats: invalid, duplicate or unexpected container record",
+            ));
         } else {
             result.extend(parsed);
         }
@@ -378,12 +403,18 @@ pub(super) fn collect(
     let containers = match result {
         Ok(containers) => containers,
         Err(error) => {
-            runtime.unavailable.push(error.to_string());
+            runtime.unavailable.push(Diagnostic::new(
+                "collection_failed",
+                "docker",
+                error.to_string(),
+            ));
             Vec::new()
         }
     };
     runtime.collection_ms = started.elapsed().as_millis() as u64;
-    runtime.unavailable.sort();
+    runtime
+        .unavailable
+        .sort_by(|a, b| a.message.cmp(&b.message));
     runtime.unavailable.dedup();
     (runtime, containers)
 }
@@ -432,9 +463,11 @@ fn collect_inner(
     let metrics = if info.os == "linux" {
         stats(runner, &source, &active_ids, &mut runtime.unavailable)
     } else {
-        runtime
-            .unavailable
-            .push("container metrics require a Linux Docker daemon".into());
+        runtime.unavailable.push(Diagnostic::new(
+            "unsupported",
+            "docker.stats",
+            "container metrics require a Linux Docker daemon",
+        ));
         BTreeMap::new()
     };
     let after = if !metrics.is_empty() {
@@ -468,9 +501,11 @@ fn collect_inner(
                 container.cpu_percent = metric.cpu.strip_suffix('%').and_then(number);
                 container.memory_bytes = memory_bytes(&metric.memory);
             } else {
-                container
-                    .unavailable
-                    .push("state/start changed or could not be revalidated during stats".into());
+                container.unavailable.push(Diagnostic::new(
+                    "identity_unverified",
+                    "docker.stats",
+                    "state/start changed or could not be revalidated during stats",
+                ));
             }
         }
         containers.push(container);
@@ -492,12 +527,18 @@ fn collect_inner(
             if active(container.state.as_deref())
                 && (container.cpu_percent.is_none() || container.memory_bytes.is_none())
             {
-                container
-                    .unavailable
-                    .push("stats unavailable or invalid".into());
+                container.unavailable.push(Diagnostic::new(
+                    "unavailable",
+                    "docker.stats",
+                    "stats unavailable or invalid",
+                ));
             }
         } else {
-            container.unavailable.push("inspect unavailable".into());
+            container.unavailable.push(Diagnostic::new(
+                "unavailable",
+                "docker.inspect",
+                "inspect unavailable",
+            ));
         }
     }
     let missing_stats = containers
@@ -508,17 +549,21 @@ fn collect_inner(
         })
         .count();
     if missing_stats > 0 {
-        runtime
-            .unavailable
-            .push(format!("stats unavailable for {missing_stats} containers"));
+        runtime.unavailable.push(Diagnostic::new(
+            "unavailable",
+            "docker.stats",
+            format!("stats unavailable for {missing_stats} containers"),
+        ));
     }
     let missing_details = containers
         .iter()
         .filter(|item| item.state.is_none())
         .count();
     if missing_details > 0 {
-        runtime.unavailable.push(format!(
-            "inspect/state unavailable for {missing_details} containers"
+        runtime.unavailable.push(Diagnostic::new(
+            "unavailable",
+            "docker.inspect",
+            format!("inspect/state unavailable for {missing_details} containers"),
         ));
     }
     Ok(containers)

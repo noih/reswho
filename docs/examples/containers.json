@@ -1,0 +1,297 @@
+{
+  "schema": "reswho/8",
+  "captured_unix_ms": 1700000000000,
+  "sample_ms": 250,
+  "collection_ms": 300,
+  "system": {
+    "cpu_percent": 20.0,
+    "logical_cpus": 8,
+    "memory_total_bytes": 17179869184,
+    "memory_used_bytes": 8589934592,
+    "swap_used_bytes": 0
+  },
+  "scope": "group:containers",
+  "warnings": [],
+  "root": {
+    "reference": "group:containers",
+    "name": "Containers",
+    "kind": "group",
+    "grouping": "category",
+    "evidence": [],
+    "attribution": null,
+    "diagnostics": [],
+    "process": null,
+    "container": null,
+    "runtime": null,
+    "container_totals": {
+      "containers": 3,
+      "active_containers": 1,
+      "inactive_containers": 1,
+      "activity_unknown": 1,
+      "inventory_complete": true,
+      "known_cpu_percent": 0.0,
+      "known_memory_bytes": 4096,
+      "cpu_unknown": 1,
+      "memory_unknown": 1,
+      "oldest_uptime_seconds": 600,
+      "uptime_unknown": 1
+    },
+    "totals": {
+      "processes": 0,
+      "known_cpu_percent": 0,
+      "known_resident_bytes": 0,
+      "cpu_unknown": 0,
+      "memory_unknown": 0,
+      "oldest_uptime_seconds": null,
+      "uptime_unknown": 0
+    },
+    "children": [
+      {
+        "reference": "group:5555555555555555",
+        "name": "docker (example)",
+        "kind": "group",
+        "grouping": "runtime",
+        "evidence": [],
+        "attribution": null,
+        "diagnostics": [],
+        "process": null,
+        "container": null,
+        "runtime": {
+          "name": "docker",
+          "context": "example",
+          "endpoint_ref": "group:aaaaaaaaaaaaaaaa",
+          "daemon_id": "example-daemon",
+          "status": "available",
+          "inventory_complete": true,
+          "collection_ms": 1000,
+          "unavailable": [
+            {
+              "code": "unavailable",
+              "operation": "docker.inspect",
+              "message": "inspect/state unavailable for 1 containers",
+              "os_error": null
+            }
+          ]
+        },
+        "container_totals": {
+          "containers": 3,
+          "active_containers": 1,
+          "inactive_containers": 1,
+          "activity_unknown": 1,
+          "inventory_complete": true,
+          "known_cpu_percent": 0.0,
+          "known_memory_bytes": 4096,
+          "cpu_unknown": 1,
+          "memory_unknown": 1,
+          "oldest_uptime_seconds": 600,
+          "uptime_unknown": 1
+        },
+        "totals": {
+          "processes": 0,
+          "known_cpu_percent": 0,
+          "known_resident_bytes": 0,
+          "cpu_unknown": 0,
+          "memory_unknown": 0,
+          "oldest_uptime_seconds": null,
+          "uptime_unknown": 0
+        },
+        "children": [
+          {
+            "reference": "group:4444444444444444",
+            "name": "example",
+            "kind": "group",
+            "grouping": "project",
+            "evidence": [],
+            "attribution": {
+              "source": "compose",
+              "path": "/example/project",
+              "checkout_path": null,
+              "manifest": null,
+              "bundle_id": null,
+              "inferred": false,
+              "via_pid": null
+            },
+            "diagnostics": [],
+            "process": null,
+            "container": null,
+            "runtime": null,
+            "container_totals": {
+              "containers": 2,
+              "active_containers": 1,
+              "inactive_containers": 1,
+              "activity_unknown": 0,
+              "inventory_complete": true,
+              "known_cpu_percent": 0.0,
+              "known_memory_bytes": 4096,
+              "cpu_unknown": 0,
+              "memory_unknown": 0,
+              "oldest_uptime_seconds": 600,
+              "uptime_unknown": 0
+            },
+            "totals": {
+              "processes": 0,
+              "known_cpu_percent": 0,
+              "known_resident_bytes": 0,
+              "cpu_unknown": 0,
+              "memory_unknown": 0,
+              "oldest_uptime_seconds": null,
+              "uptime_unknown": 0
+            },
+            "children": [
+              {
+                "reference": "group:1111111111111111",
+                "name": "database-1",
+                "kind": "container",
+                "grouping": "container",
+                "evidence": [],
+                "attribution": {
+                  "source": "compose",
+                  "path": "/example/project",
+                  "checkout_path": null,
+                  "manifest": null,
+                  "bundle_id": null,
+                  "inferred": false,
+                  "via_pid": null
+                },
+                "diagnostics": [],
+                "process": null,
+                "container": {
+                  "runtime": "docker",
+                  "endpoint_ref": "group:aaaaaaaaaaaaaaaa",
+                  "id": "1111111111111111111111111111111111111111111111111111111111111111",
+                  "name": "database-1",
+                  "state": "running",
+                  "started_at": "2023-11-14T22:03:20Z",
+                  "uptime_seconds": 600,
+                  "cpu_percent": 0.0,
+                  "memory_bytes": 4096,
+                  "memory_basis": "docker_cli_linux_cache_adjusted_rounded",
+                  "ports": [],
+                  "mounts": [],
+                  "project": {
+                    "name": "example",
+                    "path": "/example/project",
+                    "source": "compose"
+                  },
+                  "candidates": [],
+                  "service": null,
+                  "unavailable": []
+                },
+                "runtime": null,
+                "container_totals": null,
+                "totals": {
+                  "processes": 0,
+                  "known_cpu_percent": 0,
+                  "known_resident_bytes": 0,
+                  "cpu_unknown": 0,
+                  "memory_unknown": 0,
+                  "oldest_uptime_seconds": null,
+                  "uptime_unknown": 0
+                },
+                "children": [],
+                "omitted_children": 0
+              },
+              {
+                "reference": "group:2222222222222222",
+                "name": "database-2",
+                "kind": "container",
+                "grouping": "container",
+                "evidence": [],
+                "attribution": {
+                  "source": "compose",
+                  "path": "/example/project",
+                  "checkout_path": null,
+                  "manifest": null,
+                  "bundle_id": null,
+                  "inferred": false,
+                  "via_pid": null
+                },
+                "diagnostics": [],
+                "process": null,
+                "container": {
+                  "runtime": "docker",
+                  "endpoint_ref": "group:aaaaaaaaaaaaaaaa",
+                  "id": "2222222222222222222222222222222222222222222222222222222222222222",
+                  "name": "database-2",
+                  "state": "exited",
+                  "started_at": null,
+                  "uptime_seconds": null,
+                  "cpu_percent": null,
+                  "memory_bytes": null,
+                  "memory_basis": "docker_cli_linux_cache_adjusted_rounded",
+                  "ports": [],
+                  "mounts": [],
+                  "project": {
+                    "name": "example",
+                    "path": "/example/project",
+                    "source": "compose"
+                  },
+                  "candidates": [],
+                  "service": null,
+                  "unavailable": []
+                },
+                "runtime": null,
+                "container_totals": null,
+                "totals": {
+                  "processes": 0,
+                  "known_cpu_percent": 0,
+                  "known_resident_bytes": 0,
+                  "cpu_unknown": 0,
+                  "memory_unknown": 0,
+                  "oldest_uptime_seconds": null,
+                  "uptime_unknown": 0
+                },
+                "children": [],
+                "omitted_children": 0
+              }
+            ],
+            "omitted_children": 0
+          },
+          {
+            "reference": "group:3333333333333333",
+            "name": "database-3",
+            "kind": "container",
+            "grouping": "container",
+            "evidence": [],
+            "attribution": null,
+            "diagnostics": [],
+            "process": null,
+            "container": {
+              "runtime": "docker",
+              "endpoint_ref": "group:aaaaaaaaaaaaaaaa",
+              "id": "3333333333333333333333333333333333333333333333333333333333333333",
+              "name": "database-3",
+              "state": null,
+              "started_at": null,
+              "uptime_seconds": null,
+              "cpu_percent": null,
+              "memory_bytes": null,
+              "memory_basis": "docker_cli_linux_cache_adjusted_rounded",
+              "ports": null,
+              "mounts": [],
+              "project": null,
+              "candidates": [],
+              "service": null,
+              "unavailable": []
+            },
+            "runtime": null,
+            "container_totals": null,
+            "totals": {
+              "processes": 0,
+              "known_cpu_percent": 0,
+              "known_resident_bytes": 0,
+              "cpu_unknown": 0,
+              "memory_unknown": 0,
+              "oldest_uptime_seconds": null,
+              "uptime_unknown": 0
+            },
+            "children": [],
+            "omitted_children": 0
+          }
+        ],
+        "omitted_children": 0
+      }
+    ],
+    "omitted_children": 0
+  }
+}

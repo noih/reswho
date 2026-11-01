@@ -6,6 +6,8 @@ pub(crate) mod containers;
 #[cfg(test)]
 mod markdown_tests;
 
+pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-8.schema.json");
+
 pub const FORMAT_HELP: &str = "reswho-md/17 (collection prototype)\n\n\
 | Row | Fields, in order |\n\
 | --- | --- |\n\
@@ -92,7 +94,8 @@ Group refs are deterministic, not display positions. PID refs query the current 
 JSON retains the original root and System services nodes; depth counts original tree edges.\n\
 JSON system.cpu_percent is whole-host 0-100%; process.cpu_percent and totals.known_cpu_percent use one-core 100%.\n\
 JSON totals are subtree aggregates, not extra usage; do not add parent totals to children.\n\
-JSON schema reswho/7 includes grouping (null for processes), raw byte counts, unknown counts and sample timing.\n\
+JSON schema reswho/8 includes structured attribution and diagnostics, raw byte counts, unknown counts and sample timing.\n\
+Use --json-schema for the offline JSON Schema; see docs/json-format.md for version and identity rules.\n\
 Command arguments, environment, container-internal processes and review rules are not collected.\n";
 
 pub fn markdown(snapshot: &Snapshot) -> String {
@@ -160,7 +163,7 @@ fn render_markdown(snapshot: &Snapshot) -> String {
         .warnings
         .iter()
         .filter(|warning| !crate::collect::COLLECTION_NOTES.contains(&warning.as_str()))
-        .map(|warning| format!("! {}", escaped(warning)));
+        .map(|warning| format!("! {}", escaped(warning.as_str())));
     write_notes(&mut text, warnings, "");
     if snapshot.root.reference == "group:all" {
         write_notes(
@@ -365,7 +368,7 @@ fn process_details(process: &Process) -> Vec<String> {
             network
                 .unavailable
                 .iter()
-                .map(|reason| format!("! Network unavailable: {}", escaped(reason))),
+                .map(|reason| format!("! Network unavailable: {}", escaped(reason.as_str()))),
         );
     }
     if !process.unavailable.is_empty() {
@@ -374,7 +377,7 @@ fn process_details(process: &Process) -> Vec<String> {
             .unavailable
             .iter()
             .filter(|reason| seen.insert(reason.as_str()))
-            .map(String::as_str)
+            .map(crate::model::Diagnostic::as_str)
             .collect();
         notes.push(format!("! Unavailable: {}", escaped(&reasons.join("; "))));
     }

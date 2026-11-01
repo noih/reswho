@@ -33,7 +33,7 @@ fn fixture_snapshot() -> Snapshot {
         ..Process::default()
     };
     Snapshot {
-        schema: "reswho/7",
+        schema: crate::model::JSON_SCHEMA_VERSION,
         captured_unix_ms: 1000,
         sample_ms: 250,
         collection_ms: 300,

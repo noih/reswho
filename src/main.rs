@@ -21,6 +21,8 @@ struct Args {
     md: bool,
     #[arg(long, help = "Emit a single JSON snapshot")]
     json: bool,
+    #[arg(long, conflicts_with_all = ["md", "json", "tui", "help_format"], help = "Print the JSON Schema without collecting resources")]
+    json_schema: bool,
     #[arg(
         long,
         help = "Open the interactive resource tree (requires a terminal)"
@@ -65,7 +67,9 @@ fn parse_depth(value: &str) -> Result<usize, String> {
 
 fn run() -> Result<()> {
     let args = Args::parse();
-    let content = if args.help_format {
+    let content = if args.json_schema {
+        output::JSON_SCHEMA.into()
+    } else if args.help_format {
         output::FORMAT_HELP.into()
     } else {
         if args.tui

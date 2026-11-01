@@ -1,0 +1,59 @@
+{
+  "schema": "reswho/8",
+  "captured_unix_ms": 1700000000000,
+  "sample_ms": 250,
+  "collection_ms": 300,
+  "system": {
+    "cpu_percent": 20.0,
+    "logical_cpus": 8,
+    "memory_total_bytes": 17179869184,
+    "memory_used_bytes": 8589934592,
+    "swap_used_bytes": 0
+  },
+  "scope": "pid:999",
+  "warnings": [],
+  "root": {
+    "reference": "pid:999",
+    "name": "process 999",
+    "kind": "process",
+    "grouping": null,
+    "evidence": [],
+    "attribution": null,
+    "diagnostics": [],
+    "process": {
+      "pid": 999,
+      "ppid": null,
+      "uid": null,
+      "started_unix_us": null,
+      "uptime_seconds": null,
+      "name": "process 999",
+      "executable": null,
+      "cwd": null,
+      "cpu_percent": null,
+      "resident_bytes": null,
+      "network": null,
+      "unavailable": [
+        {
+          "code": "permission_denied",
+          "operation": "identity.before",
+          "message": "identity before observation: Operation not permitted",
+          "os_error": 1
+        }
+      ]
+    },
+    "container": null,
+    "runtime": null,
+    "container_totals": null,
+    "totals": {
+      "processes": 1,
+      "known_cpu_percent": 0,
+      "known_resident_bytes": 0,
+      "cpu_unknown": 1,
+      "memory_unknown": 1,
+      "oldest_uptime_seconds": null,
+      "uptime_unknown": 1
+    },
+    "children": [],
+    "omitted_children": 0
+  }
+}

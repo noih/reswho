@@ -1,5 +1,5 @@
 use super::stable_ref;
-use crate::model::{Grouping, Node};
+use crate::model::{Attribution, AttributionSource, Grouping, Node};
 use plist::Value;
 use std::{
     collections::BTreeMap,
@@ -58,8 +58,11 @@ pub(super) fn group(mut bundles: Vec<(PathBuf, Node)>) -> Vec<Node> {
     bundles.sort_by(|a, b| a.0.cmp(&b.0));
     let mut applications: BTreeMap<String, Vec<(Bundle, Node)>> = BTreeMap::new();
     let mut groups = Vec::new();
-    for (path, node) in bundles {
+    for (path, mut node) in bundles {
         if let Some(bundle) = metadata(&path) {
+            if let Some(attribution) = &mut node.attribution {
+                attribution.bundle_id = Some(bundle.identifier.clone());
+            }
             applications
                 .entry(bundle.identifier.clone())
                 .or_default()
@@ -83,6 +86,9 @@ pub(super) fn group(mut bundles: Vec<(PathBuf, Node)>) -> Vec<Node> {
             vec![format!("bundle {identifier}")],
             Grouping::App,
         );
+        let mut attribution = Attribution::new(AttributionSource::BundleId, None);
+        attribution.bundle_id = Some(identifier);
+        application.attribution = Some(attribution);
         for (bundle, mut node) in bundles {
             node.name = bundle
                 .version
@@ -156,11 +162,19 @@ mod tests {
         assert_eq!(family.children.len(), 2);
         assert_eq!(family.totals.processes, 3);
         assert_eq!(family.totals.resident_bytes, 300);
+        let attribution = serde_json::to_value(&family.attribution).unwrap();
+        assert_eq!(attribution["source"], "bundle_id");
+        assert_eq!(attribution["bundle_id"], "org.example.browser");
+        assert!(attribution["path"].is_null());
         assert_eq!(family.totals.cpu_percent, 3.0);
         assert_eq!(family.totals.oldest_uptime_seconds, Some(90));
         let installed_ref = stable_ref("applications", &installed.to_string_lossy());
         let installed_node = tree::select(&family, &installed_ref).unwrap();
         assert_eq!(installed_node.name, "bundle 2.0");
+        assert_eq!(
+            installed_node.attribution.as_ref().unwrap().path.as_ref(),
+            Some(&installed)
+        );
         assert_eq!(installed_node.children[0].reference, "pid:11");
         assert_eq!(installed_node.children[0].children[0].reference, "pid:12");
         assert_eq!(

@@ -160,9 +160,9 @@ pub(super) fn collect(pid: i32, expected_fds: usize) -> io::Result<Network> {
             Ok(None) => (),
             Err(error) => {
                 network.complete = false;
-                network
-                    .unavailable
-                    .push(format!("fd {}: {error}", fd.proc_fd));
+                let mut diagnostic = crate::model::Diagnostic::io("network.socket", &error);
+                diagnostic.message = format!("fd {}: {error}", fd.proc_fd);
+                network.unavailable.push(diagnostic);
             }
         }
     }

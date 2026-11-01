@@ -91,7 +91,7 @@ fn snapshot() -> Snapshot {
     containers.children.push(runtime);
     root.children.push(containers);
     Snapshot {
-        schema: "reswho/7",
+        schema: crate::model::JSON_SCHEMA_VERSION,
         captured_unix_ms: 1000,
         sample_ms: 250,
         collection_ms: 300,

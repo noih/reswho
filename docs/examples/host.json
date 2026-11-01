@@ -1,0 +1,197 @@
+{
+  "schema": "reswho/8",
+  "captured_unix_ms": 1700000000000,
+  "sample_ms": 250,
+  "collection_ms": 300,
+  "system": {
+    "cpu_percent": 20.0,
+    "logical_cpus": 8,
+    "memory_total_bytes": 17179869184,
+    "memory_used_bytes": 8589934592,
+    "swap_used_bytes": 0
+  },
+  "scope": "group:all",
+  "warnings": [],
+  "root": {
+    "reference": "group:all",
+    "name": "Resources",
+    "kind": "group",
+    "grouping": "category",
+    "evidence": [],
+    "attribution": null,
+    "diagnostics": [],
+    "process": null,
+    "container": null,
+    "runtime": null,
+    "container_totals": null,
+    "totals": {
+      "processes": 2,
+      "known_cpu_percent": 0,
+      "known_resident_bytes": 2048,
+      "cpu_unknown": 0,
+      "memory_unknown": 0,
+      "oldest_uptime_seconds": 60,
+      "uptime_unknown": 0
+    },
+    "children": [
+      {
+        "reference": "group:applications",
+        "name": "Applications",
+        "kind": "group",
+        "grouping": "category",
+        "evidence": [],
+        "attribution": null,
+        "diagnostics": [],
+        "process": null,
+        "container": null,
+        "runtime": null,
+        "container_totals": null,
+        "totals": {
+          "processes": 2,
+          "known_cpu_percent": 0,
+          "known_resident_bytes": 2048,
+          "cpu_unknown": 0,
+          "memory_unknown": 0,
+          "oldest_uptime_seconds": 60,
+          "uptime_unknown": 0
+        },
+        "children": [
+          {
+            "reference": "group:0123456789abcdef",
+            "name": "Example",
+            "kind": "group",
+            "grouping": "app",
+            "evidence": [],
+            "attribution": {
+              "source": "app_bundle",
+              "path": "/Applications/Example.app",
+              "checkout_path": null,
+              "manifest": null,
+              "bundle_id": null,
+              "inferred": false,
+              "via_pid": null
+            },
+            "diagnostics": [],
+            "process": null,
+            "container": null,
+            "runtime": null,
+            "container_totals": null,
+            "totals": {
+              "processes": 2,
+              "known_cpu_percent": 0,
+              "known_resident_bytes": 2048,
+              "cpu_unknown": 0,
+              "memory_unknown": 0,
+              "oldest_uptime_seconds": 60,
+              "uptime_unknown": 0
+            },
+            "children": [
+              {
+                "reference": "pid:100",
+                "name": "example",
+                "kind": "process",
+                "grouping": null,
+                "evidence": [],
+                "attribution": {
+                  "source": "app_bundle",
+                  "path": "/Applications/Example.app",
+                  "checkout_path": null,
+                  "manifest": null,
+                  "bundle_id": null,
+                  "inferred": false,
+                  "via_pid": null
+                },
+                "diagnostics": [],
+                "process": {
+                  "pid": 100,
+                  "ppid": 1,
+                  "uid": 501,
+                  "started_unix_us": 1699999940000000,
+                  "uptime_seconds": 60,
+                  "name": "example",
+                  "executable": "/Applications/Example.app/Contents/MacOS/example",
+                  "cwd": "/example/project",
+                  "cpu_percent": 0.0,
+                  "resident_bytes": 1024,
+                  "network": {
+                    "complete": true,
+                    "sockets": [],
+                    "unavailable": []
+                  },
+                  "unavailable": []
+                },
+                "container": null,
+                "runtime": null,
+                "container_totals": null,
+                "totals": {
+                  "processes": 2,
+                  "known_cpu_percent": 0,
+                  "known_resident_bytes": 2048,
+                  "cpu_unknown": 0,
+                  "memory_unknown": 0,
+                  "oldest_uptime_seconds": 60,
+                  "uptime_unknown": 0
+                },
+                "children": [
+                  {
+                    "reference": "pid:101",
+                    "name": "example",
+                    "kind": "process",
+                    "grouping": null,
+                    "evidence": [],
+                    "attribution": {
+                      "source": "app_bundle",
+                      "path": "/Applications/Example.app",
+                      "checkout_path": null,
+                      "manifest": null,
+                      "bundle_id": null,
+                      "inferred": false,
+                      "via_pid": null
+                    },
+                    "diagnostics": [],
+                    "process": {
+                      "pid": 101,
+                      "ppid": 100,
+                      "uid": 501,
+                      "started_unix_us": 1699999940000000,
+                      "uptime_seconds": 60,
+                      "name": "example",
+                      "executable": "/Applications/Example.app/Contents/MacOS/example",
+                      "cwd": "/example/project",
+                      "cpu_percent": 0.0,
+                      "resident_bytes": 1024,
+                      "network": {
+                        "complete": true,
+                        "sockets": [],
+                        "unavailable": []
+                      },
+                      "unavailable": []
+                    },
+                    "container": null,
+                    "runtime": null,
+                    "container_totals": null,
+                    "totals": {
+                      "processes": 1,
+                      "known_cpu_percent": 0,
+                      "known_resident_bytes": 1024,
+                      "cpu_unknown": 0,
+                      "memory_unknown": 0,
+                      "oldest_uptime_seconds": 60,
+                      "uptime_unknown": 0
+                    },
+                    "children": [],
+                    "omitted_children": 0
+                  }
+                ],
+                "omitted_children": 0
+              }
+            ],
+            "omitted_children": 0
+          }
+        ],
+        "omitted_children": 0
+      }
+    ],
+    "omitted_children": 0
+  }
+}

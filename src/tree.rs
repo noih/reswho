@@ -1,4 +1,4 @@
-use crate::model::{Grouping, Node, Process, Totals};
+use crate::model::{Attribution, AttributionSource, Diagnostic, Grouping, Node, Process, Totals};
 use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 use std::{
@@ -20,6 +20,7 @@ struct Assignment {
     name: String,
     evidence: String,
     project: Option<projects::Project>,
+    attribution: Option<Attribution>,
 }
 
 pub(crate) fn stable_ref(category: &str, key: &str) -> String {
@@ -60,6 +61,10 @@ fn assignment(process: &Process, cache: &mut projects::Discovery) -> Assignment 
             category_name: "Applications",
             name,
             evidence: format!("Application bundle: {key}"),
+            attribution: Some(Attribution::new(
+                AttributionSource::AppBundle,
+                Some(bundle.clone()),
+            )),
             key,
             project: None,
         };
@@ -76,6 +81,7 @@ fn assignment(process: &Process, cache: &mut projects::Discovery) -> Assignment 
                 .to_string_lossy()
                 .into_owned(),
             evidence: root.evidence(),
+            attribution: Some(root.attribution()),
             key,
             project: Some(root),
         };
@@ -92,6 +98,7 @@ fn assignment(process: &Process, cache: &mut projects::Discovery) -> Assignment 
             key: "services".into(),
             name: "System services".into(),
             evidence: "System executable location".into(),
+            attribution: None,
             project: None,
         };
     }
@@ -101,6 +108,7 @@ fn assignment(process: &Process, cache: &mut projects::Discovery) -> Assignment 
         key: "unknown".into(),
         name: "Unknown ownership".into(),
         evidence: "No application or project identified from available paths".into(),
+        attribution: None,
         project: None,
     }
 }
@@ -153,12 +161,17 @@ pub fn build(processes: Vec<Process>) -> Result<Node> {
         .collect();
     let mut assignments = HashMap::new();
     let mut evidence = HashMap::new();
+    let mut attributions = HashMap::new();
     for process in &processes {
         let mut selected = direct[&process.pid].clone();
         let mut reasons = vec![selected.evidence.clone()];
         if selected.category == "unclassified" {
             if let Some((ancestor, inferred)) = ancestor_assignment(process, &by_pid, &direct) {
                 selected = inferred.clone();
+                if let Some(attribution) = &mut selected.attribution {
+                    attribution.inferred = true;
+                    attribution.via_pid = Some(ancestor);
+                }
                 reasons = vec![format!(
                     "Inferred from ancestor pid:{ancestor}: {}; same UID and working directory along observed parent chain",
                     inferred.evidence
@@ -172,6 +185,15 @@ pub fn build(processes: Vec<Process>) -> Result<Node> {
                 root.root.display()
             ));
         }
+        attributions.insert(
+            process.pid,
+            selected.attribution.clone().or_else(|| {
+                process
+                    .executable
+                    .clone()
+                    .map(|path| Attribution::new(AttributionSource::Executable, Some(path)))
+            }),
+        );
         assignments.insert(process.pid, selected);
         evidence.insert(process.pid, reasons);
     }
@@ -211,6 +233,11 @@ pub fn build(processes: Vec<Process>) -> Result<Node> {
             vec![assignment.evidence],
             grouping,
         );
+        group.attribution = assignment.attribution;
+        if let Some(attribution) = &mut group.attribution {
+            attribution.via_pid = None;
+            attribution.inferred = false;
+        }
         group.children = process_forest(processes, &mut evidence);
         for child in &group.children {
             group.totals.add(&child.totals);
@@ -259,6 +286,13 @@ pub fn build(processes: Vec<Process>) -> Result<Node> {
     root.children = categories.into_values().collect();
     for category in &root.children {
         root.totals.add(&category.totals);
+    }
+    let mut pending = vec![&mut root];
+    while let Some(node) = pending.pop() {
+        if let Some(process) = &node.process {
+            node.attribution = attributions.remove(&process.pid).flatten();
+        }
+        pending.extend(node.children.iter_mut());
     }
     validate_references(&root)?;
     sort_children(&mut root);
@@ -317,6 +351,11 @@ fn process_forest(processes: Vec<Process>, evidence: &mut HashMap<u32, Vec<Strin
         if let Some(mut node) = process_node(pid, &mut by_pid, &children, evidence, 0) {
             node.evidence
                 .push("Parent chain cycle or depth limit; displayed as a separate root".into());
+            node.diagnostics.push(Diagnostic::new(
+                "parent_chain_incomplete",
+                "parent_chain",
+                "Parent chain cycle or depth limit; displayed as a separate root",
+            ));
             roots.push(node);
         }
     }
@@ -339,6 +378,8 @@ fn process_node(
         kind: "process",
         grouping: None,
         evidence: evidence.remove(&pid).unwrap_or_default(),
+        attribution: None,
+        diagnostics: Vec::new(),
         process: Some(process),
         container: None,
         runtime: None,
@@ -359,18 +400,22 @@ fn process_node(
 }
 
 pub fn select(root: &Node, reference: &str) -> Result<Node> {
-    let mut pending = vec![(root, Vec::new())];
-    while let Some((node, context)) = pending.pop() {
+    let mut pending = vec![(root, Vec::new(), Vec::new())];
+    while let Some((node, context, diagnostics)) = pending.pop() {
         if node.reference == reference {
             let mut selected = node.clone();
             selected.evidence.extend(context);
+            selected.diagnostics.extend(diagnostics);
             return Ok(selected);
         }
         let mut context = context;
+        let mut diagnostics = diagnostics;
+        diagnostics.extend(node.diagnostics.clone());
         if node.kind == "group" && node.reference != "group:all" {
             context.push(format!("Grouped under: {} ({})", node.name, node.reference));
             context.extend(node.evidence.clone());
             if let Some(runtime) = &node.runtime {
+                diagnostics.extend(runtime.unavailable.clone());
                 context.extend(
                     runtime
                         .unavailable
@@ -379,7 +424,11 @@ pub fn select(root: &Node, reference: &str) -> Result<Node> {
                 );
             }
         }
-        pending.extend(node.children.iter().map(|child| (child, context.clone())));
+        pending.extend(
+            node.children
+                .iter()
+                .map(|child| (child, context.clone(), diagnostics.clone())),
+        );
     }
     bail!("target not found: {reference}")
 }
@@ -529,6 +578,12 @@ mod tests {
         );
         let mut repository = select(&tree, &repository_ref).unwrap();
         assert_eq!(repository.name, "project");
+        let attribution = serde_json::to_value(&repository.attribution).unwrap();
+        assert_eq!(attribution["source"], "git_common_dir");
+        assert_eq!(
+            attribution["path"],
+            common.canonicalize().unwrap().to_str().unwrap()
+        );
         assert_eq!(repository.children.len(), 3);
         assert_eq!(repository.totals.processes, 3);
         assert_eq!(repository.totals.resident_bytes, 300);

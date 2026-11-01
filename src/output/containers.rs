@@ -110,7 +110,7 @@ pub(super) fn notes(node: &Node, details: bool) -> Vec<String> {
             runtime
                 .unavailable
                 .iter()
-                .map(|issue| format!("! {}", escaped(issue))),
+                .map(|issue| format!("! {}", escaped(issue.as_str()))),
         );
     }
     if let Some(container) = &node.container {
@@ -132,7 +132,7 @@ pub(super) fn notes(node: &Node, details: bool) -> Vec<String> {
                 container
                     .unavailable
                     .iter()
-                    .map(|issue| format!("! {}", escaped(issue))),
+                    .map(|issue| format!("! {}", escaped(issue.as_str()))),
             );
         }
         if !details && container.project.is_none() && container.candidates.len() > 1 {

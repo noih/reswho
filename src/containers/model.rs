@@ -1,3 +1,4 @@
+use crate::model::Diagnostic;
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -10,7 +11,7 @@ pub struct Runtime {
     pub status: String,
     pub inventory_complete: bool,
     pub collection_ms: u64,
-    pub unavailable: Vec<String>,
+    pub unavailable: Vec<Diagnostic>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -30,7 +31,7 @@ pub struct Container {
     pub project: Option<Project>,
     pub candidates: Vec<PathBuf>,
     pub service: Option<String>,
-    pub unavailable: Vec<String>,
+    pub unavailable: Vec<Diagnostic>,
 }
 
 impl Container {

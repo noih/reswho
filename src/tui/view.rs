@@ -174,7 +174,7 @@ fn selected_issue(app: &App) -> Option<&str> {
                 .as_ref()
                 .and_then(|runtime| runtime.unavailable.first())
         })
-        .map(String::as_str)
+        .map(crate::model::Diagnostic::as_str)
         .or_else(|| {
             node.evidence
                 .iter()
@@ -407,7 +407,7 @@ pub(super) fn draw(frame: &mut Frame, app: &App, table: &mut TableState) {
                     .warnings
                     .iter()
                     .find(|warning| !crate::collect::COLLECTION_NOTES.contains(&warning.as_str()))
-                    .map(|warning| format!("! {}", safe(warning)))
+                    .map(|warning| format!("! {}", safe(warning.as_str())))
             })
         })
         .unwrap_or_else(|| {
@@ -446,7 +446,7 @@ fn help(frame: &mut Frame, area: Rect, app: &App) {
             .iter()
             .filter(|warning| !crate::collect::COLLECTION_NOTES.contains(&warning.as_str()))
         {
-            text.push_str(&format!("\n! {}", safe(warning)));
+            text.push_str(&format!("\n! {}", safe(warning.as_str())));
         }
     }
     frame.render_widget(

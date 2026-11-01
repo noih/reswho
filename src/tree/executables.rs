@@ -1,5 +1,5 @@
 use super::stable_ref;
-use crate::model::{Grouping, Node};
+use crate::model::{Attribution, AttributionSource, Grouping, Node};
 use std::{collections::BTreeMap, path::PathBuf};
 
 pub(super) fn group(mut remainder: Node) -> Vec<Node> {
@@ -14,7 +14,7 @@ pub(super) fn group(mut remainder: Node) -> Vec<Node> {
             .filter(|path| path.is_absolute() && path.file_name().is_some());
         if let Some(path) = path {
             let group = executables.entry(path.clone()).or_insert_with(|| {
-                Node::group(
+                let mut group = Node::group(
                     stable_ref("executable", &path.to_string_lossy()),
                     path.file_name()
                         .unwrap_or_default()
@@ -22,7 +22,12 @@ pub(super) fn group(mut remainder: Node) -> Vec<Node> {
                         .into_owned(),
                     vec![format!("exe {}", path.display())],
                     Grouping::Bin,
-                )
+                );
+                group.attribution = Some(Attribution::new(
+                    AttributionSource::Executable,
+                    Some(path.clone()),
+                ));
+                group
             });
             group.totals.add(&child.totals);
             group.children.push(child);

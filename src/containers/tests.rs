@@ -63,7 +63,7 @@ fn container_scope_counts_once_and_remains_queryable_after_collapse() {
     assert_eq!(totals.memory_unknown, 1);
     assert_eq!(selected.omitted_children, 1);
     let snapshot = Snapshot {
-        schema: "reswho/7",
+        schema: crate::model::JSON_SCHEMA_VERSION,
         captured_unix_ms: 0,
         sample_ms: 250,
         collection_ms: 300,
@@ -173,7 +173,7 @@ fn partial_inventory_and_container_markdown_preserve_semantics() {
     let branch = build(runtime, vec![item]).unwrap();
     let reference = branch.children[0].children[0].children[0].reference.clone();
     let mut snapshot = Snapshot {
-        schema: "reswho/7",
+        schema: crate::model::JSON_SCHEMA_VERSION,
         captured_unix_ms: 0,
         sample_ms: 250,
         collection_ms: 300,
@@ -252,7 +252,7 @@ fn inactive_containers_do_not_make_active_metrics_unknown() {
     assert_eq!(totals.memory_unknown, 0);
     assert_eq!(totals.uptime_unknown, 0);
     let mut snapshot = Snapshot {
-        schema: "reswho/7",
+        schema: crate::model::JSON_SCHEMA_VERSION,
         captured_unix_ms: 0,
         sample_ms: 250,
         collection_ms: 300,
@@ -284,7 +284,7 @@ fn compose_group_notes_use_one_line_without_losing_pathless_evidence() {
         source: ProjectSource::Compose,
     });
     let mut snapshot = Snapshot {
-        schema: "reswho/7",
+        schema: crate::model::JSON_SCHEMA_VERSION,
         captured_unix_ms: 0,
         sample_ms: 250,
         collection_ms: 300,
@@ -343,7 +343,7 @@ fn unknown_and_transitional_activity_remains_distinct_from_inactive() {
     .unwrap();
     tree::limit_depth(&mut root, 0);
     let snapshot = Snapshot {
-        schema: "reswho/7",
+        schema: crate::model::JSON_SCHEMA_VERSION,
         captured_unix_ms: 0,
         sample_ms: 250,
         collection_ms: 300,
@@ -354,4 +354,55 @@ fn unknown_and_transitional_activity_remains_distinct_from_inactive() {
     };
     let md = output::markdown(&snapshot);
     assert!(md.contains("· ?  ?  ⏱︎ ?  ? active / 1 containers [+1]"));
+}
+
+#[test]
+fn json_contract_preserves_container_attribution_and_scopes() {
+    let schema: serde_json::Value = serde_json::from_str(output::JSON_SCHEMA).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let mut active = container("one");
+    active.project = Some(Project {
+        name: "site".into(),
+        path: Some("/example/space_中文".into()),
+        source: ProjectSource::Compose,
+    });
+    let mut stopped = container("two");
+    stopped.state = Some("exited".into());
+    stopped.cpu_percent = None;
+    stopped.memory_bytes = None;
+    stopped.uptime_seconds = None;
+    let root = build(runtime("endpoint-a"), vec![active, stopped]).unwrap();
+    let mut references = Vec::new();
+    let mut pending = vec![&root];
+    while let Some(node) = pending.pop() {
+        references.push(node.reference.clone());
+        pending.extend(&node.children);
+    }
+    for reference in references {
+        for depth in [0, usize::MAX] {
+            let mut selected = tree::select(&root, &reference).unwrap();
+            tree::limit_depth(&mut selected, depth);
+            let snapshot = Snapshot {
+                schema: crate::model::JSON_SCHEMA_VERSION,
+                captured_unix_ms: 0,
+                sample_ms: 250,
+                collection_ms: 300,
+                system: SystemSummary::default(),
+                scope: reference.clone(),
+                warnings: vec![],
+                root: selected,
+            };
+            let value = serde_json::to_value(&snapshot).unwrap();
+            let errors: Vec<_> = validator
+                .iter_errors(&value)
+                .map(|e| e.to_string())
+                .collect();
+            assert!(errors.is_empty(), "{}", errors.join("\n"));
+            if matches!(snapshot.root.grouping, Some(Grouping::Project)) {
+                assert_eq!(value["root"]["attribution"]["path"], "/example/space_中文");
+                assert_eq!(value["root"]["attribution"]["source"], "compose");
+                assert_eq!(value["root"]["attribution"]["inferred"], false);
+            }
+        }
+    }
 }
