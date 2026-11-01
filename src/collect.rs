@@ -12,6 +12,12 @@ pub struct Collection {
     pub warnings: Vec<String>,
 }
 
+pub(crate) const COLLECTION_NOTES: [&str; 3] = [
+    "Collection prototype: command arguments, container contents and review heuristics are not implemented.",
+    "TCP/UDP sockets are a non-atomic snapshot, not traffic or inactivity history; sockets may change during collection.",
+    "Process memory is RSS; shared pages may overlap between processes. Group totals are sums of known RSS, not unique physical memory.",
+];
+
 pub fn cpu_percent(previous: u64, current: u64, elapsed_ticks: u64) -> Option<f64> {
     let delta = current.checked_sub(previous)?;
     (elapsed_ticks > 0).then(|| delta as f64 * 100.0 / elapsed_ticks as f64)
@@ -56,11 +62,7 @@ pub fn collect(interval: Duration) -> Result<Collection> {
         memory_used_bytes: macos::used_memory(),
         swap_used_bytes: macos::swap_used(),
     };
-    let mut warnings: Vec<String> = vec![
-            "Collection prototype: command arguments, container contents and review heuristics are not implemented.".into(),
-            "TCP/UDP sockets are a non-atomic snapshot, not traffic or inactivity history; sockets may change during collection.".into(),
-            "Process memory is RSS; shared pages may overlap between processes. Group totals are sums of known RSS, not unique physical memory.".into(),
-        ];
+    let mut warnings: Vec<String> = COLLECTION_NOTES.into_iter().map(str::to_owned).collect();
     for (name, unavailable) in [
         ("CPU", system.cpu_percent.is_none()),
         ("logical CPUs", system.logical_cpus.is_none()),

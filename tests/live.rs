@@ -83,7 +83,7 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
     assert!(md.contains(" · oldest "));
     assert!(!md.contains("reswho --md --from"));
     assert!(md.contains(&format!(
-        "  > git `{}`\n",
+        "> git `{}`",
         directory.path().canonicalize().unwrap().display()
     )));
     assert!(!md.contains("Git root from working directory:"));

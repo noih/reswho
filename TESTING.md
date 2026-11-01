@@ -1,6 +1,6 @@
 # Verification
 
-The collection prototype uses Rust tests for native counter calculations, classification, tree projection, output escaping, and CLI contracts. These are technical spike checks, not acceptance of the full planned product.
+The collection prototype uses Rust tests for native counter calculations, classification, tree projection, output escaping, and CLI contracts. Markdown structure tests use the dev-only pulldown-cmark parser to verify headings, lists, blockquotes, hard breaks, and literal paths. These are technical spike checks, not acceptance of the full planned product.
 
 ```sh
 cargo fmt --check

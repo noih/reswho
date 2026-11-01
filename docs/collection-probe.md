@@ -1,6 +1,6 @@
 # macOS 採集驗證
 
-Tenqo：`rw-1` 至 `rw-7`。日期：2026-11-01。環境：macOS 26.5.2、Apple Silicon、10 logical CPUs、32 GiB RAM，Rust 1.99.1。
+Tenqo：`rw-1` 至 `rw-8`。日期：2026-11-01。環境：macOS 26.5.2、Apple Silicon、10 logical CPUs、32 GiB RAM，Rust 1.99.1。
 
 ## 可執行範圍
 
@@ -58,15 +58,17 @@ cargo run -- --help-format
 
 Bin 對尚未歸入 App／Project 的程序樹，依根程序完整 executable 路徑彙總，不按程序名稱猜測。子程序留在原程序樹，因此 bin totals 包含根程序及其觀測到的未分類子程序，成員不一定全是同一個執行檔。多條同路徑根程序樹合併；僅一個程序時直接顯示 PID，不建立 bin 群組。缺少 executable 的根節點留在 Unknown ownership。Bin ref 僅在該群有多個程序時存在。
 
-群組使用 `[app]`、`[repo]`、`[checkout]`、`[project]`、`[bin]`、`[system]`、`[unknown]` 標示方式；分類層不重複標籤。選擇 A：程序名稱完整保留，不以 `=` 省略。粗體表示名稱，行內 code 表示精確 ref／路徑，`-` 清單表示資源樹，縮排 `>` 引用表示屬性／證據／診斷，並不佔資源深度。單一 PID 的路徑與詳細資訊透過 `--from pid:N` 查詢。
+群組使用 `[app]`、`[repo]`、`[checkout]`、`[project]`、`[bin]`、`[system]`、`[unknown]` 標示方式；分類層不重複標籤。選擇 A：程序名稱完整保留，不以 `=` 省略。名稱與 ref 使用一般文字，不加粗體或 ref 反引號；路徑使用行內 code，避免特殊字元被 Markdown 解讀。格式標記只用於區分語意或保護字面值：`-` 清單表示資源樹，縮排 `>` 引用表示屬性／證據／診斷，並不佔資源深度。單一 PID 的路徑與詳細資訊透過 `--from pid:N` 查詢。
 
 ```markdown
-- **zsh** [bin] · `group:59833aa5a5a1a836` · 0.0% · 31.4MiB · oldest 11d · 50 processes
-  > exe `/bin/zsh`
-  - **zsh** · `pid:75554` · 0.0% · 1.5MiB · 5h · -
+- zsh [bin] · group:59833aa5a5a1a836 · 0.0% · 31.4MiB · oldest 11d · 50 processes
+
+    > exe `/bin/zsh`
+
+    - zsh · pid:75554 · 0.0% · 1.5MiB · 5h · -
 ```
 
-格式版本為 `reswho-md/7`／`reswho/5`。JSON Node 新增 `grouping`，群組值為 category/app/repo/checkout/project/bin/system/unknown，程序為 null。資源與 evidence 分開，JSON 不加入 Markdown 標記。
+格式版本為 `reswho-md/8`／`reswho/5`。大分類以標題呈現、根與分類摘要為段落；診斷 `!`／推論 `~` 僅用於附註，詳見 [Markdown 輸出格式](markdown-format.md)。JSON Node 新增 `grouping`，群組值為 category/app/repo/checkout/project/bin/system/unknown，程序為 null。資源與 evidence 分開，JSON 不加入 Markdown 標記。
 
 ## Repository 與 checkout
 
@@ -102,7 +104,7 @@ FFI buffer 使用 libc／libproc 的固定 C struct，以實際回傳長度驗�
 
 Markdown 在群組 RAM 後顯示 `oldest`：組內最長的已知 uptime，包含閒置時間；未知成員存在時加 `>=`，全部未知為 `?`。數值在限制深度前計算，收合不影響結果。JSON `reswho/2` 的 totals 加入 `oldest_uptime_seconds` 與 `uptime_unknown`，既有欄位保留。
 
-目前 Markdown 為 `reswho-md/7`。一般樹狀展開只顯示程序摘要；`--from pid:N` 顯示選取 PID 的詳細資訊，其子程序仍為摘要。完全無可讀身分、路徑或指標的程序合併成 `Unreadable · N processes`，不附 ref／展開箭頭；部分可讀程序不折疊。此為 Markdown 呈現規則，不改變分類與 totals；JSON 保留個別程序，明確 PID 查詢仍可讀取診斷原因。
+目前 Markdown 為 `reswho-md/8`。一般樹狀展開只顯示程序摘要；`--from pid:N` 顯示選取 PID 的詳細資訊，其子程序仍為摘要。完全無可讀身分、路徑或指標的程序合併成 `Unreadable · N processes`，不附 ref／展開箭頭；部分可讀程序不折疊。此為 Markdown 呈現規則，不改變分類與 totals；JSON 保留個別程序，明確 PID 查詢仍可讀取診斷原因。
 
 ## Socket 採集與格式
 
@@ -116,9 +118,17 @@ Markdown 在群組 RAM 後顯示 `oldest`：組內最長的已知 uptime，包�
 - `-` 表示本次成功採集範圍內沒有符合項目，`?` 表示未知，`tcp:8080 + ?` 表示已知項目加未知部分。零連線不表示可以停止。
 - 尚未收集 Unix socket、流量或無活動時長。
 
-rw-2 當時格式更新為 `reswho-md/2`／`reswho/2`（目前 Markdown 為 `/7`）：新增 network 資料與逐程序歸屬證據；移除名稱特例，因此舊 `group:containers`／Unknown project 分組可能不存在。hash 演算法不變，沒有提供舊 group ref alias；應從新快照複製 ref。
+rw-2 當時格式更新為 `reswho-md/2`／`reswho/2`（目前 Markdown 為 `/8`）：新增 network 資料與逐程序歸屬證據；移除名稱特例，因此舊 `group:containers`／Unknown project 分組可能不存在。hash 演算法不變，沒有提供舊 group ref alias；應從新快照複製 ref。
 
 參考：[libproc socket types](https://docs.rs/libproc/0.14.11/libproc/net_info/index.html)、[Apple proc_info.h](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info.h)。
+
+## rw-8 Markdown 語意格式驗證
+
+`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、34 項一般測試與 process live test 通過。新增四項 parser／格式情境，涵蓋 category headings、清單父子深度、附註引用與 hard break、全機／群組／PID 選取、depth 0／1／多層、部分未知與全 unreadable，以及特殊名稱／路徑不注入標題、清單、連結或 HTML。
+
+`!` 與 `~` 依實際 warning／unavailable 與程式明示的 evidence 標記產生；測試確認低 CPU、長 uptime 不加異常標記，process exited 不被改寫成權限錯誤。靜態說明採共享常數，JSON 原 warnings、schema、分類、ref 與 totals 維持原規則，Markdown 版本升為 `/8`。
+
+真機 depth 1 輸出顯示四個大分類標題、各自 ref／totals／收合標記，以及當次 host swap 不可用診斷；採集約 343ms（含取樣等待），非效能保證。Live fixture 的自有 sleep 與 TempDir 均已回收；未重跑未變動的 socket live test。建置快取保留供本專案下一階段使用。Parser 僅為 dev dependency，不加入執行檔的功能相依。
 
 ## rw-6／rw-7 分類與格式驗證
 

@@ -2,15 +2,25 @@ use crate::model::{Network, Node, Process, Protocol, Snapshot, Totals};
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-pub const FORMAT_HELP: &str = "reswho-md/7 (collection prototype)\n\n\
+#[cfg(test)]
+mod markdown_tests;
+
+pub const FORMAT_HELP: &str = "reswho-md/8 (collection prototype)\n\n\
 | Row | Fields, in order |\n\
 | --- | --- |\n\
 | Process | name · pid ref · CPU · RSS · uptime · ports |\n\
 | Group | name [grouping] · group ref · CPU sum · RSS sum · oldest uptime · process count |\n\
+| Category summary | group ref · CPU sum · RSS sum · oldest uptime · process count |\n\
 \n\
 Grouping: [app], [repo], [checkout], [project], [bin], [system], [unknown]; categories have no tag.\n\
-Resource rows use -; indented > lines are attributes, not child resources. Names remain explicit.\n\
-Names are bold; refs and paths use inline code (copy the value without Markdown delimiters).\n\
+The selected root is a paragraph; child categories use ## headings with a ref/totals summary.\n\
+Other resources use nested - lists; indented > blocks contain attributes, not child resources.\n\
+Headings, notes and whitespace do not change --depth. List nesting uses four spaces.\n\
+Group details stay together; blank lines separate sibling groups. Consecutive PID rows stay compact.\n\
+! starts a diagnostic note with an observed error; ~ marks an explicit inference with source and conditions.\n\
+Neither mark means a process is safe to stop. Low CPU or long uptime alone adds no diagnostic.\n\
+Static collection limitations live here; snapshots retain current errors, deduplicated within their scope.\n\
+Names and refs are plain text; paths use inline code to preserve literal characters.\n\
 A bin containing only one process is shown directly as a PID; its group ref exists only for multiple processes.\n\
 Uptime is elapsed time since process start, including idle time.\n\
 Group oldest is the longest known member uptime, not active use or the group's lifetime.\n\
@@ -52,7 +62,12 @@ A direct app/project assignment wins; different or missing cwd prevents ancestor
 Cwd/exe paths are hints, not proof that a process is no longer needed.\n\
 --from REF selects a branch; --depth N counts edges from that branch (root=0).\n\
 Depth limits presentation only. ▸ marks collapsed children.\n\
-Expand: reswho --md --from REF --depth N (or --depth all). Copy REF from the row.\n\
+Copy REF from the row. Use --depth all for unlimited expansion.\n\
+\n\
+```sh\n\
+reswho --md --from REF --depth N\n\
+```\n\
+\n\
 Group refs are deterministic, not display positions. PID refs query the current PID.\n\
 JSON schema reswho/5 includes grouping (null for processes), raw byte counts, unknown counts and sample timing.\n\
 Command arguments, environment, container contents and review rules are not collected.\n";
@@ -61,11 +76,11 @@ pub fn markdown(snapshot: &Snapshot) -> String {
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "# reswho\nFormat: reswho-md/7 · help: reswho --help-format"
+        "# reswho\n\nFormat: reswho-md/8 · help: reswho --help-format  "
     );
     let _ = writeln!(
         text,
-        "Captured: {}ms Unix · sample {}ms · collection {}ms",
+        "Captured: {}ms Unix · sample {}ms · collection {}ms  ",
         snapshot.captured_unix_ms, snapshot.sample_ms, snapshot.collection_ms
     );
     let system = &snapshot.system;
@@ -80,35 +95,78 @@ pub fn markdown(snapshot: &Snapshot) -> String {
             .logical_cpus
             .map_or("?".into(), |value| value.to_string())
     );
-    for warning in &snapshot.warnings {
-        let _ = writeln!(text, "> {}", escaped(warning));
-    }
-    text.push('\n');
+    let warnings = snapshot
+        .warnings
+        .iter()
+        .filter(|warning| !crate::collect::COLLECTION_NOTES.contains(&warning.as_str()))
+        .map(|warning| format!("! {}", escaped(warning)));
+    write_notes(&mut text, warnings, "");
     write_node(&mut text, &snapshot.root, 0);
     text
 }
 
-fn write_node(text: &mut String, node: &Node, level: usize) {
-    let indent = "  ".repeat(level);
+fn blank_line(text: &mut String) {
+    if !text.is_empty() && !text.ends_with("\n\n") {
+        text.push('\n');
+    }
+}
+
+fn write_notes(text: &mut String, notes: impl IntoIterator<Item = String>, indent: &str) {
+    let mut seen = BTreeSet::new();
+    let notes: Vec<_> = notes
+        .into_iter()
+        .filter(|note| !note.is_empty() && seen.insert(note.clone()))
+        .collect();
+    if notes.is_empty() {
+        return;
+    }
+    if indent.is_empty() {
+        blank_line(text);
+    }
+    for (index, note) in notes.iter().enumerate() {
+        let newline = if index + 1 < notes.len() { "  " } else { "" };
+        let _ = writeln!(text, "{indent}> {note}{newline}");
+    }
+    if indent.is_empty() {
+        text.push('\n');
+    }
+}
+
+fn group_values(node: &Node) -> String {
     let collapsed = if node.omitted_children > 0 {
         " ▸"
     } else {
         ""
     };
+    format!(
+        "{} · {} · {} · oldest {} · {} processes{collapsed}",
+        node.reference,
+        group_cpu(&node.totals),
+        group_memory(&node.totals),
+        group_uptime(&node.totals),
+        node.totals.processes
+    )
+}
+
+fn write_node(text: &mut String, node: &Node, level: usize) {
+    let indent = "    ".repeat(level.saturating_sub(1));
+    let bullet = if level == 0 { "" } else { "- " };
     if let Some(process) = &node.process {
+        let collapsed = if node.omitted_children > 0 {
+            " ▸"
+        } else {
+            ""
+        };
         let _ = writeln!(
             text,
-            "{indent}- **{}** · {} · {} · {} · {} · {}{collapsed}",
-            escaped(&node.name),
-            code(&node.reference),
+            "{indent}{bullet}{} · {} · {} · {} · {} · {}{collapsed}",
+            name_markdown(&node.name),
+            node.reference,
             percent(process.cpu_percent),
             memory(process.resident_bytes),
             uptime(process.uptime_seconds),
             ports(process.network.as_ref())
         );
-        if level == 0 {
-            write_process_details(text, process, &indent);
-        }
     } else {
         let grouping = node
             .grouping
@@ -121,50 +179,80 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
         };
         let _ = writeln!(
             text,
-            "{indent}- **{}**{grouping} · {} · {} · {} · oldest {} · {} processes{collapsed}",
-            escaped(&node.name),
-            code(&node.reference),
-            group_cpu(&node.totals),
-            group_memory(&node.totals),
-            group_uptime(&node.totals),
-            node.totals.processes
+            "{indent}{bullet}{}{grouping} · {}",
+            name_markdown(&node.name),
+            group_values(node)
         );
     }
+    let mut notes = Vec::new();
+    if level == 0
+        && let Some(process) = &node.process
+    {
+        notes.extend(process_details(process));
+    }
     if node.process.is_none() || level == 0 {
-        for evidence in &node.evidence {
-            let _ = writeln!(text, "{indent}  > {}", evidence_markdown(evidence));
-        }
+        notes.extend(node.evidence.iter().map(|value| evidence_markdown(value)));
+    }
+    write_notes(text, notes, &"    ".repeat(level));
+    write_children(text, node, level + 1, level == 0);
+}
+
+fn write_children(text: &mut String, node: &Node, level: usize, categories: bool) {
+    if node.children.is_empty() {
+        return;
+    }
+    if level == 1 {
+        blank_line(text);
     }
     let mut unreadable = 0;
+    let mut previous_group = None;
     for child in &node.children {
         if child.process.as_ref().is_some_and(Process::is_unreadable)
             && child.children.is_empty()
             && child.omitted_children == 0
         {
             unreadable += 1;
+        } else if categories && matches!(child.grouping, Some(crate::model::Grouping::Category)) {
+            blank_line(text);
+            let _ = writeln!(
+                text,
+                "## {}\n\n{}",
+                name_markdown(&child.name),
+                group_values(child)
+            );
+            write_notes(
+                text,
+                child.evidence.iter().map(|value| evidence_markdown(value)),
+                "",
+            );
+            write_children(text, child, 1, false);
         } else {
-            write_node(text, child, level + 1);
+            let is_group = child.process.is_none();
+            if previous_group.is_some_and(|previous| previous || is_group) {
+                blank_line(text);
+            }
+            write_node(text, child, level);
+            previous_group = Some(is_group);
         }
     }
     if unreadable > 0 {
-        let _ = writeln!(text, "{indent}  - **Unreadable** · {unreadable} processes");
+        if previous_group == Some(true) {
+            blank_line(text);
+        }
+        let indent = "    ".repeat(level.saturating_sub(1));
+        let _ = writeln!(text, "{indent}- Unreadable · {unreadable} processes");
     }
 }
 
-fn write_process_details(text: &mut String, process: &Process, indent: &str) {
-    let _ = writeln!(
-        text,
-        "{indent}  > PPID {} · UID {}",
+fn process_details(process: &Process) -> Vec<String> {
+    let mut notes = vec![format!(
+        "PPID {} · UID {}",
         process.ppid.map_or("?".into(), |pid| pid.to_string()),
         process.uid.map_or("?".into(), |uid| uid.to_string())
-    );
+    )];
     for (label, path) in [("cwd", &process.cwd), ("exe", &process.executable)] {
         if let Some(path) = path {
-            let _ = writeln!(
-                text,
-                "{indent}  > {label}: {}",
-                code(&path.to_string_lossy())
-            );
+            notes.push(format!("{label}: {}", code(&path.to_string_lossy())));
         }
     }
     if let Some(network) = &process.network {
@@ -174,11 +262,10 @@ fn write_process_details(text: &mut String, process: &Process, indent: &str) {
             .iter()
             .filter(|socket| socket.tcp_state.as_deref() == Some("Established"))
             .count();
-        let _ = writeln!(
-            text,
-            "{indent}  > TCP/UDP sockets {}{suffix} · TCP established {established}{suffix}",
+        notes.push(format!(
+            "TCP/UDP sockets {}{suffix} · TCP established {established}{suffix}",
             network.sockets.len()
-        );
+        ));
         for socket in &network.sockets {
             let protocol = match socket.protocol {
                 Protocol::Tcp => "TCP",
@@ -188,23 +275,31 @@ fn write_process_details(text: &mut String, process: &Process, indent: &str) {
                 .remote
                 .map_or("-".into(), |address| address.to_string());
             let state = socket.tcp_state.as_deref().unwrap_or("-");
-            let _ = writeln!(
-                text,
-                "{indent}  > {protocol} {} → {remote} · {state} · fd {}",
-                socket.local, socket.fd
-            );
+            notes.push(format!(
+                "{protocol} {} → {remote} · {} · fd {}",
+                socket.local,
+                escaped(state),
+                socket.fd
+            ));
         }
-        for reason in &network.unavailable {
-            let _ = writeln!(text, "{indent}  > Network unavailable: {}", escaped(reason));
-        }
-    }
-    if !process.unavailable.is_empty() {
-        let _ = writeln!(
-            text,
-            "{indent}  > Unavailable: {}",
-            escaped(&process.unavailable.join("; "))
+        notes.extend(
+            network
+                .unavailable
+                .iter()
+                .map(|reason| format!("! Network unavailable: {}", escaped(reason))),
         );
     }
+    if !process.unavailable.is_empty() {
+        let mut seen = BTreeSet::new();
+        let reasons: Vec<_> = process
+            .unavailable
+            .iter()
+            .filter(|reason| seen.insert(reason.as_str()))
+            .map(String::as_str)
+            .collect();
+        notes.push(format!("! Unavailable: {}", escaped(&reasons.join("; "))));
+    }
+    notes
 }
 
 fn group_uptime(totals: &Totals) -> String {
@@ -291,12 +386,20 @@ fn uptime(value: Option<u64>) -> String {
 }
 
 fn evidence_markdown(value: &str) -> String {
+    if value.starts_with("Inferred from ancestor pid:") {
+        return format!("~ {}", escaped(value));
+    }
+    if value.starts_with("Repository metadata unavailable: ")
+        || value == "Parent chain cycle or depth limit; displayed as a separate root"
+    {
+        return format!("! {}", escaped(value));
+    }
+
     for (prefix, label) in [
         ("Application bundle: ", "app"),
         ("Git root from working directory: ", "git"),
         ("repo ", "repo"),
         ("exe ", "exe"),
-        ("bundle ", "bundle"),
     ] {
         if let Some(path) = value.strip_prefix(prefix) {
             return format!("{label} {}", code(path));
@@ -306,9 +409,28 @@ fn evidence_markdown(value: &str) -> String {
         .strip_prefix("project ")
         .and_then(|value| value.split_once(' '))
     {
-        return format!("project {} {}", code(manifest), code(path));
+        return format!("project {} {}", escaped(manifest), code(path));
     }
     escaped(value)
+}
+
+fn name_markdown(value: &str) -> String {
+    let mut name = escaped(value);
+    if (name.starts_with(['#', '-', '+', '=']) || name.starts_with(char::is_whitespace))
+        && let Some(first) = name.chars().next()
+    {
+        name.replace_range(..first.len_utf8(), &format!("&#{};", first as u32));
+    }
+    let digits = name.bytes().take_while(u8::is_ascii_digit).count();
+    if digits > 0
+        && matches!(name.as_bytes().get(digits), Some(b'.' | b')'))
+        && name
+            .get(digits + 1..)
+            .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+    {
+        name.insert(digits, '\\');
+    }
+    name
 }
 
 fn control(character: char) -> bool {
@@ -400,13 +522,18 @@ mod tests {
             tree::build(vec![parent, child, unreadable(20), unreadable(21), partial]).unwrap();
         let mut overview = String::new();
         write_node(&mut overview, &tree, 0);
-        assert!(overview.contains("**shell** [bin]"));
+        assert!(overview.contains("shell [bin]"));
+        assert!(overview.contains("Resources · group:all"));
+        assert!(overview.contains("## Unclassified\n\ngroup:unclassified"));
+        assert!(!overview.contains("**"));
+        assert!(!overview.contains("`pid:"));
+        assert!(!overview.contains("`group:"));
         assert!(overview.contains("  > exe `/bin/shell`\n"));
         assert!(!overview.contains("  - exe /bin/shell"));
-        assert!(overview.contains("**shell** · `pid:10`"));
-        assert!(overview.contains("**helper** · `pid:11`"));
-        assert!(overview.contains("**Unreadable** · 2 processes\n"));
-        assert_eq!(overview.matches("**Unreadable**").count(), 1);
+        assert!(overview.contains("shell · pid:10"));
+        assert!(overview.contains("helper · pid:11"));
+        assert!(overview.contains("Unreadable · 2 processes\n"));
+        assert_eq!(overview.matches("Unreadable").count(), 1);
         for hidden in [
             "pid:20",
             "pid:21",
@@ -437,7 +564,7 @@ mod tests {
         details.clear();
         write_node(&mut details, &tree::select(&tree, "pid:20").unwrap(), 0);
         assert!(details.contains("Operation not permitted (os error 1)"));
-        assert!(!details.contains("**Unreadable**"));
+        assert!(!details.contains("Unreadable"));
     }
 
     #[test]
