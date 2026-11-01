@@ -2,9 +2,16 @@ use crate::model::{Network, Node, Process, Protocol, Snapshot, Totals};
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-pub const FORMAT_HELP: &str = "reswho-md/4 (collection prototype)\n\n\
-Process: [name] · [pid ref] · [CPU] · [RSS] · [uptime] · [ports]\n\
-Group: [name] · [group ref] · [CPU sum] · [RSS sum] · oldest [uptime] · [process count]\n\
+pub const FORMAT_HELP: &str = "reswho-md/7 (collection prototype)\n\n\
+| Row | Fields, in order |\n\
+| --- | --- |\n\
+| Process | name · pid ref · CPU · RSS · uptime · ports |\n\
+| Group | name [grouping] · group ref · CPU sum · RSS sum · oldest uptime · process count |\n\
+\n\
+Grouping: [app], [repo], [checkout], [project], [bin], [system], [unknown]; categories have no tag.\n\
+Resource rows use -; indented > lines are attributes, not child resources. Names remain explicit.\n\
+Names are bold; refs and paths use inline code (copy the value without Markdown delimiters).\n\
+A bin containing only one process is shown directly as a PID; its group ref exists only for multiple processes.\n\
 Uptime is elapsed time since process start, including idle time.\n\
 Group oldest is the longest known member uptime, not active use or the group's lifetime.\n\
 oldest >=2h means at least 2h with unknown members; oldest ? means unavailable.\n\
@@ -21,8 +28,25 @@ Process rows are summaries; --from pid:N shows details for the selected PID only
 Unreadable rows combine processes with no readable details; they cannot be expanded.\n\
 JSON retains individual processes and diagnostics, including unreadable entries.\n\
 PPID is preserved even when a parent belongs to a different group.\n\
-Attribution uses bundle structure, Git roots and system locations, not app/tool name lists.\n\
-Evidence: app PATH = application bundle; git PATH = Git root found from cwd.\n\
+Attribution: direct App > Project; validated ancestor inference > Bin > Unknown.\n\
+Evidence: app PATH = app bundle; git PATH = checkout root; repo PATH = shared Git directory.\n\
+Matching declared bundle IDs share an app parent across paths; single-path apps stay flat.\n\
+Bundle path refs remain stable; app parents exist only while multiple paths are present.\n\
+Evidence: bundle ID = declared CFBundleIdentifier, not verified signing identity.\n\
+Child bundle VERSION is the on-disk Info.plist version, not necessarily the running version.\n\
+Missing or invalid bundle metadata falls back to path grouping.\n\
+Projects use the nearest manifest or Git root; discovery stops at the nearest Git boundary.\n\
+Markers: Cargo.toml, package.json, pyproject.toml, pom.xml, settings.gradle[.kts], build.gradle[.kts],\n\
+go.work, go.mod, build.sbt, Gemfile, composer.json, pubspec.yaml, mix.exs, Package.swift,\n\
+deno.json[c], CMakeLists.txt, meson.build, build.zig. Only file presence is checked.\n\
+project FILE PATH = manifest hint; git PATH = Git boundary, including colocated projects.\n\
+Project subdirectories stay inside their checkout; coincident project/checkout roots share a row.\n\
+No marker means no project claim; cwd remains available via --from pid:N and JSON.\n\
+Fallback bin groups use exact root executable paths (exe PATH), not process names.\n\
+Bin totals include attached process subtrees; System paths retain the System category.\n\
+Missing executable paths remain unknown. Grouping does not establish a shared task or safe shutdown.\n\
+Multiple active checkouts of one repository share a project parent; a single checkout stays flat.\n\
+Checkout refs remain stable; a repository parent exists only while multiple checkouts are present.\n\
 Ancestor attribution is labelled inferred and requires matching UID/cwd and compatible start times.\n\
 A direct app/project assignment wins; different or missing cwd prevents ancestor inference.\n\
 Cwd/exe paths are hints, not proof that a process is no longer needed.\n\
@@ -30,14 +54,14 @@ Cwd/exe paths are hints, not proof that a process is no longer needed.\n\
 Depth limits presentation only. ▸ marks collapsed children.\n\
 Expand: reswho --md --from REF --depth N (or --depth all). Copy REF from the row.\n\
 Group refs are deterministic, not display positions. PID refs query the current PID.\n\
-JSON schema reswho/2 includes raw byte counts, unknown counts and sample timing.\n\
+JSON schema reswho/5 includes grouping (null for processes), raw byte counts, unknown counts and sample timing.\n\
 Command arguments, environment, container contents and review rules are not collected.\n";
 
 pub fn markdown(snapshot: &Snapshot) -> String {
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "# reswho\nFormat: reswho-md/4 · help: reswho --help-format"
+        "# reswho\nFormat: reswho-md/7 · help: reswho --help-format"
     );
     let _ = writeln!(
         text,
@@ -76,7 +100,7 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
             text,
             "{indent}- **{}** · {} · {} · {} · {} · {}{collapsed}",
             escaped(&node.name),
-            node.reference,
+            code(&node.reference),
             percent(process.cpu_percent),
             memory(process.resident_bytes),
             uptime(process.uptime_seconds),
@@ -86,11 +110,20 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
             write_process_details(text, process, &indent);
         }
     } else {
+        let grouping = node
+            .grouping
+            .as_ref()
+            .map_or("", |grouping| grouping.label());
+        let grouping = if grouping.is_empty() {
+            String::new()
+        } else {
+            format!(" [{grouping}]")
+        };
         let _ = writeln!(
             text,
-            "{indent}- **{}** · {} · {} · {} · oldest {} · {} processes{collapsed}",
+            "{indent}- **{}**{grouping} · {} · {} · {} · oldest {} · {} processes{collapsed}",
             escaped(&node.name),
-            node.reference,
+            code(&node.reference),
             group_cpu(&node.totals),
             group_memory(&node.totals),
             group_uptime(&node.totals),
@@ -99,14 +132,7 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
     }
     if node.process.is_none() || level == 0 {
         for evidence in &node.evidence {
-            let evidence = if let Some(path) = evidence.strip_prefix("Application bundle: ") {
-                format!("app {path}")
-            } else if let Some(path) = evidence.strip_prefix("Git root from working directory: ") {
-                format!("git {path}")
-            } else {
-                evidence.clone()
-            };
-            let _ = writeln!(text, "{indent}  - {}", escaped(&evidence));
+            let _ = writeln!(text, "{indent}  > {}", evidence_markdown(evidence));
         }
     }
     let mut unreadable = 0;
@@ -128,7 +154,7 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
 fn write_process_details(text: &mut String, process: &Process, indent: &str) {
     let _ = writeln!(
         text,
-        "{indent}  - PPID {} · UID {}",
+        "{indent}  > PPID {} · UID {}",
         process.ppid.map_or("?".into(), |pid| pid.to_string()),
         process.uid.map_or("?".into(), |uid| uid.to_string())
     );
@@ -136,8 +162,8 @@ fn write_process_details(text: &mut String, process: &Process, indent: &str) {
         if let Some(path) = path {
             let _ = writeln!(
                 text,
-                "{indent}  - {label}: {}",
-                escaped(&path.to_string_lossy())
+                "{indent}  > {label}: {}",
+                code(&path.to_string_lossy())
             );
         }
     }
@@ -150,7 +176,7 @@ fn write_process_details(text: &mut String, process: &Process, indent: &str) {
             .count();
         let _ = writeln!(
             text,
-            "{indent}  - TCP/UDP sockets {}{suffix} · TCP established {established}{suffix}",
+            "{indent}  > TCP/UDP sockets {}{suffix} · TCP established {established}{suffix}",
             network.sockets.len()
         );
         for socket in &network.sockets {
@@ -164,18 +190,18 @@ fn write_process_details(text: &mut String, process: &Process, indent: &str) {
             let state = socket.tcp_state.as_deref().unwrap_or("-");
             let _ = writeln!(
                 text,
-                "{indent}  - {protocol} {} → {remote} · {state} · fd {}",
+                "{indent}  > {protocol} {} → {remote} · {state} · fd {}",
                 socket.local, socket.fd
             );
         }
         for reason in &network.unavailable {
-            let _ = writeln!(text, "{indent}  - Network unavailable: {}", escaped(reason));
+            let _ = writeln!(text, "{indent}  > Network unavailable: {}", escaped(reason));
         }
     }
     if !process.unavailable.is_empty() {
         let _ = writeln!(
             text,
-            "{indent}  - Unavailable: {}",
+            "{indent}  > Unavailable: {}",
             escaped(&process.unavailable.join("; "))
         );
     }
@@ -264,6 +290,56 @@ fn uptime(value: Option<u64>) -> String {
     }
 }
 
+fn evidence_markdown(value: &str) -> String {
+    for (prefix, label) in [
+        ("Application bundle: ", "app"),
+        ("Git root from working directory: ", "git"),
+        ("repo ", "repo"),
+        ("exe ", "exe"),
+        ("bundle ", "bundle"),
+    ] {
+        if let Some(path) = value.strip_prefix(prefix) {
+            return format!("{label} {}", code(path));
+        }
+    }
+    if let Some((manifest, path)) = value
+        .strip_prefix("project ")
+        .and_then(|value| value.split_once(' '))
+    {
+        return format!("project {} {}", code(manifest), code(path));
+    }
+    escaped(value)
+}
+
+fn control(character: char) -> bool {
+    character.is_control()
+        || matches!(character, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}')
+}
+
+fn code(value: &str) -> String {
+    let mut safe = String::new();
+    for character in value.chars() {
+        if control(character) {
+            let _ = write!(safe, "\\u{{{:x}}}", character as u32);
+        } else {
+            safe.push(character);
+        }
+    }
+    let ticks = "`".repeat(
+        safe.split(|character| character != '`')
+            .map(str::len)
+            .max()
+            .unwrap_or(0)
+            + 1,
+    );
+    let pad = if safe.starts_with(['`', ' ']) || safe.ends_with(['`', ' ']) {
+        " "
+    } else {
+        ""
+    };
+    format!("{ticks}{pad}{safe}{pad}{ticks}")
+}
+
 fn escaped(value: &str) -> String {
     let mut output = String::new();
     for character in value.chars() {
@@ -272,10 +348,7 @@ fn escaped(value: &str) -> String {
                 output.push('\\');
                 output.push(character);
             }
-            character
-                if character.is_control()
-                    || matches!(character, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}') =>
-            {
+            character if control(character) => {
                 let _ = write!(output, "\\u{{{:x}}}", character as u32);
             }
             character => output.push(character),
@@ -327,6 +400,11 @@ mod tests {
             tree::build(vec![parent, child, unreadable(20), unreadable(21), partial]).unwrap();
         let mut overview = String::new();
         write_node(&mut overview, &tree, 0);
+        assert!(overview.contains("**shell** [bin]"));
+        assert!(overview.contains("  > exe `/bin/shell`\n"));
+        assert!(!overview.contains("  - exe /bin/shell"));
+        assert!(overview.contains("**shell** · `pid:10`"));
+        assert!(overview.contains("**helper** · `pid:11`"));
         assert!(overview.contains("**Unreadable** · 2 processes\n"));
         assert_eq!(overview.matches("**Unreadable**").count(), 1);
         for hidden in [
@@ -348,12 +426,13 @@ mod tests {
         assert_eq!(tree.totals.memory_unknown, 2);
         let json = serde_json::to_value(&tree).unwrap().to_string();
         assert!(json.contains("pid:20"));
+        assert!(json.contains("\"grouping\":\"bin\""));
         assert!(json.contains("Operation not permitted"));
         let mut details = String::new();
         write_node(&mut details, &tree::select(&tree, "pid:10").unwrap(), 0);
         assert_eq!(details.matches("PPID").count(), 1);
-        assert!(details.contains("cwd: /"));
-        assert!(details.contains("exe: /bin/shell"));
+        assert!(details.contains("cwd: `/`"));
+        assert!(details.contains("exe: `/bin/shell`"));
         assert!(details.contains("pid:11"));
         details.clear();
         write_node(&mut details, &tree::select(&tree, "pid:20").unwrap(), 0);
@@ -405,6 +484,11 @@ mod tests {
         assert!(!value.contains('\u{1b}'));
         assert!(!value.contains('\u{202e}'));
         assert!(value.contains("\\`\\[link\\]"));
+        assert_eq!(code("/tmp/a_b`c"), "``/tmp/a_b`c``");
+        assert_eq!(code("/tmp/end`"), "`` /tmp/end` ``");
+        let path = code("/tmp/line\n\u{1b}\u{202e}");
+        assert!(!path.contains(['\n', '\u{1b}', '\u{202e}']));
+        assert_eq!(evidence_markdown("exe /tmp/a_b"), "exe `/tmp/a_b`");
     }
 
     #[test]

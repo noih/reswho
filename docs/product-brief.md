@@ -28,8 +28,9 @@
 
 | 線索 | 可提供的資訊 |
 | --- | --- |
-| 工作目錄、Git 根目錄與 worktree | 專案與 checkout 身分 |
+| 工作目錄、專案描述檔、Git 根目錄、common directory 與 worktree | repository 與 checkout 身分 |
 | 執行檔、完整命令及腳本路徑 | 應用、runtime、服務角色與可能專案 |
+| App bundle 路徑與宣告的 bundle ID | 跨安裝路徑／暫存副本的應用分組；內層保留路徑 |
 | 父子程序 | 啟動工具與附屬程序；父程序已退出時可能不完整 |
 | 容器 name、labels、mounts、Compose metadata 等可用資訊 | 容器角色、專案候選與主機路徑 |
 | 開啟檔案、日誌路徑 | 補充來源線索；不代表必然歸屬 |
@@ -37,7 +38,11 @@
 
 分類使用通用、可驗證的結構與 metadata，不依賴特定電腦的 app／process 名稱清單。缺乏線索時保留粗分類或未知，並區分直接觀測與推論。
 
+分類優先順序為直接 App → 直接 Project → 經條件驗證的祖先歸屬 → Bin → Unknown。System 依系統路徑保留大分類，其內亦可按 bin 彙總。非 Git 專案依最近的描述檔辨識，支援標記見 `collection-probe.md`。沒有標記時保留 cwd，不猜用途。
+
 分類須附依據。名稱前綴屬弱線索；工作目錄或 mount 能提供較直接的路徑關聯。相同文字出現在 name 與 label 時，不應當作兩份獨立證據。線索衝突時呈現候選或未知，不強制選擇。
+
+同一個 Git common directory 下若有多個 checkout 在執行程序，顯示「repository → checkout → project → process」，位置重合的 checkout／project 共用一列。內層保留完整路徑與原 ref；只有一個 checkout 時省略 repository 父層。同名但獨立 clone 的 repository 不合併；metadata 不可讀時保留 checkout 原分組。
 
 歸屬與目前是否需要服務是不同問題。辨識出專案，不代表能安全判定該服務可以停止。
 
@@ -58,7 +63,7 @@ herdr、playwright-cli、Chrome 等先由執行檔、命令列、應用路徑與
 
 三種明確輸出模式互斥，共用資料與判斷；非互動輸出不等待操作、不持續刷新，不輸出終端機控制碼。診斷與資料輸出分離。
 
-Markdown 使用巢狀清單表示層級，採固定、精簡、可查閱的格式，不要求每項資訊皆為 key/value。程序摘要欄位順序為 `[name] · [ref] · [cpu] · [memory] · [uptime] · [ports]`；`-` 表示確認沒有，`?` 表示未知或無法取得，數值直接附單位。缺值保留位置；證據、路徑與例外放在下一層。群組、程序與容器行須可區分，完整格式在實作時定義並提供版本識別。
+Markdown 以粗體標名稱、行內 code 標 ref／路徑，群組附分類標籤；程序名稱完整保留。屬性、證據與診斷使用縮排引用區塊，不當成子節點。單一程序的 bin 省略群組層，直接顯示 PID。巢狀清單表示資源層級，採固定、精簡、可查閱的格式，不要求每項資訊皆為 key/value。程序摘要欄位順序為 `[name] · [ref] · [cpu] · [memory] · [uptime] · [ports]`；`-` 表示確認沒有，`?` 表示未知或無法取得，數值直接附單位。缺值保留位置；證據、路徑與例外放在下一層。群組、程序與容器行須可區分，完整格式在實作時定義並提供版本識別。
 
 - `--from pid:6481`：從指定程序深入查看。
 - `--from group:<id>`：從指定分類、應用、專案或容器分支深入查看，不要求理解各 runtime 原生 ID。

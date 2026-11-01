@@ -1,10 +1,16 @@
-use crate::model::{Node, Process, Totals};
+use crate::model::{Grouping, Node, Process, Totals};
 use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
 };
+
+mod applications;
+mod executables;
+#[cfg(test)]
+mod project_tests;
+mod projects;
 
 #[derive(Clone, Debug)]
 struct Assignment {
@@ -13,6 +19,7 @@ struct Assignment {
     key: String,
     name: String,
     evidence: String,
+    project: Option<projects::Project>,
 }
 
 fn stable_ref(category: &str, key: &str) -> String {
@@ -40,28 +47,7 @@ fn app_bundle(path: &Path) -> Option<PathBuf> {
     None
 }
 
-fn project_root(cwd: &Path, cache: &mut HashMap<PathBuf, Option<PathBuf>>) -> Option<PathBuf> {
-    let mut visited = Vec::new();
-    let mut found = None;
-    for path in cwd.ancestors() {
-        if let Some(cached) = cache.get(path) {
-            found = cached.clone();
-            break;
-        }
-        visited.push(path.to_path_buf());
-        let marker = path.join(".git");
-        if marker.is_dir() || marker.is_file() {
-            found = Some(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
-            break;
-        }
-    }
-    for path in visited {
-        cache.insert(path, found.clone());
-    }
-    found
-}
-
-fn assignment(process: &Process, cache: &mut HashMap<PathBuf, Option<PathBuf>>) -> Assignment {
+fn assignment(process: &Process, cache: &mut projects::Discovery) -> Assignment {
     if let Some(bundle) = process.executable.as_deref().and_then(app_bundle) {
         let key = bundle.to_string_lossy().into_owned();
         let filename = bundle.file_name().unwrap_or_default().to_string_lossy();
@@ -75,24 +61,23 @@ fn assignment(process: &Process, cache: &mut HashMap<PathBuf, Option<PathBuf>>) 
             name,
             evidence: format!("Application bundle: {key}"),
             key,
+            project: None,
         };
     }
-    if let Some(root) = process
-        .cwd
-        .as_deref()
-        .and_then(|cwd| project_root(cwd, cache))
-    {
-        let key = root.to_string_lossy().into_owned();
+    if let Some(root) = process.cwd.as_deref().and_then(|cwd| cache.find(cwd)) {
+        let key = root.root.to_string_lossy().into_owned();
         return Assignment {
-            category: "development",
-            category_name: "Development",
+            category: "projects",
+            category_name: "Projects",
             name: root
+                .root
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned(),
-            evidence: format!("Git root from working directory: {key}"),
+            evidence: root.evidence(),
             key,
+            project: Some(root),
         };
     }
     let executable = process.executable.as_deref();
@@ -107,6 +92,7 @@ fn assignment(process: &Process, cache: &mut HashMap<PathBuf, Option<PathBuf>>) 
             key: "services".into(),
             name: "System services".into(),
             evidence: "System executable location".into(),
+            project: None,
         };
     }
     Assignment {
@@ -115,6 +101,7 @@ fn assignment(process: &Process, cache: &mut HashMap<PathBuf, Option<PathBuf>>) 
         key: "unknown".into(),
         name: "Unknown ownership".into(),
         evidence: "No application or project identified from available paths".into(),
+        project: None,
     }
 }
 
@@ -139,7 +126,7 @@ fn ancestor_assignment<'a>(
         }
         let assignment = assignments.get(&pid)?;
         match assignment.category {
-            "applications" | "development" => return Some((pid, assignment)),
+            "applications" | "projects" => return Some((pid, assignment)),
             "unclassified" => current = parent,
             _ => return None,
         }
@@ -149,7 +136,7 @@ fn ancestor_assignment<'a>(
 
 pub fn build(processes: Vec<Process>) -> Result<Node> {
     let mut seen = HashSet::new();
-    let mut cache = HashMap::new();
+    let mut cache = projects::Discovery::default();
     let mut buckets: BTreeMap<String, (Assignment, Vec<Process>)> = BTreeMap::new();
     for process in &processes {
         if !seen.insert(process.pid) {
@@ -178,14 +165,11 @@ pub fn build(processes: Vec<Process>) -> Result<Node> {
                 )];
             }
         } else if selected.category == "applications"
-            && let Some(root) = process
-                .cwd
-                .as_deref()
-                .and_then(|cwd| project_root(cwd, &mut cache))
+            && let Some(root) = process.cwd.as_deref().and_then(|cwd| cache.find(cwd))
         {
             reasons.push(format!(
                 "Working-directory project candidate: {}; application grouping retained",
-                root.display()
+                root.root.display()
             ));
         }
         assignments.insert(process.pid, selected);
@@ -195,7 +179,10 @@ pub fn build(processes: Vec<Process>) -> Result<Node> {
         let assignment = assignments
             .remove(&process.pid)
             .expect("assignment for every process");
-        let reference = stable_ref(assignment.category, &assignment.key);
+        let reference = assignment.project.as_ref().map_or_else(
+            || stable_ref(assignment.category, &assignment.key),
+            projects::Project::reference,
+        );
         let bucket = buckets
             .entry(reference)
             .or_insert_with(|| (assignment.clone(), Vec::new()));
@@ -205,8 +192,25 @@ pub fn build(processes: Vec<Process>) -> Result<Node> {
         bucket.1.push(process);
     }
     let mut categories = BTreeMap::new();
+    let mut project_groups = Vec::new();
+    let mut bundles = Vec::new();
     for (reference, (assignment, processes)) in buckets {
-        let mut group = Node::group(reference, assignment.name, vec![assignment.evidence]);
+        let grouping = match assignment.category {
+            "applications" => Grouping::App,
+            "projects" => assignment
+                .project
+                .as_ref()
+                .expect("project assignment")
+                .grouping(),
+            "system" => Grouping::System,
+            _ => Grouping::Unknown,
+        };
+        let mut group = Node::group(
+            reference,
+            assignment.name,
+            vec![assignment.evidence],
+            grouping,
+        );
         group.children = process_forest(processes, &mut evidence);
         for child in &group.children {
             group.totals.add(&child.totals);
@@ -216,15 +220,53 @@ pub fn build(processes: Vec<Process>) -> Result<Node> {
                 format!("group:{}", assignment.category),
                 assignment.category_name.into(),
                 Vec::new(),
+                Grouping::Category,
             )
         });
         category.totals.add(&group.totals);
-        category.children.push(group);
+        if let Some(project) = assignment.project {
+            project_groups.push((project, group));
+        } else if assignment.category == "applications" {
+            bundles.push((PathBuf::from(assignment.key), group));
+        } else if assignment.category == "unclassified" {
+            category.children.extend(executables::group(group));
+        } else if assignment.category == "system" {
+            let mut services = Node::group(
+                group.reference.clone(),
+                group.name.clone(),
+                group.evidence.clone(),
+                Grouping::System,
+            );
+            services.totals = group.totals.clone();
+            services.children = executables::group(group);
+            category.children.push(services);
+        } else {
+            category.children.push(group);
+        }
     }
-    let mut root = Node::group("group:all".into(), "Resources".into(), Vec::new());
+    if let Some(category) = categories.get_mut("projects") {
+        category.children = projects::group(project_groups);
+    }
+    if let Some(applications) = categories.get_mut("applications") {
+        applications.children = applications::group(bundles);
+    }
+    let mut root = Node::group(
+        "group:all".into(),
+        "Resources".into(),
+        Vec::new(),
+        Grouping::Category,
+    );
     root.children = categories.into_values().collect();
     for category in &root.children {
         root.totals.add(&category.totals);
+    }
+    let mut references = HashSet::new();
+    let mut pending = vec![&root];
+    while let Some(node) = pending.pop() {
+        if !references.insert(&node.reference) {
+            bail!("resource identity collision: {}", node.reference);
+        }
+        pending.extend(&node.children);
     }
     sort_children(&mut root);
     Ok(root)
@@ -290,6 +332,7 @@ fn process_node(
         reference: format!("pid:{pid}"),
         name: process.name.clone(),
         kind: "process",
+        grouping: None,
         evidence: evidence.remove(&pid).unwrap_or_default(),
         process: Some(process),
         totals,
@@ -407,6 +450,132 @@ mod tests {
         assert_eq!(
             select(&first, "pid:11").unwrap().process.unwrap().ppid,
             Some(10)
+        );
+    }
+
+    #[test]
+    fn common_git_directory_groups_checkouts_without_merging_clones() {
+        let temp = tempfile::tempdir().unwrap();
+        let main = temp.path().join("owner/project");
+        let a = temp.path().join("checkouts/a");
+        let b = temp.path().join("checkouts/b");
+        let clone = temp.path().join("other/project");
+        let common = main.join(".git");
+        for path in [
+            &a,
+            &b,
+            &clone.join(".git"),
+            &common.join("worktrees/a"),
+            &common.join("worktrees/b"),
+        ] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(
+            a.join(".git"),
+            format!("gitdir: {}\n", common.join("worktrees/a").display()),
+        )
+        .unwrap();
+        std::fs::write(
+            b.join(".git"),
+            "gitdir: ../../owner/project/.git/worktrees/b\n",
+        )
+        .unwrap();
+        std::fs::write(common.join("worktrees/a/commondir"), "../..\n").unwrap();
+        std::fs::write(
+            common.join("worktrees/b/commondir"),
+            format!("{}\n", common.display()),
+        )
+        .unwrap();
+        let mut main_process = process(10, 1, Some(100));
+        main_process.cwd = Some(main.clone());
+        main_process.uptime_seconds = Some(500);
+        let mut a_process = process(11, 10, Some(200));
+        a_process.cwd = Some(a.clone());
+        a_process.uptime_seconds = Some(100);
+        let mut b_process = process(12, 10, None);
+        b_process.cwd = Some(b.clone());
+        let mut clone_process = process(13, 1, Some(400));
+        clone_process.cwd = Some(clone);
+        let tree = build(vec![
+            main_process.clone(),
+            a_process.clone(),
+            b_process.clone(),
+            clone_process,
+        ])
+        .unwrap();
+        let development = select(&tree, "group:projects").unwrap();
+        assert_eq!(development.children.len(), 2);
+        assert_eq!(tree.totals.processes, 4);
+        assert_eq!(tree.totals.resident_bytes, 700);
+        let repository_ref = stable_ref(
+            "repository",
+            &common.canonicalize().unwrap().to_string_lossy(),
+        );
+        let mut repository = select(&tree, &repository_ref).unwrap();
+        assert_eq!(repository.name, "project");
+        assert_eq!(repository.children.len(), 3);
+        assert_eq!(repository.totals.processes, 3);
+        assert_eq!(repository.totals.resident_bytes, 300);
+        assert_eq!(repository.totals.memory_unknown, 1);
+        assert_eq!(repository.totals.oldest_uptime_seconds, Some(500));
+        assert_eq!(repository.totals.uptime_unknown, 1);
+        let old_ref = stable_ref("development", &a.canonicalize().unwrap().to_string_lossy());
+        let checkout = select(&tree, &old_ref).unwrap();
+        assert_eq!(checkout.name, "worktree a");
+        assert_eq!(checkout.totals.processes, 1);
+        assert_eq!(checkout.children[0].reference, "pid:11");
+        assert!(select(&tree, "pid:10").unwrap().children.is_empty());
+        assert!(
+            repository
+                .children
+                .iter()
+                .any(|node| node.name == "main checkout")
+        );
+        let without_main = build(vec![b_process, a_process.clone()]).unwrap();
+        assert_eq!(
+            select(&without_main, &repository_ref).unwrap().name,
+            "project"
+        );
+        assert_eq!(select(&without_main, &old_ref).unwrap().reference, old_ref);
+        let single = build(vec![a_process]).unwrap();
+        let single_group = select(&single, &old_ref).unwrap();
+        assert_eq!(single_group.children[0].kind, "process");
+        assert!(select(&single, &repository_ref).is_err());
+        limit_depth(&mut repository, 0);
+        assert_eq!(repository.omitted_children, 3);
+        assert_eq!(repository.totals.resident_bytes, 300);
+    }
+
+    #[test]
+    fn malformed_common_directory_keeps_checkout_separate() {
+        let temp = tempfile::tempdir().unwrap();
+        let main = temp.path().join("project");
+        let worktree = temp.path().join("worktree");
+        let admin = main.join(".git/worktrees/example");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::create_dir(&worktree).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", admin.display()),
+        )
+        .unwrap();
+        std::fs::write(admin.join("commondir"), "\n").unwrap();
+        let mut a = process(10, 1, Some(100));
+        a.cwd = Some(main);
+        let mut b = process(11, 1, Some(200));
+        b.cwd = Some(worktree.clone());
+        let tree = build(vec![a, b]).unwrap();
+        assert_eq!(select(&tree, "group:projects").unwrap().children.len(), 2);
+        let reference = stable_ref(
+            "development",
+            &worktree.canonicalize().unwrap().to_string_lossy(),
+        );
+        assert!(
+            select(&tree, &reference)
+                .unwrap()
+                .evidence
+                .iter()
+                .any(|reason| reason.starts_with("Repository metadata unavailable:"))
         );
     }
 
@@ -542,10 +711,7 @@ mod tests {
         );
         std::fs::create_dir(directory.path().join(".git")).unwrap();
         let tree = build(vec![app, helper]).unwrap();
-        assert_eq!(
-            select(&tree, "group:development").unwrap().totals.processes,
-            1
-        );
+        assert_eq!(select(&tree, "group:projects").unwrap().totals.processes, 1);
         assert!(select(&tree, "pid:10").unwrap().children.is_empty());
         assert!(
             select(&tree, "pid:10")

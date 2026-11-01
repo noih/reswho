@@ -9,7 +9,7 @@ fn help_is_available_without_resource_collection() {
     assert!(result.status.success());
     assert!(result.stderr.is_empty());
     let text = String::from_utf8(result.stdout).unwrap();
-    assert!(text.contains("reswho-md/4"));
+    assert!(text.contains("reswho-md/7"));
     assert!(text.contains("root=0"));
     assert!(text.contains("▸ marks collapsed children"));
     assert!(text.contains("reswho --md --from REF --depth N"));

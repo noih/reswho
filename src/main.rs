@@ -70,7 +70,7 @@ fn run() -> Result<()> {
         let mut root = tree::select(&root, &args.from)?;
         tree::limit_depth(&mut root, args.depth);
         let snapshot = Snapshot {
-            schema: "reswho/2",
+            schema: "reswho/5",
             captured_unix_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .context("system clock before Unix epoch")?

@@ -95,10 +95,39 @@ impl Totals {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Grouping {
+    Category,
+    App,
+    Repo,
+    Checkout,
+    Project,
+    Bin,
+    System,
+    Unknown,
+}
+
+impl Grouping {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Category => "",
+            Self::App => "app",
+            Self::Repo => "repo",
+            Self::Checkout => "checkout",
+            Self::Project => "project",
+            Self::Bin => "bin",
+            Self::System => "system",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct Node {
     pub reference: String,
     pub name: String,
     pub kind: &'static str,
+    pub grouping: Option<Grouping>,
     pub evidence: Vec<String>,
     pub process: Option<Process>,
     pub totals: Totals,
@@ -107,11 +136,17 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn group(reference: String, name: String, evidence: Vec<String>) -> Self {
+    pub fn group(
+        reference: String,
+        name: String,
+        evidence: Vec<String>,
+        grouping: Grouping,
+    ) -> Self {
         Self {
             reference,
             name,
             kind: "group",
+            grouping: Some(grouping),
             evidence,
             process: None,
             totals: Totals::default(),

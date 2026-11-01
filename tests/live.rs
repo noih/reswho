@@ -54,7 +54,7 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
     assert!(snapshot["root"]["children"].as_array().unwrap().is_empty());
     assert!(snapshot["sample_ms"].as_u64().unwrap() >= 200);
     let tree = Command::new(env!("CARGO_BIN_EXE_reswho"))
-        .args(["--json", "--from", "group:development", "--depth", "all"])
+        .args(["--json", "--from", "group:projects", "--depth", "all"])
         .output()
         .unwrap();
     assert!(tree.status.success());
@@ -83,11 +83,53 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
     assert!(md.contains(" · oldest "));
     assert!(!md.contains("reswho --md --from"));
     assert!(md.contains(&format!(
-        "  - git {}\n",
+        "  > git `{}`\n",
         directory.path().canonicalize().unwrap().display()
     )));
     assert!(!md.contains("Git root from working directory:"));
     assert!(!md.contains('\u{1b}'));
+    std::fs::remove_dir(directory.path().join(".git")).unwrap();
+    std::fs::write(
+        directory.path().join("go.mod"),
+        "module example.test/fixture\n",
+    )
+    .unwrap();
+    let nongit = Command::new(env!("CARGO_BIN_EXE_reswho"))
+        .args(["--json", "--from", "group:projects", "--depth", "all"])
+        .output()
+        .unwrap();
+    assert!(
+        nongit.status.success(),
+        "{}",
+        String::from_utf8_lossy(&nongit.stderr)
+    );
+    let nongit: serde_json::Value = serde_json::from_slice(&nongit.stdout).unwrap();
+    let group = nongit["root"]["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|group| {
+            group["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|node| node["reference"] == reference)
+        })
+        .expect("the same process is classified without Git");
+    assert!(
+        group["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|evidence| {
+                evidence
+                    == &format!(
+                        "project go.mod {}",
+                        directory.path().canonicalize().unwrap().display()
+                    )
+            })
+    );
+    assert_eq!(group["totals"]["processes"], 1);
     let path = directory.path().to_path_buf();
     drop(child);
     directory.close().unwrap();
