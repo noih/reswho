@@ -143,8 +143,8 @@ Runtime：`name`（目前 docker）、`context`、`endpoint_ref`、`daemon_id`�
 | `started_at` | runtime 原始啟動時間字串或 null；Docker 通常為 RFC3339，但不保證來源字串有效，須檢查後才使用 |
 | `uptime_seconds` | 成功解析且適用的本次 running/paused incarnation 時長，否則 null |
 | `cpu_percent` | daemon 單一邏輯核心為100%；與主機取樣不同 |
-| `memory_bytes` | runtime 提供的用量；Linux Docker CLI 來源已扣部分 cache 並經文字數值捨入 |
-| `memory_basis` | 目前 `docker_cli_linux_cache_adjusted_rounded`；讀取者須保留未知來源值 |
+| `memory_bytes` | runtime 提供的用量；Linux Docker 扣除適用的 cgroup inactive file，CLI 來源另經文字數值捨入 |
+| `memory_basis` | `docker_api_linux_cache_adjusted` 為直接 API 的整數 bytes；`docker_cli_linux_cache_adjusted_rounded` 為 CLI 捨入值；讀取者須保留未知來源值 |
 | `ports` | Port 陣列或 null；null 表示未取得／無法解讀，[] 表示沒有發布端點 |
 | `mounts` | Mount 陣列；取得的掛載設定，缺失原因看 unavailable，不可由 [] 單獨證明完整 |
 | `project` | Project 或 null |
@@ -153,6 +153,8 @@ Runtime：`name`（目前 docker）、`context`、`endpoint_ref`、`daemon_id`�
 | `unavailable` | Diagnostic 陣列 |
 
 Port：`protocol` 來源字串、`container_port`（uint16）、`host_ip`（string/null）、`host_port`（uint16/null）。這是發布設定，不是觀測到的 listener／流量。
+
+本機 Unix endpoint 的 Linux Docker stats 使用同輪兩次 one-shot，間隔沿用 `--sample-ms`（預設250ms）；`cpu_percent` 是該輪樣本間的平均，沒有跨輪平滑。SSH／TCP 等端點或不支援的 API 版本沿用 CLI 的取樣方式。`sample_ms` 仍只描述主機取樣階段，不代表容器的實際取樣窗。這些來源差異不改變 JSON 欄位結構；版本仍為 `reswho/8`。
 
 Mount：`kind` 來源類型、`source` 與 `destination` 路徑。遠端 daemon 的路徑不是本機路徑；不自動在本機解析。
 

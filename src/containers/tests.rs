@@ -361,6 +361,7 @@ fn json_contract_preserves_container_attribution_and_scopes() {
     let schema: serde_json::Value = serde_json::from_str(output::JSON_SCHEMA).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let mut active = container("one");
+    active.memory_basis = stats::API_MEMORY_BASIS.into();
     active.project = Some(Project {
         name: "site".into(),
         path: Some("/example/space_中文".into()),

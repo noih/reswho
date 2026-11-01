@@ -16,11 +16,12 @@ pub const FORMAT_HELP: &str = "reswho-md/17 (collection prototype)\n\n\
 | Container | name [container] group:REF · CPU/core  memory  uptime  state  published ports |\n\
 | Category summary | group:REF · CPU/core sum  RSS sum  ⏱︎ uptime  ΣN |\n\
 \n\
-Container groups use container counts and Docker CLI memory, not process RSS.\n\
+Container groups use container counts and runtime memory, not process RSS.\n\
 Host process totals exclude the separate Containers subtree; never add both scopes.\n\
 Docker uses the current context / DOCKER_CONTEXT / DOCKER_HOST; --no-containers skips it.\n\
-Docker CLI queries share a 10s deadline and a 256-container inventory limit; partial inventory uses >=.\n\
-Only the Docker adapter is implemented; Linux daemon stats are rounded CLI values (memory excludes cache).\n\
+Docker queries share a 10s deadline and a 256-container inventory limit; partial inventory uses >=.\n\
+Only Docker is implemented; supported Unix endpoints use fresh paired API samples, other connections use CLI stats.\n\
+API samples use --sample-ms with no cross-refresh smoothing; Docker memory subtracts inactive file cache, CLI values are rounded.\n\
 Container CPU 100% is one daemon logical core; sampling differs from host processes.\n\
 Container active = running/paused/restarting; created/exited/dead metrics are not applicable (-), excluded from unknown counts.\n\
 Container summaries show active / total; unknown activity or incomplete inventory keeps active counts partial.\n\

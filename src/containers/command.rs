@@ -15,12 +15,22 @@ pub(super) struct Output {
 
 pub(super) trait Runner {
     fn run(&mut self, args: &[String]) -> Result<Output>;
+
+    fn direct_stats(
+        &mut self,
+        _host: &str,
+        _ids: &[String],
+    ) -> Result<Option<super::stats::Batch>> {
+        Ok(None)
+    }
 }
 
 pub(super) struct DockerCommand {
     pub cancel: crate::snapshot::Cancellation,
     pub deadline: Instant,
     pub program: std::path::PathBuf,
+    pub sample_interval: Duration,
+    pub api_version: Option<String>,
 }
 
 struct OwnedChild {
@@ -65,6 +75,26 @@ fn drain(pipe: &mut impl Read, buffer: &mut Vec<u8>) -> Result<bool> {
 }
 
 impl Runner for DockerCommand {
+    fn direct_stats(&mut self, host: &str, ids: &[String]) -> Result<Option<super::stats::Batch>> {
+        let Some(socket) = host
+            .strip_prefix("unix://")
+            .filter(|path| std::path::Path::new(path).is_absolute())
+        else {
+            return Ok(None);
+        };
+        let client = super::http::Client {
+            socket: std::path::Path::new(socket),
+            cancel: &self.cancel,
+            deadline: self.deadline,
+        };
+        super::stats::collect(
+            &client,
+            ids,
+            self.sample_interval,
+            self.api_version.as_deref(),
+        )
+    }
+
     fn run(&mut self, args: &[String]) -> Result<Output> {
         self.cancel.check()?;
         if Instant::now() >= self.deadline {
@@ -151,6 +181,8 @@ mod tests {
         let mut runner = DockerCommand {
             cancel: cancel.clone(),
             program: "/bin/sh".into(),
+            sample_interval: Duration::from_millis(250),
+            api_version: None,
             deadline: Instant::now() + Duration::from_secs(10),
         };
         let argument = path.to_string_lossy().into_owned();
@@ -191,6 +223,8 @@ mod tests {
         let mut runner = DockerCommand {
             cancel: crate::snapshot::Cancellation::default(),
             program: "/bin/sh".into(),
+            sample_interval: Duration::from_millis(250),
+            api_version: None,
             deadline: Instant::now() + Duration::from_millis(200),
         };
         let start = Instant::now();
@@ -218,6 +252,8 @@ mod tests {
         let mut runner = DockerCommand {
             cancel: crate::snapshot::Cancellation::default(),
             program: "/bin/sh".into(),
+            sample_interval: Duration::from_millis(250),
+            api_version: None,
             deadline: Instant::now() + Duration::from_secs(2),
         };
         let result = runner

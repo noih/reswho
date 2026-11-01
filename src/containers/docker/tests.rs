@@ -241,3 +241,117 @@ fn default_context_empty_inventory_and_inventory_limit_are_explicit() {
     assert!(!runtime.inventory_complete);
     assert_eq!(runtime.unavailable[0].code, "limit_exceeded");
 }
+
+struct ApiRunner {
+    cli: Fake,
+    transport: crate::containers::command::DockerCommand,
+}
+
+impl Runner for ApiRunner {
+    fn run(&mut self, args: &[String]) -> Result<Output> {
+        self.cli.run(args)
+    }
+
+    fn direct_stats(&mut self, host: &str, ids: &[String]) -> Result<Option<Batch>> {
+        self.transport.direct_stats(host, ids)
+    }
+}
+
+fn api_runner(cli: Fake) -> ApiRunner {
+    ApiRunner {
+        cli,
+        transport: crate::containers::command::DockerCommand {
+            cancel: crate::snapshot::Cancellation::default(),
+            program: "unused-fixture-command".into(),
+            deadline: Instant::now() + std::time::Duration::from_secs(5),
+            sample_interval: std::time::Duration::from_millis(10),
+            api_version: None,
+        },
+    }
+}
+
+#[test]
+fn unix_api_metrics_reach_collection_and_restart_discards_them() {
+    use crate::containers::http::tests::{Reply, Server};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let id = "a".repeat(64);
+    for changed in [false, true] {
+        let container_id = id.clone();
+        let tick = AtomicU64::new(0);
+        let server = Server::new(move |path| {
+            if path == "/version" {
+                return Reply::Json(
+                    serde_json::json!({"ApiVersion":"1.56", "MinAPIVersion":"1.44", "Os":"linux"}),
+                );
+            }
+            let n = tick.fetch_add(1, Ordering::Relaxed) + 1;
+            Reply::Json(serde_json::json!({
+                "id":container_id, "read":format!("2026-01-01T00:00:0{n}Z"),
+                "cpu_stats":{"cpu_usage":{"total_usage":100*n},"system_cpu_usage":1000*n,"online_cpus":4},
+                "memory_stats":{"usage":12345,"stats":{"inactive_file":345}}
+            }))
+        });
+        let mut cli = configured(&id, &format!("unix://{}", server.socket.display()));
+        cli.replies.remove(4);
+        if changed {
+            let mut detail = inspect(&id);
+            detail["started_at"] = "2026-01-01T00:30:00Z".into();
+            cli.text(4, detail.to_string());
+        }
+        let mut runner = api_runner(cli);
+        let (runtime, containers) = collect(&mut runner, Some("test".into()), None, now());
+        assert!(runner.cli.replies.is_empty());
+        assert!(
+            !runner
+                .cli
+                .calls
+                .iter()
+                .any(|args| args.iter().any(|arg| arg == "stats"))
+        );
+        assert_eq!(containers[0].memory_basis, API_MEMORY_BASIS);
+        if changed {
+            assert_eq!(containers[0].cpu_percent, None);
+            assert_eq!(containers[0].memory_bytes, None);
+            assert!(
+                containers[0]
+                    .unavailable
+                    .iter()
+                    .any(|d| d.code == "identity_unverified")
+            );
+        } else {
+            assert_eq!(containers[0].cpu_percent, Some(40.0));
+            assert_eq!(containers[0].memory_bytes, Some(12000));
+            assert!(runtime.unavailable.is_empty());
+        }
+    }
+}
+
+#[test]
+fn unsupported_endpoints_and_old_engines_keep_cli_collection() {
+    use crate::containers::http::tests::{Reply, Server};
+    let id = "b".repeat(64);
+    let server = Server::new(|path| {
+        assert_eq!(path, "/version");
+        Reply::Json(serde_json::json!({"ApiVersion":"1.40", "Os":"linux"}))
+    });
+    for endpoint in [
+        format!("unix://{}", server.socket.display()),
+        "ssh://test".into(),
+        "tcp://test:2376".into(),
+    ] {
+        let mut runner = api_runner(configured(&id, &endpoint));
+        let (runtime, containers) = collect(&mut runner, Some("test".into()), None, now());
+        assert!(runtime.unavailable.is_empty());
+        assert_eq!(containers[0].memory_basis, CLI_MEMORY_BASIS);
+        assert_eq!(containers[0].memory_bytes, Some(1572864));
+        assert!(runner.cli.replies.is_empty());
+        assert!(
+            runner
+                .cli
+                .calls
+                .iter()
+                .any(|args| args.iter().any(|arg| arg == "stats"))
+        );
+    }
+    assert_eq!(server.paths.lock().unwrap().len(), 1);
+}

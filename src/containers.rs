@@ -2,7 +2,11 @@ use crate::model::{Attribution, AttributionSource};
 mod attribution;
 mod command;
 mod docker;
+mod http;
+#[cfg(test)]
+mod measure;
 mod model;
+mod stats;
 
 use crate::{
     model::{Grouping, Node},
@@ -16,14 +20,22 @@ use std::{
 };
 
 pub fn collect() -> Result<Node> {
-    collect_with_cancel(&crate::snapshot::Cancellation::default())
+    collect_with_cancel(
+        &crate::snapshot::Cancellation::default(),
+        Duration::from_millis(250),
+    )
 }
 
-pub(crate) fn collect_with_cancel(cancel: &crate::snapshot::Cancellation) -> Result<Node> {
+pub(crate) fn collect_with_cancel(
+    cancel: &crate::snapshot::Cancellation,
+    sample_interval: Duration,
+) -> Result<Node> {
     let mut runner = command::DockerCommand {
         cancel: cancel.clone(),
         program: "docker".into(),
         deadline: Instant::now() + Duration::from_secs(10),
+        sample_interval,
+        api_version: std::env::var("DOCKER_API_VERSION").ok(),
     };
     let (runtime, containers) = docker::collect(
         &mut runner,

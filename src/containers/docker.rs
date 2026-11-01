@@ -2,6 +2,7 @@ use super::{
     attribution,
     command::{Output, Runner},
     model::{Container, Mount, Port, Runtime},
+    stats::{API_MEMORY_BASIS, Batch, CLI_MEMORY_BASIS, Metrics},
 };
 use crate::model::Diagnostic;
 use crate::tree::{projects::Discovery, stable_ref};
@@ -251,7 +252,22 @@ fn stats(
     source: &Source,
     ids: &[String],
     issues: &mut Vec<Diagnostic>,
-) -> BTreeMap<String, Stats> {
+) -> Batch {
+    match runner.direct_stats(&source.host, ids) {
+        Ok(Some(batch)) => return batch,
+        Ok(None) => {}
+        Err(error) => {
+            return Batch {
+                metrics: BTreeMap::new(),
+                memory_basis: API_MEMORY_BASIS,
+                unavailable: vec![Diagnostic::new(
+                    "unavailable",
+                    "docker.stats",
+                    error.to_string(),
+                )],
+            };
+        }
+    }
     let mut result = BTreeMap::new();
     for batch in ids.chunks(BATCH_SIZE) {
         let output = match request(
@@ -294,7 +310,13 @@ fn stats(
         {
             match serde_json::from_slice::<Stats>(line) {
                 Ok(stat) if batch.contains(&stat.id) && !parsed.contains_key(&stat.id) => {
-                    parsed.insert(stat.id.clone(), stat);
+                    parsed.insert(
+                        stat.id,
+                        Metrics {
+                            cpu_percent: stat.cpu.strip_suffix('%').and_then(number),
+                            memory_bytes: memory_bytes(&stat.memory),
+                        },
+                    );
                 }
                 _ => invalid = true,
             }
@@ -309,7 +331,11 @@ fn stats(
             result.extend(parsed);
         }
     }
-    result
+    Batch {
+        metrics: result,
+        memory_basis: CLI_MEMORY_BASIS,
+        unavailable: Vec::new(),
+    }
 }
 
 fn ports(inspect: &Inspect) -> Option<Vec<Port>> {
@@ -460,7 +486,7 @@ fn collect_inner(
         })
         .cloned()
         .collect();
-    let metrics = if info.os == "linux" {
+    let batch = if info.os == "linux" {
         stats(runner, &source, &active_ids, &mut runtime.unavailable)
     } else {
         runtime.unavailable.push(Diagnostic::new(
@@ -468,8 +494,14 @@ fn collect_inner(
             "docker.stats",
             "container metrics require a Linux Docker daemon",
         ));
-        BTreeMap::new()
+        Batch {
+            metrics: BTreeMap::new(),
+            memory_basis: CLI_MEMORY_BASIS,
+            unavailable: Vec::new(),
+        }
     };
+    runtime.unavailable.extend(batch.unavailable);
+    let metrics = batch.metrics;
     let after = if !metrics.is_empty() {
         inspections(runner, &source, &active_ids, &mut runtime.unavailable)
     } else {
@@ -483,7 +515,7 @@ fn collect_inner(
             endpoint_ref: runtime.endpoint_ref.clone().unwrap_or_default(),
             name: id[..12].into(),
             id: id.clone(),
-            memory_basis: "docker_cli_linux_cache_adjusted_rounded".into(),
+            memory_basis: batch.memory_basis.into(),
             ..Container::default()
         };
         if let Some(inspect) = before.get(&id)
@@ -498,8 +530,8 @@ fn collect_inner(
                     })
             });
             if stable {
-                container.cpu_percent = metric.cpu.strip_suffix('%').and_then(number);
-                container.memory_bytes = memory_bytes(&metric.memory);
+                container.cpu_percent = metric.cpu_percent;
+                container.memory_bytes = metric.memory_bytes;
             } else {
                 container.unavailable.push(Diagnostic::new(
                     "identity_unverified",

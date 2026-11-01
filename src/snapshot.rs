@@ -48,7 +48,7 @@ pub fn capture(options: &Options, cancel: &Cancellation) -> Result<Snapshot> {
     let mut root = tree::build(collection.processes)?;
     if options.containers {
         cancel.check()?;
-        match containers::collect_with_cancel(cancel) {
+        match containers::collect_with_cancel(cancel, options.sample_interval) {
             Ok(containers) => root.children.push(containers),
             Err(error) => collection.warnings.push(crate::model::Diagnostic::new(
                 "collection_failed",

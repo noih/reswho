@@ -24,6 +24,35 @@ TUI state and TestBackend tests cover sorting, search ancestry, filtering withou
 
 Docker metadata is queried afresh on every collection. Historical refresh cost measurements and their limits are recorded in [docs/refresh-performance.md](docs/refresh-performance.md).
 
+Direct Docker stats tests own temporary Unix socket servers, socket connections and joined server threads. They cover chunked/oversized/truncated HTTP bodies, error redaction, redirects, four-request concurrency, cancellation and deadlines, fresh paired counters, cgroup memory accounting, API negotiation, CLI fallback and restart rejection through the collector. Ordinary tests still never contact real Docker. The production client uses libcurl multi in the collecting thread, with bounded responses parsed one batch at a time; sockets and handles are dropped on success, failure or cancellation.
+
+Explicit read-only Docker phase timing uses the existing command runner and collector, with no cache or service lifecycle changes:
+
+```sh
+cargo test --locked --lib containers::measure::measure_docker_collection -- --ignored --nocapture --test-threads=1
+```
+
+This ignored measurement runs three sequential rounds within a 40-second budget, preserving the collector's per-round 10-second deadline. It records anonymous per-command timings, batch sizes, output byte counts and diagnostic codes, then stops on incomplete collection. It also measures `docker --version` as a local CLI startup/handling reference, not pure process-spawn cost. No names, IDs, paths, endpoints or raw stderr are printed. Owned CLI processes and pipes are reclaimed by the existing runner; only summary timings should be retained. Do not run other builds or benchmarks concurrently with this measurement.
+
+On a supported Unix endpoint, `stats.api` includes version negotiation, both one-shot passes and the sampling wait. Its `output_bytes` is 0 because this harness does not count API response bytes. `non_command_ms` excludes that timed API stage as well as CLI commands. Historical CLI-only timings remain documented with their original revision.
+
+To measure the complete host + Docker capture with the production snapshot path, prebuild once and run the explicit three-round check within its 40-second measurement budget:
+
+```sh
+cargo test --locked --lib --no-run
+cargo test --locked --lib containers::measure::measure_full_snapshot -- --ignored --nocapture --test-threads=1
+```
+
+It prints anonymous capture/runtime durations, counts, metric sources and container completeness. It stops on container diagnostics or missing active metrics. Host warning counts include static collection notes; they do not establish completeness of individual process data. Capture timings exclude rendering and CLI startup. The same read-only and resource cleanup rules apply; do not run another benchmark concurrently.
+
+The separate, read-only stats experiment requires Python 3.9+, Docker CLI and a selected Unix endpoint backed by Linux Engine API 1.41+:
+
+```sh
+python3 scripts/measure_docker_stats.py
+```
+
+It compares CLI no-stream, direct non-streaming API, and two fresh one-shot samples separated by 250ms. It schedules three rounds with rotated mode order, at most eight running containers and four concurrent API requests. Its total budget is 60 seconds; CLI calls have a 10-second timeout and socket I/O a 5-second timeout, both bounded by the remaining budget. Each comparison checks identity/state before and after stats; incomplete data stops the experiment with a nonzero exit. Existing workloads can change during measurement, so a stopped run is not a passing three-round benchmark. API timings exclude inventory and identity checks. Summaries contain no container identifiers or raw responses. All data remains in memory; CLI children are reaped, and pipes, HTTP responses, sockets and executor workers are reclaimed. The script does not change production collection or start services. Do not run concurrent builds or benchmarks; retain incomplete results and their limits alongside successful comparisons in the performance notes.
+
 Explicit macOS PTY smoke verification requires Python 3:
 
 ```sh
