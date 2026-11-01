@@ -73,7 +73,7 @@ fn container_scope_counts_once_and_remains_queryable_after_collapse() {
         root: selected,
     };
     let md = output::markdown(&snapshot);
-    assert!(md.contains("2 containers ▸"));
+    assert!(md.contains("2 containers [+1]"));
     assert!(md.contains("1 unknown"));
     assert!(!md.contains("2 processes"));
     assert_eq!(
@@ -183,7 +183,7 @@ fn partial_inventory_and_container_markdown_preserve_semantics() {
         root: branch,
     };
     let md = output::markdown(&snapshot);
-    assert!(md.contains("· >=0.0% · ? · oldest >=1m · >=1 active / >=1 containers"));
+    assert!(md.contains("· >=0.0%  ?  ⏱︎ >=1m  >=1 active / >=1 containers"));
     assert!(!md.contains(">=>="));
     assert!(md.contains("> ~ Container project inferred:"));
     assert_eq!(md.matches("space and`tick").count(), 1);
@@ -262,16 +262,16 @@ fn inactive_containers_do_not_make_active_metrics_unknown() {
         root: branch,
     };
     let md = output::markdown(&snapshot);
-    assert!(md.contains("oldest 1m · 1 active / 2 containers"));
-    assert!(md.contains("· - · - · - · exited"));
+    assert!(md.contains("⏱︎ 1m  1 active / 2 containers"));
+    assert!(md.contains("· -  -  -  exited"));
     assert!(!md.contains("unknown"));
     assert!(!md.contains(">="));
     active.memory_bytes = None;
     snapshot.root = build(runtime("endpoint-a"), vec![active, exited.clone()]).unwrap();
-    assert!(output::markdown(&snapshot).contains("· 0.0% · ? · oldest 1m"));
+    assert!(output::markdown(&snapshot).contains("· 0.0%  ?  ⏱︎ 1m"));
     snapshot.root = build(runtime("endpoint-a"), vec![exited]).unwrap();
     let md = output::markdown(&snapshot);
-    assert!(md.contains("· - · - · oldest - · 0 active / 1 containers"));
+    assert!(md.contains("· -  -  ⏱︎ -  0 active / 1 containers"));
     assert!(!md.contains("unknown"));
 }
 
@@ -353,5 +353,5 @@ fn unknown_and_transitional_activity_remains_distinct_from_inactive() {
         root,
     };
     let md = output::markdown(&snapshot);
-    assert!(md.contains("· ? · ? · oldest ? · ? active / 1 containers ▸"));
+    assert!(md.contains("· ?  ?  ⏱︎ ?  ? active / 1 containers [+1]"));
 }

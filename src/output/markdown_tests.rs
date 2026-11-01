@@ -53,15 +53,15 @@ fn report_categories_quotes_and_process_lists_have_distinct_structure() {
     let snapshot = fixture_snapshot();
     let md = markdown(&snapshot);
     assert!(md.starts_with("# reswho\n\n"));
-    assert!(md.contains("reswho-md/11"));
+    assert!(md.contains("reswho-md/17"));
     assert!(!md.contains("Collection prototype:"));
     assert_eq!(md.matches("> ! Host swap:").count(), 1);
-    assert!(!md.contains("Resources · group:all"));
+    assert!(!md.contains("Resources group:all"));
     assert!(md.contains("Host CPU"));
     assert!(!md.contains("- Resources"));
-    assert!(md.contains("## Applications\n\ngroup:applications ·"));
-    assert!(md.contains("## Unclassified\n\ngroup:unclassified ·"));
-    assert_eq!(md.matches("Unreadable · 2 processes").count(), 1);
+    assert!(md.contains("## Applications\n\ngroup:applications · "));
+    assert!(md.contains("## Unclassified\n\ngroup:unclassified · "));
+    assert_eq!(md.matches("Unreadable  Σ2").count(), 1);
     assert!(!md.contains("pid:30"));
     assert!(!md.contains("~"));
     let mut headings = Vec::new();
@@ -117,16 +117,16 @@ fn markdown_flattens_system_before_depth_without_changing_json_or_refs() {
     let before = serde_json::to_value(&snapshot).unwrap();
     let md = markdown_with_depth(&snapshot, 2);
     assert!(md.contains("Host CPU 30.0%"));
-    assert!(!md.contains("Resources ·"));
+    assert!(!md.contains("Resources "));
     assert!(md.contains("## System"));
     assert!(md.contains("pid:99 · 240.0%"));
     assert!(!md.contains("System services [system]"));
     let shallow = markdown_with_depth(&snapshot, 1);
     assert!(shallow.contains("## System"));
-    assert!(shallow.contains("▸"));
+    assert!(shallow.contains("[+1]"));
     assert!(!shallow.contains("pid:99"));
     let root_only = markdown_with_depth(&snapshot, 0);
-    assert!(root_only.contains("1 processes ▸"));
+    assert!(root_only.contains("Σ1 [+1]"));
     assert!(!root_only.contains("## System"));
     let after = serde_json::to_value(&snapshot).unwrap();
     assert_eq!(before, after);
@@ -139,8 +139,8 @@ fn markdown_flattens_system_before_depth_without_changing_json_or_refs() {
     snapshot.root = tree::select(&snapshot.root, &wrapper).unwrap();
     snapshot.scope = wrapper.clone();
     let scoped = markdown_with_depth(&snapshot, 0);
-    assert!(scoped.contains(&format!("System services [system] · {wrapper}")));
-    assert!(scoped.contains("▸"));
+    assert!(scoped.contains(&format!("System services [system] {wrapper}")));
+    assert!(scoped.contains("[+1]"));
 }
 
 #[test]
@@ -160,12 +160,10 @@ fn adjacent_groups_keep_notes_and_children_together() {
     second.executable = Some("/Applications/Second.app/Contents/MacOS/Second".into());
     snapshot.root = tree::build(vec![parent, helper, second]).unwrap();
     let md = markdown(&snapshot);
-    assert!(
-        md.contains("processes\n    > app `/Applications/Example.app`\n    - Example · pid:10")
-    );
-    assert!(md.contains("1h · -\n        - helper · pid:11"));
-    assert!(md.contains("1h · -\n\n- Second [app]"));
-    assert!(md.contains("processes\n    > app `/Applications/Second.app`\n    - Second · pid:20"));
+    assert!(md.contains("Σ2\n    > app `/Applications/Example.app`\n    - Example pid:10"));
+    assert!(md.contains("1h  -\n        - helper pid:11"));
+    assert!(md.contains("1h  -\n\n- Second [app]"));
+    assert!(md.contains("Σ1\n    > app `/Applications/Second.app`\n    - Second pid:20"));
 
     let mut item_depth = 0;
     let mut quote_depth = 0;
@@ -198,13 +196,12 @@ fn root_selection_and_depth_limits_keep_refs_totals_and_omission_markers() {
         tree::limit_depth(&mut snapshot.root, depth);
         let md = markdown(&snapshot);
         assert_eq!(snapshot.root.totals.processes, 4);
-        assert!(md.contains("4 processes"));
+        assert!(md.contains("Σ4"));
         assert_eq!(md.contains("## Applications"), depth > 0);
         assert_eq!(md.contains("pid:10"), depth >= 3);
         assert!(!md.contains("pid:11"));
-        if depth < 3 {
-            assert!(md.contains("▸"));
-        }
+        let expected = if depth == 0 { "Σ4 [+2]" } else { "[+1]" };
+        assert!(md.contains(expected), "{md}");
     }
     let mut group_snapshot = fixture_snapshot();
     let group = group_snapshot
@@ -219,7 +216,7 @@ fn root_selection_and_depth_limits_keep_refs_totals_and_omission_markers() {
     group_snapshot.root = tree::select(&group_snapshot.root, &group.reference).unwrap();
     tree::limit_depth(&mut group_snapshot.root, 1);
     let group_md = markdown(&group_snapshot);
-    assert!(group_md.contains(&format!("\nExample [app] · {}", group.reference)));
+    assert!(group_md.contains(&format!("\nExample [app] {}", group.reference)));
     assert!(!group_md.contains("## Applications"));
     assert!(group_md.contains("pid:10"));
     assert!(!group_md.contains("pid:11"));
@@ -228,7 +225,7 @@ fn root_selection_and_depth_limits_keep_refs_totals_and_omission_markers() {
     snapshot.root = tree::select(&snapshot.root, "pid:11").unwrap();
     snapshot.scope = "pid:11".into();
     let md = markdown(&snapshot);
-    assert!(md.contains("\nhelper · pid:11"));
+    assert!(md.contains("\nhelper pid:11"));
     assert!(!md.contains("## Applications"));
     assert!(md.contains("> ~ Inferred from ancestor pid:10:"));
     assert!(md.contains("same UID and working directory"));
@@ -238,7 +235,7 @@ fn root_selection_and_depth_limits_keep_refs_totals_and_omission_markers() {
     snapshot.scope = "pid:30".into();
     let md = markdown(&snapshot);
     assert!(md.contains("> ! Unavailable: identity: Operation not permitted (os error 1)"));
-    assert!(!md.contains("Unreadable ·"));
+    assert!(!md.contains("Unreadable  "));
 }
 
 #[test]
@@ -323,9 +320,9 @@ fn diagnostic_markers_do_not_guess_permission_or_mark_idle_processes() {
     unreadable_snapshot.root = tree::build(vec![process]).unwrap();
     unreadable_snapshot.warnings.clear();
     let md = markdown(&unreadable_snapshot);
-    assert!(md.contains("? · ? · oldest ? · 1 processes"));
-    assert!(md.contains("- Unreadable · 1 processes\n"));
+    assert!(md.contains("?  ?  ⏱︎ ?  Σ1"));
+    assert!(md.contains("- Unreadable  Σ1\n"));
     assert!(!md.contains("pid:30"));
     assert!(!md.contains("permission"));
-    assert!(!md.contains("▸"));
+    assert!(!md.contains("[+"));
 }

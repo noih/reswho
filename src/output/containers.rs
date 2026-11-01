@@ -10,7 +10,7 @@ pub(super) fn totals(reference: &str, totals: &ContainerTotals, collapsed: &str)
         }
     };
     if totals.containers == 0 && !totals.inventory_complete {
-        return format!("{reference} · ? · ? · oldest ? · ? active / ? containers{collapsed}");
+        return format!("{reference} · ?  ?  ⏱︎ ?  ? active / ? containers{collapsed}");
     }
     let active = if totals.activity_unknown > 0 || !totals.inventory_complete {
         if totals.active_containers == 0 {
@@ -23,7 +23,7 @@ pub(super) fn totals(reference: &str, totals: &ContainerTotals, collapsed: &str)
     };
     let [cpu, memory, age] = summary_metrics(totals);
     format!(
-        "{reference} · {cpu} · {memory} · oldest {age} · {active} active / {} containers{collapsed}",
+        "{reference} · {cpu}  {memory}  ⏱︎ {age}  {active} active / {} containers{collapsed}",
         scope_value(totals.containers.to_string())
     )
 }
@@ -93,7 +93,7 @@ pub(super) fn row(node: &Node, container: &Container) -> String {
         }
     };
     format!(
-        "{} [container] · {} · {} · {} · {} · {} · {ports}",
+        "{} [container] {} · {}  {}  {}  {}  {ports}",
         name_markdown(&node.name),
         node.reference,
         metric(percent(container.cpu_percent)),

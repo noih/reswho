@@ -6,13 +6,13 @@ pub(crate) mod containers;
 #[cfg(test)]
 mod markdown_tests;
 
-pub const FORMAT_HELP: &str = "reswho-md/11 (collection prototype)\n\n\
+pub const FORMAT_HELP: &str = "reswho-md/17 (collection prototype)\n\n\
 | Row | Fields, in order |\n\
 | --- | --- |\n\
-| Process | name · pid ref · CPU/core · RSS · uptime · ports |\n\
-| Group | name [grouping] · group ref · CPU/core sum · RSS sum · oldest uptime · process count |\n\
-| Container | name [container] · group ref · CPU/core · memory · uptime · state · published ports |\n\
-| Category summary | group ref · CPU/core sum · RSS sum · oldest uptime · process count |\n\
+| Process | name pid:REF · CPU/core  RSS  uptime  ports |\n\
+| Group | name [grouping] group:REF · CPU/core sum  RSS sum  ⏱︎ uptime  ΣN |\n\
+| Container | name [container] group:REF · CPU/core  memory  uptime  state  published ports |\n\
+| Category summary | group:REF · CPU/core sum  RSS sum  ⏱︎ uptime  ΣN |\n\
 \n\
 Container groups use container counts and Docker CLI memory, not process RSS.\n\
 Host process totals exclude the separate Containers subtree; never add both scopes.\n\
@@ -38,11 +38,12 @@ Group details stay together; blank lines separate sibling groups. Consecutive PI
 ! starts a diagnostic note with an observed error; ~ marks an explicit inference with source and conditions.\n\
 Neither mark means a process is safe to stop. Low CPU or long uptime alone adds no diagnostic.\n\
 Static collection limitations live here; snapshots retain current errors, deduplicated within their scope.\n\
+Names, grouping tags and refs use single spaces; a middle dot separates the ref from metrics; metric fields use two spaces in raw Markdown.\n\
 Names and refs are plain text; paths use inline code to preserve literal characters.\n\
 A bin containing only one process is shown directly as a PID; its group ref exists only for multiple processes.\n\
 Uptime is elapsed time since process start, including idle time.\n\
-Group oldest is the longest known member uptime, not active use or the group's lifetime.\n\
-oldest >=2h means at least 2h with unknown members; oldest ? means unavailable.\n\
+Group ⏱︎ is the longest known member uptime, not active use or the group's lifetime; the symbol requests text presentation.\n\
+⏱︎ >=2h means at least 2h with unknown members; ⏱︎ ? means unavailable, ⏱︎ - means not applicable.\n\
 CPU 100% means one logical core for processes/groups; host CPU is 0–100%.\n\
 Memory uses binary units (KiB/MiB/GiB). Process rows show own RSS.\n\
 Group rows sum known descendant values once; shared pages can overlap.\n\
@@ -79,7 +80,8 @@ Ancestor attribution is labelled inferred and requires matching UID/cwd and comp
 A direct app/project assignment wins; different or missing cwd prevents ancestor inference.\n\
 Cwd/exe paths are hints, not proof that a process is no longer needed.\n\
 --from REF selects a branch; --depth N counts edges from that branch (root=0).\n\
-Depth limits presentation only. ▸ marks collapsed children.\n\
+ΣN is the total host process count, including all descendants; Unreadable uses its combined process count.\n\
+Depth limits presentation only. [+N] counts collapsed direct children, not all descendants or processes; children can be groups or processes.\n\
 Copy REF from the row. Use --depth all for unlimited expansion.\n\
 \n\
 ```sh\n\
@@ -126,7 +128,7 @@ fn render_markdown(snapshot: &Snapshot) -> String {
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "# reswho\n\nFormat: reswho-md/11 · help: reswho --help-format  "
+        "# reswho\n\nFormat: reswho-md/17 · help: reswho --help-format  "
     );
     let _ = writeln!(
         text,
@@ -146,13 +148,9 @@ fn render_markdown(snapshot: &Snapshot) -> String {
             .map_or("?".into(), |value| value.to_string()),
         if snapshot.root.reference == "group:all" {
             format!(
-                " · {} processes{}",
+                " · Σ{}{}",
                 snapshot.root.totals.processes,
-                if snapshot.root.omitted_children > 0 {
-                    " ▸"
-                } else {
-                    ""
-                }
+                collapsed_marker(&snapshot.root)
             )
         } else {
             String::new()
@@ -208,17 +206,21 @@ fn write_notes(text: &mut String, notes: impl IntoIterator<Item = String>, inden
     }
 }
 
-fn group_values(node: &Node) -> String {
-    let collapsed = if node.omitted_children > 0 {
-        " ▸"
+fn collapsed_marker(node: &Node) -> String {
+    if node.omitted_children > 0 {
+        format!(" [+{}]", node.omitted_children)
     } else {
-        ""
-    };
+        String::new()
+    }
+}
+
+fn group_values(node: &Node) -> String {
+    let collapsed = collapsed_marker(node);
     if let Some(totals) = &node.container_totals {
-        return containers::totals(&node.reference, totals, collapsed);
+        return containers::totals(&node.reference, totals, &collapsed);
     }
     format!(
-        "{} · {} · {} · oldest {} · {} processes{collapsed}",
+        "{} · {}  {}  ⏱︎ {}  Σ{}{collapsed}",
         node.reference,
         group_cpu(&node.totals),
         group_memory(&node.totals),
@@ -233,14 +235,10 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
     if let Some(container) = &node.container {
         let _ = writeln!(text, "{indent}{bullet}{}", containers::row(node, container));
     } else if let Some(process) = &node.process {
-        let collapsed = if node.omitted_children > 0 {
-            " ▸"
-        } else {
-            ""
-        };
+        let collapsed = collapsed_marker(node);
         let _ = writeln!(
             text,
-            "{indent}{bullet}{} · {} · {} · {} · {} · {}{collapsed}",
+            "{indent}{bullet}{} {} · {}  {}  {}  {}{collapsed}",
             name_markdown(&node.name),
             node.reference,
             percent(process.cpu_percent),
@@ -260,7 +258,7 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
         };
         let _ = writeln!(
             text,
-            "{indent}{bullet}{}{grouping} · {}",
+            "{indent}{bullet}{}{grouping} {}",
             name_markdown(&node.name),
             group_values(node)
         );
@@ -321,7 +319,7 @@ fn write_children(text: &mut String, node: &Node, level: usize, categories: bool
             blank_line(text);
         }
         let indent = "    ".repeat(level.saturating_sub(1));
-        let _ = writeln!(text, "{indent}- Unreadable · {unreadable} processes");
+        let _ = writeln!(text, "{indent}- Unreadable  Σ{unreadable}");
     }
 }
 
@@ -609,16 +607,16 @@ mod tests {
         let mut overview = String::new();
         write_node(&mut overview, &tree, 0);
         assert!(overview.contains("shell [bin]"));
-        assert!(overview.contains("Resources · group:all"));
+        assert!(overview.contains("Resources group:all"));
         assert!(overview.contains("## Unclassified\n\ngroup:unclassified"));
         assert!(!overview.contains("**"));
         assert!(!overview.contains("`pid:"));
         assert!(!overview.contains("`group:"));
         assert!(overview.contains("  > exe `/bin/shell`\n"));
         assert!(!overview.contains("  - exe /bin/shell"));
-        assert!(overview.contains("shell · pid:10"));
-        assert!(overview.contains("helper · pid:11"));
-        assert!(overview.contains("Unreadable · 2 processes\n"));
+        assert!(overview.contains("shell pid:10"));
+        assert!(overview.contains("helper pid:11"));
+        assert!(overview.contains("Unreadable  Σ2\n"));
         assert_eq!(overview.matches("Unreadable").count(), 1);
         for hidden in [
             "pid:20",
@@ -672,7 +670,7 @@ mod tests {
         tree::limit_depth(&mut root, 0);
         let mut text = String::new();
         write_node(&mut text, &root, 0);
-        assert!(text.contains(" · oldest >=2h · 3 processes ▸\n"));
+        assert!(text.contains("  ⏱︎ >=2h  Σ3 [+1]\n"));
         root.totals.uptime_unknown = 0;
         assert_eq!(group_uptime(&root.totals), "2h");
         root.totals.oldest_uptime_seconds = Some(0);

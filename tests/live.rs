@@ -82,8 +82,8 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
     let md = String::from_utf8(md.stdout).unwrap();
     assert!(md.starts_with("# reswho\n"));
     assert!(md.contains(group_ref));
-    assert!(md.contains("1 processes ▸\n"));
-    assert!(md.contains(" · oldest "));
+    assert!(md.contains("Σ1 [+1]\n"));
+    assert!(md.contains("  ⏱︎ "));
     assert!(!md.contains("reswho --md --from"));
     assert!(md.contains(&format!(
         "> git `{}`",

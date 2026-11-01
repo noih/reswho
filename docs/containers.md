@@ -1,6 +1,6 @@
 # 容器採集
 
-已實作 Docker 唯讀 adapter。Tenqo：rw-9。Markdown `reswho-md/11`，JSON `reswho/7`。Podman、Apple container 尚未接入。
+已實作 Docker 唯讀 adapter。Tenqo：rw-9。Markdown `reswho-md/17`，JSON `reswho/7`。Podman、Apple container 尚未接入。
 
 ## 連線與範圍
 
@@ -26,7 +26,7 @@
 
 ## 資料與統計
 
-- 容器行：`name [container] · group ref · CPU · memory · uptime · state · published ports`。
+- 容器行：`name [container] group:REF · CPU  memory  uptime  state  published ports`。
 - runtime／專案群組顯示 `active / containers`，JSON 的 `container_totals` 分開記錄 `active_containers`、`inactive_containers`、`activity_unknown`；原 `totals` 只統計主機程序。全機 Resources 不加上 Containers 子樹用量，避免 VM 與內部用量重複計算。
 - Linux daemon 使用 `docker stats --no-stream --no-trunc` 的 CPU／memory。CPU 100% 為 daemon 的一個 logical core；memory 為 CLI 已扣除 cache 的數值，非主機程序 RSS。CLI 已四捨五入，JSON 的 bytes 是換算值，`memory_basis` 明示來源，不能視為 byte 精度量測。
 - 採集所有生命週期狀態的容器；只對 running／paused 取得 stats。created／exited／dead 的 CPU／memory／uptime 不適用，以 `-` 顯示，不計入 unknown 與 oldest；JSON 原指標維持 null，不偽造零值。running／paused／restarting 計入 active；removing、未知或缺失狀態的活動性維持未知，不能當成 inactive。啟動時間原字串仍保留。

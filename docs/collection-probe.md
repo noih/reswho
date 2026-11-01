@@ -35,7 +35,7 @@ cargo run -- --help-format
 - 同一組內的父子關係須有相容的啟動時間；循環或超過 128 層的異常鏈轉為明示的獨立根，避免遺失或重複程序。
 - group ID 使用分類與來源 key 的 SHA-256 前 16 hex；同一快照會檢查碰撞並拒絕混組。識別規則屬原型契約，未來若改變必須更新格式版本。
 - 深度從選取起點 0 計算，預設 2；metadata 不算資源階層。限制深度不改變已計算的 totals。
-- Markdown 收合標記為原列尾端的 `▸`，不另列展開指令；用法見 `--help-format`。此標記僅影響顯示，ref 與 JSON omitted_children 不變。
+- Markdown 收合標記為原列尾端的 `[+N]`（收合的直接子項數），不另列展開指令；用法見 `--help-format`。此標記僅影響顯示，ref 與 JSON omitted_children 不變。
 - 路徑證據簡寫為 `app PATH`／`git PATH`，意義集中在 `--help-format`，不逐項描述辨識步驟。
 
 ## Projects 與分類優先級
@@ -63,11 +63,11 @@ Bin 對尚未歸入 App／Project 的程序樹，依根程序完整 executable �
 群組使用 `[app]`、`[repo]`、`[checkout]`、`[project]`、`[bin]`、`[system]`、`[unknown]` 標示方式；分類層不重複標籤。選擇 A：程序名稱完整保留，不以 `=` 省略。名稱與 ref 使用一般文字，不加粗體或 ref 反引號；路徑使用行內 code，避免特殊字元被 Markdown 解讀。格式標記只用於區分語意或保護字面值：`-` 清單表示資源樹，縮排 `>` 引用表示屬性／證據／診斷，並不佔資源深度。單一 PID 的路徑與詳細資訊透過 `--from pid:N` 查詢。
 
 ```markdown
-- zsh [bin] · group:59833aa5a5a1a836 · 0.0% · 31.4MiB · oldest 11d · 50 processes
+- zsh [bin] group:59833aa5a5a1a836 · 0.0%  31.4MiB  ⏱︎ 11d  Σ50
 
     > exe `/bin/zsh`
 
-    - zsh · pid:75554 · 0.0% · 1.5MiB · 5h · -
+    - zsh pid:75554 · 0.0%  1.5MiB  5h  -
 ```
 
 格式版本為 `reswho-md/10`／`reswho/7`。大分類以標題呈現、根與分類摘要為段落；診斷 `!`／推論 `~` 僅用於附註，詳見 [Markdown 輸出格式](markdown-format.md)。JSON Node 新增 `grouping`，群組值為 category/app/repo/checkout/project/bin/system/unknown/runtime/container，程序為 null。容器資訊使用 container、runtime 與 container_totals 欄位，與主機 totals 分開。資源與 evidence 分開，JSON 不加入 Markdown 標記。
@@ -104,7 +104,7 @@ FFI buffer 使用 libc／libproc 的固定 C struct，以實際回傳長度驗�
 
 參考：[Apple proc_info.h](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info.h)、[sysinfo macOS counter 實作](https://docs.rs/sysinfo/0.40.1/src/sysinfo/unix/apple/macos/process.rs.html)。計數器直接使用 libc／mach2，socket struct 使用 libproc，沒有 sysinfo 相依。
 
-Markdown 在群組 RAM 後顯示 `oldest`：組內最長的已知 uptime，包含閒置時間；未知成員存在時加 `>=`，全部未知為 `?`。數值在限制深度前計算，收合不影響結果。JSON `reswho/2` 的 totals 加入 `oldest_uptime_seconds` 與 `uptime_unknown`，既有欄位保留。
+Markdown 在群組 RAM 後顯示 `⏱︎`：組內最長的已知 uptime，包含閒置時間；未知成員存在時加 `>=`，全部未知為 `?`。數值在限制深度前計算，收合不影響結果。JSON `reswho/2` 的 totals 加入 `oldest_uptime_seconds` 與 `uptime_unknown`，既有欄位保留。
 
 目前 Markdown 為 `reswho-md/10`。一般樹狀展開只顯示程序摘要；`--from pid:N` 顯示選取 PID 的詳細資訊，其子程序仍為摘要。完全無可讀身分、路徑或指標的程序合併成 `Unreadable · N processes`，不附 ref／展開箭頭；部分可讀程序不折疊。此為 Markdown 呈現規則，不改變分類與 totals；JSON 保留個別程序，明確 PID 查詢仍可讀取診斷原因。
 
