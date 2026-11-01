@@ -1,6 +1,6 @@
 # Markdown 輸出格式
 
-已實作：`reswho-md/10`。Tenqo：rw-8、rw-9。JSON `reswho/7`。容器採用獨立統計範圍，詳見 [容器採集](containers.md)；既有主機分類與 ref 保留。
+已實作：`reswho-md/11`。Tenqo：rw-8、rw-9、rw-16。JSON `reswho/7`，語意見 [JSON 格式](json-format.md)。容器採用獨立統計範圍，詳見 [容器採集](containers.md)；既有主機分類與 ref 保留。
 
 ## 原則
 
@@ -18,7 +18,7 @@
 | 行內 code | 路徑等易被 Markdown 誤讀的字面值 | 名稱、ref、數值不額外包裝 |
 | 表格／程式碼區塊 | 欄位對照／指令範例 | 放在 `--help-format`，資源樹不改成表格 |
 
-大分類標題後用一般段落保留 `ref · CPU · RSS · oldest uptime · processes`。報告中的選取根節點也保留摘要，避免改用標題後遺失 ref 或 totals。根節點摘要不再包一層清單；其後才列子項。
+大分類標題後用一般段落保留 `ref · CPU · RSS · oldest uptime · processes`。全機不再顯示重複的 Resources 摘要列，程序數放在頂端 Host CPU 摘要；其他選取根仍保留摘要與 ref。System 只有一個 System services 包裝時直接列出其子項，證據／診斷併入 System 的附註。
 
 粗體、斜體、分隔線、圖片、連結不預設加入。只有確實有對應內容才使用，例如 help 中的文件連結。`!` 並非圖片語法，`[bin]` 並非連結，兩者都是 reswho 約定；不使用只有特定 renderer 支援的 alert 語法。
 
@@ -29,6 +29,8 @@
 容器：`name [container] · group ref · CPU · memory · uptime · state · published ports`。容器群組顯示 active / containers，記憶體來源與主機 RSS 不同。
 
 群組：`name [grouping] · group ref · CPU sum · RSS sum · oldest uptime · processes`
+
+頂端 Host CPU 為整機0–100%；程序、群組與容器的CPU欄以單核心100%計算，可以超過100%。主機與容器取樣／核心範圍不同，不相加；`>=` 表示部分已知值，不是整機百分比上限錯誤。
 
 | 標記 | 出現位置 | 唯一意義 |
 | --- | --- | --- |
@@ -74,15 +76,15 @@ group:unclassified · 0.0% · 3.0MiB · oldest 5h · 2 processes
 
 ## 查詢與相容性
 
-- `--depth` 仍按資源樹的邊計算，選取根為 0；標題、段落、引用與空行都不計入。全機 root → category → group → process 仍是 0 → 1 → 2 → 3。
-- 全機 `--depth 0` 只有 root 摘要與必要診斷；`--depth 1` 可見分類標題及摘要，分類有未展開成員時摘要末尾保留 `▸`。
+- Markdown 的 `--depth` 按精簡後的樹計算，選取根為0；標題、段落、引用與空行不計入。一般 root → category → group → process 仍是0 → 1 → 2 → 3；System services 包裝不佔深度。JSON 保留原始樹深度。
+- 全機 `--depth 0` 只有整機摘要、程序數與必要診斷；尚有子項時程序數後保留 `▸`。`--depth 1` 可見分類標題及摘要，分類有未展開成員時摘要末尾保留 `▸`。
 - `--from group:…` 只顯示選取分支；不為版面補回上層 category。`--from pid:…` 顯示該 PID 的摘要與詳情，子程序仍為摘要。
 - 群組名稱、引用與子程序連續排列；同層群組之間留一個空行，連續 PID 不加空行。標題、根摘要與獨立附註仍用空行分段。清單內引用／子清單一致使用四空格縮排；連續附註使用 Markdown hard break。
 - 格式說明維持單一入口。表格定義欄位順序及符號，另附一次 `--from`／`--depth` 指令範例，不在每個節點重複。
 
 ## 實作與驗證
 
-1. Renderer 將 category 顯示成標題、根摘要顯示成段落；資源層級仍由既有樹決定，限制深度仍在渲染前進行。
+1. Renderer 在獨立副本中精簡 System 包裝後限制深度，category 顯示成標題，其他選取根顯示成段落；不修改原始snapshot或JSON。
 2. 靜態採集說明採共享常數，Markdown 不輸出這些固定說明，JSON 原 warnings 保留。其餘當次 warning、process／network unavailable 附 `!`；tree 自行產生的 metadata 失敗／父鏈異常及祖先推論 evidence 依固定前綴或完整標記識別，不猜測 OS 錯誤原因。同一附註區塊只去除完全相同訊息，不跨範圍合併。
 3. `src/output/markdown_tests.rs` 使用僅限測試的 pulldown-cmark 驗證標題、引用、hard break 與清單層級；欄位與數值延用原有輸出測試。
 

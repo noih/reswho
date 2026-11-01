@@ -2,17 +2,17 @@ use crate::model::{Network, Node, Process, Protocol, Snapshot, Totals};
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-mod containers;
+pub(crate) mod containers;
 #[cfg(test)]
 mod markdown_tests;
 
-pub const FORMAT_HELP: &str = "reswho-md/10 (collection prototype)\n\n\
+pub const FORMAT_HELP: &str = "reswho-md/11 (collection prototype)\n\n\
 | Row | Fields, in order |\n\
 | --- | --- |\n\
-| Process | name · pid ref · CPU · RSS · uptime · ports |\n\
-| Group | name [grouping] · group ref · CPU sum · RSS sum · oldest uptime · process count |\n\
-| Container | name [container] · group ref · CPU · memory · uptime · state · published ports |\n\
-| Category summary | group ref · CPU sum · RSS sum · oldest uptime · process count |\n\
+| Process | name · pid ref · CPU/core · RSS · uptime · ports |\n\
+| Group | name [grouping] · group ref · CPU/core sum · RSS sum · oldest uptime · process count |\n\
+| Container | name [container] · group ref · CPU/core · memory · uptime · state · published ports |\n\
+| Category summary | group ref · CPU/core sum · RSS sum · oldest uptime · process count |\n\
 \n\
 Container groups use container counts and Docker CLI memory, not process RSS.\n\
 Host process totals exclude the separate Containers subtree; never add both scopes.\n\
@@ -29,7 +29,9 @@ Remote bind paths are not checked locally. Ambiguous candidates are shown in con
 --from group:REF shows container mounts, start time, service and attribution candidates.\n\
 Runtime diagnostics omit raw CLI stderr which may contain endpoint credentials.\n\
 Grouping: [runtime], [container], [app], [repo], [checkout], [project], [bin], [system], [unknown]; categories have no tag.\n\
-The selected root is a paragraph; child categories use ## headings with a ref/totals summary.\n\
+The whole-machine Resources row is omitted; its process count is in the Host CPU summary.\n\
+Other selected roots are paragraphs; child categories use ## headings with a ref/totals summary.\n\
+A sole System services wrapper is flattened in Markdown before --depth is applied.\n\
 Other resources use nested - lists; indented > blocks contain attributes, not child resources.\n\
 Headings, notes and whitespace do not change --depth. List nesting uses four spaces.\n\
 Group details stay together; blank lines separate sibling groups. Consecutive PID rows stay compact.\n\
@@ -85,14 +87,46 @@ reswho --md --from REF --depth N\n\
 ```\n\
 \n\
 Group refs are deterministic, not display positions. PID refs query the current PID.\n\
+JSON retains the original root and System services nodes; depth counts original tree edges.\n\
+JSON system.cpu_percent is whole-host 0-100%; process.cpu_percent and totals.known_cpu_percent use one-core 100%.\n\
+JSON totals are subtree aggregates, not extra usage; do not add parent totals to children.\n\
 JSON schema reswho/7 includes grouping (null for processes), raw byte counts, unknown counts and sample timing.\n\
 Command arguments, environment, container-internal processes and review rules are not collected.\n";
 
 pub fn markdown(snapshot: &Snapshot) -> String {
+    markdown_with_depth(snapshot, usize::MAX)
+}
+
+pub fn markdown_with_depth(snapshot: &Snapshot, depth: usize) -> String {
+    let mut snapshot = snapshot.clone();
+    flatten_system(&mut snapshot.root);
+    crate::tree::limit_depth(&mut snapshot.root, depth);
+    render_markdown(&snapshot)
+}
+
+fn flatten_system(node: &mut Node) {
+    if matches!(node.grouping, Some(crate::model::Grouping::Category))
+        && node.children.len() == 1
+        && matches!(
+            node.children[0].grouping,
+            Some(crate::model::Grouping::System)
+        )
+    {
+        let wrapper = node.children.pop().expect("single system wrapper");
+        node.evidence.extend(wrapper.evidence);
+        node.children = wrapper.children;
+        node.omitted_children = node.omitted_children.max(wrapper.omitted_children);
+    }
+    for child in &mut node.children {
+        flatten_system(child);
+    }
+}
+
+fn render_markdown(snapshot: &Snapshot) -> String {
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "# reswho\n\nFormat: reswho-md/10 · help: reswho --help-format  "
+        "# reswho\n\nFormat: reswho-md/11 · help: reswho --help-format  "
     );
     let _ = writeln!(
         text,
@@ -102,14 +136,27 @@ pub fn markdown(snapshot: &Snapshot) -> String {
     let system = &snapshot.system;
     let _ = writeln!(
         text,
-        "CPU {} · RAM {}/{} · swap {} · {} logical CPUs\n",
+        "Host CPU {} · RAM {}/{} · swap {} · {} logical CPUs{}\n",
         percent(system.cpu_percent),
         memory(system.memory_used_bytes),
         memory(system.memory_total_bytes),
         memory(system.swap_used_bytes),
         system
             .logical_cpus
-            .map_or("?".into(), |value| value.to_string())
+            .map_or("?".into(), |value| value.to_string()),
+        if snapshot.root.reference == "group:all" {
+            format!(
+                " · {} processes{}",
+                snapshot.root.totals.processes,
+                if snapshot.root.omitted_children > 0 {
+                    " ▸"
+                } else {
+                    ""
+                }
+            )
+        } else {
+            String::new()
+        }
     );
     let warnings = snapshot
         .warnings
@@ -117,7 +164,20 @@ pub fn markdown(snapshot: &Snapshot) -> String {
         .filter(|warning| !crate::collect::COLLECTION_NOTES.contains(&warning.as_str()))
         .map(|warning| format!("! {}", escaped(warning)));
     write_notes(&mut text, warnings, "");
-    write_node(&mut text, &snapshot.root, 0);
+    if snapshot.root.reference == "group:all" {
+        write_notes(
+            &mut text,
+            snapshot
+                .root
+                .evidence
+                .iter()
+                .map(|value| evidence_markdown(value)),
+            "",
+        );
+        write_children(&mut text, &snapshot.root, 1, true);
+    } else {
+        write_node(&mut text, &snapshot.root, 0);
+    }
     text
 }
 
@@ -323,7 +383,7 @@ fn process_details(process: &Process) -> Vec<String> {
     notes
 }
 
-fn group_uptime(totals: &Totals) -> String {
+pub(crate) fn group_uptime(totals: &Totals) -> String {
     let value = uptime(totals.oldest_uptime_seconds);
     if totals.oldest_uptime_seconds.is_some() && totals.uptime_unknown > 0 {
         format!(">={value}")
@@ -332,7 +392,7 @@ fn group_uptime(totals: &Totals) -> String {
     }
 }
 
-fn ports(network: Option<&Network>) -> String {
+pub(crate) fn ports(network: Option<&Network>) -> String {
     let Some(network) = network else {
         return "?".into();
     };
@@ -357,7 +417,7 @@ fn ports(network: Option<&Network>) -> String {
     result
 }
 
-fn group_cpu(totals: &Totals) -> String {
+pub(crate) fn group_cpu(totals: &Totals) -> String {
     partial(
         percent(Some(totals.cpu_percent)),
         totals.cpu_unknown,
@@ -365,7 +425,7 @@ fn group_cpu(totals: &Totals) -> String {
     )
 }
 
-fn group_memory(totals: &Totals) -> String {
+pub(crate) fn group_memory(totals: &Totals) -> String {
     partial(
         memory(Some(totals.resident_bytes)),
         totals.memory_unknown,
@@ -383,11 +443,11 @@ fn partial(value: String, unknown: usize, total: usize) -> String {
     }
 }
 
-fn percent(value: Option<f64>) -> String {
+pub(crate) fn percent(value: Option<f64>) -> String {
     value.map_or("?".into(), |value| format!("{value:.1}%"))
 }
 
-fn memory(value: Option<u64>) -> String {
+pub(crate) fn memory(value: Option<u64>) -> String {
     match value {
         None => "?".into(),
         Some(value) if value >= 1 << 30 => format!("{:.1}GiB", value as f64 / (1u64 << 30) as f64),
@@ -396,7 +456,7 @@ fn memory(value: Option<u64>) -> String {
     }
 }
 
-fn uptime(value: Option<u64>) -> String {
+pub(crate) fn uptime(value: Option<u64>) -> String {
     match value {
         None => "?".into(),
         Some(seconds) if seconds >= 86400 => format!("{}d", seconds / 86400),

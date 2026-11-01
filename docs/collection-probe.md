@@ -16,11 +16,11 @@ cargo run -- --help-format
 
 原型提供程序清單、兩次 CPU counter 差值、RSS、UID、PPID、啟動時間、執行時間、執行檔與工作目錄，TCP／UDP socket 端點與 TCP 狀態，以及整機 CPU／RAM／swap。沒有 daemon 或跨次執行的觀測資料庫。
 
-支援一次性 Markdown／JSON、`--from` 與 `--depth`。非互動執行預設 Markdown；互動環境預設 TUI 的分支尚未實作，因此須明確帶 `--md` 或 `--json`。`--tui` 目前回報未實作，不會以靜態輸出冒充 TUI。
+支援一次性 Markdown／JSON、`--from` 與 `--depth`。非互動執行預設 Markdown；stdin／stdout 都是終端機時預設 TUI。基本 TUI 已支援樹狀操作、排序、搜尋、選取路徑列與背景刷新，見 [TUI 操作](tui.md)。
 
 已加入 [Docker 容器 metadata／stats 與分類](containers.md)，可用 `--no-containers` 跳過。
 
-未實作：Ratatui 畫面、容器內程序、其他 runtime adapter、命令參數、Review 規則與持續觀測。不根據本次取樣產生遺留判定。
+未實作：容器內程序、其他 runtime adapter、命令參數、Review 規則與歷史觀測。不根據本次取樣產生遺留判定。
 
 ## 分類與計數
 
@@ -216,4 +216,4 @@ Live fixture 先以自有 `.git` 分類同一個 sleep，再換成 `go.mod`，�
 - Live fixture 的 sleep 已 kill／wait；臨時目錄由 TempDir 清除。Loopback sockets 隨 handle／測試程序退出釋放。沒有啟動容器或常駐採集程序。
 - `target/` 約 655 MiB，為 reswho 後續開發保留的共用 build cache；下一階段邊界檢查大小，不與其他工作共用或任意清理其他 cache。
 
-Docker adapter 已接入；下一階段可基於已驗證的資料接上 Ratatui，再做持續觀測與 Review。
+Docker adapter 與基本 Ratatui 已接入；操作與刷新行為見 [tui.md](tui.md)。上述數據為各採集階段的歷史驗證；持續觀測與 Review 尚未實作。

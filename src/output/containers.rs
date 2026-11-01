@@ -12,6 +12,30 @@ pub(super) fn totals(reference: &str, totals: &ContainerTotals, collapsed: &str)
     if totals.containers == 0 && !totals.inventory_complete {
         return format!("{reference} · ? · ? · oldest ? · ? active / ? containers{collapsed}");
     }
+    let active = if totals.activity_unknown > 0 || !totals.inventory_complete {
+        if totals.active_containers == 0 {
+            "?".into()
+        } else {
+            format!(">={}", totals.active_containers)
+        }
+    } else {
+        totals.active_containers.to_string()
+    };
+    let [cpu, memory, age] = summary_metrics(totals);
+    format!(
+        "{reference} · {cpu} · {memory} · oldest {age} · {active} active / {} containers{collapsed}",
+        scope_value(totals.containers.to_string())
+    )
+}
+
+pub(crate) fn summary_metrics(totals: &ContainerTotals) -> [String; 3] {
+    let scope_value = |value: String| {
+        if totals.inventory_complete || value == "?" || value.starts_with(">=") {
+            value
+        } else {
+            format!(">={value}")
+        }
+    };
     let applicable = totals.containers - totals.inactive_containers;
     let usage = |value: String, unknown: usize| {
         if applicable == 0 {
@@ -23,15 +47,6 @@ pub(super) fn totals(reference: &str, totals: &ContainerTotals, collapsed: &str)
         } else {
             scope_value(partial(value, unknown, applicable))
         }
-    };
-    let active = if totals.activity_unknown > 0 || !totals.inventory_complete {
-        if totals.active_containers == 0 {
-            "?".into()
-        } else {
-            format!(">={}", totals.active_containers)
-        }
-    } else {
-        totals.active_containers.to_string()
     };
     let age = if applicable == 0 && totals.inventory_complete {
         "-".into()
@@ -45,15 +60,14 @@ pub(super) fn totals(reference: &str, totals: &ContainerTotals, collapsed: &str)
     } else {
         age
     };
-    format!(
-        "{reference} · {} · {} · oldest {age} · {active} active / {} containers{collapsed}",
+    [
         usage(percent(Some(totals.known_cpu_percent)), totals.cpu_unknown),
         usage(
             memory(Some(totals.known_memory_bytes)),
-            totals.memory_unknown
+            totals.memory_unknown,
         ),
-        scope_value(totals.containers.to_string())
-    )
+        age,
+    ]
 }
 
 pub(super) fn row(node: &Node, container: &Container) -> String {

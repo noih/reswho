@@ -9,7 +9,7 @@ fn help_is_available_without_resource_collection() {
     assert!(result.status.success());
     assert!(result.stderr.is_empty());
     let text = String::from_utf8(result.stdout).unwrap();
-    assert!(text.contains("reswho-md/10"));
+    assert!(text.contains("reswho-md/11"));
     assert!(text.contains("root=0"));
     assert!(text.contains("▸ marks collapsed children"));
     assert!(text.contains("reswho --md --from REF --depth N"));
@@ -17,7 +17,7 @@ fn help_is_available_without_resource_collection() {
 }
 
 #[test]
-fn invalid_flags_and_unimplemented_tui_report_on_stderr_only() {
+fn invalid_flags_and_tui_without_terminal_report_on_stderr_only() {
     for args in [
         vec!["--md", "--json"],
         vec!["--depth", "many"],

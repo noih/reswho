@@ -18,6 +18,7 @@ pub(super) trait Runner {
 }
 
 pub(super) struct DockerCommand {
+    pub cancel: crate::snapshot::Cancellation,
     pub deadline: Instant,
     pub program: std::path::PathBuf,
 }
@@ -65,6 +66,7 @@ fn drain(pipe: &mut impl Read, buffer: &mut Vec<u8>) -> Result<bool> {
 
 impl Runner for DockerCommand {
     fn run(&mut self, args: &[String]) -> Result<Output> {
+        self.cancel.check()?;
         if Instant::now() >= self.deadline {
             bail!("Docker collection deadline exceeded");
         }
@@ -106,6 +108,7 @@ impl Runner for DockerCommand {
         let mut output = Vec::new();
         let mut errors = Vec::new();
         loop {
+            self.cancel.check()?;
             let out_done = drain(&mut stdout, &mut output)?;
             let err_done = drain(&mut stderr, &mut errors)?;
             if out_done
@@ -141,8 +144,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cancellation_reaps_running_owned_command() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("pid");
+        let cancel = crate::snapshot::Cancellation::default();
+        let mut runner = DockerCommand {
+            cancel: cancel.clone(),
+            program: "/bin/sh".into(),
+            deadline: Instant::now() + Duration::from_secs(10),
+        };
+        let argument = path.to_string_lossy().into_owned();
+        let handle = std::thread::spawn(move || {
+            runner.run(&[
+                "-c".into(),
+                "echo $$ > \"$1\"; exec /bin/sleep 30".into(),
+                "fixture".into(),
+                argument,
+            ])
+        });
+        let start = Instant::now();
+        let pid = loop {
+            if let Ok(value) = std::fs::read_to_string(&path)
+                && let Ok(pid) = value.trim().parse::<i32>()
+            {
+                break Some(pid);
+            }
+            if start.elapsed() >= Duration::from_secs(2) {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        cancel.cancel();
+        let result = handle.join().unwrap();
+        assert!(result.err().unwrap().to_string().contains("canceled"));
+        let pid = pid.expect("owned command started");
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        directory.close().unwrap();
+    }
+
+    #[test]
     fn timeout_reaps_owned_child_and_preserves_partial_output() {
         let mut runner = DockerCommand {
+            cancel: crate::snapshot::Cancellation::default(),
             program: "/bin/sh".into(),
             deadline: Instant::now() + Duration::from_millis(200),
         };
@@ -169,6 +216,7 @@ mod tests {
         let mut output = vec![0; MAX_OUTPUT_BYTES];
         assert!(drain(&mut std::io::Cursor::new(b"extra"), &mut output).is_err());
         let mut runner = DockerCommand {
+            cancel: crate::snapshot::Cancellation::default(),
             program: "/bin/sh".into(),
             deadline: Instant::now() + Duration::from_secs(2),
         };

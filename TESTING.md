@@ -19,3 +19,16 @@ The process live test creates a temporary Git marker and one owned `sleep` proce
 Build artifacts in `target/` are the project's reusable development cache, owned by the current reswho task and retained for the next implementation phase. Review its size at phase boundaries; clean it only when no build or test is using it. No collector daemon or persistent observation database is created.
 
 Container smoke verification is read-only: `cargo run -- --md --from group:containers --depth all`. It queries the configured Docker endpoint without starting services or creating containers. Use `--no-containers` for host-only inspection; existing process/socket live tests use this flag to keep their scope isolated.
+
+TUI state and TestBackend tests cover sorting, search ancestry, filtering without changing totals, stable selection, PID reuse, unreadable summaries, the selected-path status bar, loading within the table layout, resizing, control-character escaping, and worker cancellation. The command cancellation test starts and reaps its own shell/sleep fixture; it does not invoke Docker.
+
+Docker metadata is queried afresh on every collection. Historical refresh cost measurements and their limits are recorded in [docs/refresh-performance.md](docs/refresh-performance.md).
+
+Explicit macOS PTY smoke verification requires Python 3:
+
+```sh
+cargo build
+python3 tests/pty_smoke.py
+```
+
+This creates owned PTYs and reswho processes with `--no-containers`. It checks automatic TUI selection, keyboard controls, resize, missing scope errors, q/Ctrl-C exits, and spinner updates plus terminal restoration while a five-second sample is pending. All child processes and PTY descriptors are reclaimed in `finally`.

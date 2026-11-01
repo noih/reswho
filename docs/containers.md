@@ -1,6 +1,6 @@
 # 容器採集
 
-已實作 Docker 唯讀 adapter。Tenqo：rw-9。Markdown `reswho-md/10`，JSON `reswho/7`。Podman、Apple container 尚未接入。
+已實作 Docker 唯讀 adapter。Tenqo：rw-9。Markdown `reswho-md/11`，JSON `reswho/7`。Podman、Apple container 尚未接入。
 
 ## 連線與範圍
 
@@ -34,6 +34,8 @@
 - stats 前後重新檢查完整 ID、狀態及有效 StartedAt。變更或不可重驗時丟棄該次用量；取樣不是原子快照，也不代表持續閒置時間。
 - Published ports 是設定映射，不代表容器內確實有 listener。摘要 `tcp:9000->8080`，詳情保留 host IP；JSON 也保留未發布的 exposed ports。host network 的 ports 標示未知。
 - 沒有 CLI、連線失敗、超時、metadata 缺失都不阻斷主機採集。完整空 inventory 為 0；失敗 inventory 為 `?`，超過上限為 `>=`。未知量與真實零不同。
+
+TUI 與一次性輸出都在每輪重新查詢完整 metadata 與用量，不使用跨輪 Docker metadata 快取。畫面呈現最近完成的快照，採集期間仍顯示上一輪資料與時間；不是連續即時串流。
 
 ## 查詢
 

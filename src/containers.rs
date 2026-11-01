@@ -15,7 +15,12 @@ use std::{
 };
 
 pub fn collect() -> Result<Node> {
+    collect_with_cancel(&crate::snapshot::Cancellation::default())
+}
+
+pub(crate) fn collect_with_cancel(cancel: &crate::snapshot::Cancellation) -> Result<Node> {
     let mut runner = command::DockerCommand {
+        cancel: cancel.clone(),
         program: "docker".into(),
         deadline: Instant::now() + Duration::from_secs(10),
     };

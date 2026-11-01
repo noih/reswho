@@ -53,10 +53,11 @@ fn report_categories_quotes_and_process_lists_have_distinct_structure() {
     let snapshot = fixture_snapshot();
     let md = markdown(&snapshot);
     assert!(md.starts_with("# reswho\n\n"));
-    assert!(md.contains("reswho-md/10"));
+    assert!(md.contains("reswho-md/11"));
     assert!(!md.contains("Collection prototype:"));
     assert_eq!(md.matches("> ! Host swap:").count(), 1);
-    assert!(md.contains("Resources · group:all"));
+    assert!(!md.contains("Resources · group:all"));
+    assert!(md.contains("Host CPU"));
     assert!(!md.contains("- Resources"));
     assert!(md.contains("## Applications\n\ngroup:applications ·"));
     assert!(md.contains("## Unclassified\n\ngroup:unclassified ·"));
@@ -97,6 +98,49 @@ fn report_categories_quotes_and_process_lists_have_distinct_structure() {
     assert_eq!(app_paths, 1);
     assert_eq!((observed[0].1, observed[0].2), (2, 0));
     assert_eq!((observed[1].1, observed[1].2), (3, 0));
+}
+
+#[test]
+fn markdown_flattens_system_before_depth_without_changing_json_or_refs() {
+    let mut snapshot = fixture_snapshot();
+    snapshot.system.cpu_percent = Some(30.0);
+    snapshot.root = tree::build(vec![Process {
+        pid: 99,
+        name: "agent".into(),
+        executable: Some("/usr/libexec/agent".into()),
+        cpu_percent: Some(240.0),
+        resident_bytes: Some(100),
+        ..Process::default()
+    }])
+    .unwrap();
+    let wrapper = snapshot.root.children[0].children[0].reference.clone();
+    let before = serde_json::to_value(&snapshot).unwrap();
+    let md = markdown_with_depth(&snapshot, 2);
+    assert!(md.contains("Host CPU 30.0%"));
+    assert!(!md.contains("Resources ·"));
+    assert!(md.contains("## System"));
+    assert!(md.contains("pid:99 · 240.0%"));
+    assert!(!md.contains("System services [system]"));
+    let shallow = markdown_with_depth(&snapshot, 1);
+    assert!(shallow.contains("## System"));
+    assert!(shallow.contains("▸"));
+    assert!(!shallow.contains("pid:99"));
+    let root_only = markdown_with_depth(&snapshot, 0);
+    assert!(root_only.contains("1 processes ▸"));
+    assert!(!root_only.contains("## System"));
+    let after = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(before, after);
+    assert_eq!(after["system"]["cpu_percent"], 30.0);
+    assert_eq!(after["root"]["totals"]["known_cpu_percent"], 240.0);
+    assert_eq!(
+        after["root"]["children"][0]["children"][0]["reference"],
+        wrapper
+    );
+    snapshot.root = tree::select(&snapshot.root, &wrapper).unwrap();
+    snapshot.scope = wrapper.clone();
+    let scoped = markdown_with_depth(&snapshot, 0);
+    assert!(scoped.contains(&format!("System services [system] · {wrapper}")));
+    assert!(scoped.contains("▸"));
 }
 
 #[test]

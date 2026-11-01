@@ -1,9 +1,13 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser};
-use reswho::{collect, containers, model::Snapshot, output, tree};
+use reswho::{
+    output,
+    snapshot::{self, Cancellation, Options},
+    tree, tui,
+};
 use std::{
     io::{self, IsTerminal, Write},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 #[derive(Debug, Parser)]
@@ -17,13 +21,16 @@ struct Args {
     md: bool,
     #[arg(long, help = "Emit a single JSON snapshot")]
     json: bool,
-    #[arg(long, help = "Request TUI (not yet available in this prototype)")]
+    #[arg(
+        long,
+        help = "Open the interactive resource tree (requires a terminal)"
+    )]
     tui: bool,
     #[arg(long, help = "Explain output fields, units and missing values")]
     help_format: bool,
     #[arg(long, default_value = "group:all", value_parser = parse_reference, help = "Select a pid:<number> or group:<id> branch")]
     from: String,
-    #[arg(long, default_value = "2", value_parser = parse_depth, help = "Maximum depth below selected root (0..128 or all)")]
+    #[arg(long, default_value = "2", value_parser = parse_depth, help = "Output depth / initial TUI expansion (0..128 or all)")]
     depth: usize,
     #[arg(long, default_value = "250", value_parser = clap::value_parser!(u64).range(200..=5000), help = "Minimum CPU sampling interval in milliseconds")]
     sample_ms: u64,
@@ -64,37 +71,29 @@ fn run() -> Result<()> {
         if args.tui
             || (!args.md && !args.json && io::stdin().is_terminal() && io::stdout().is_terminal())
         {
-            bail!("TUI is not implemented in this collection prototype; use --md or --json");
+            return tui::run(
+                Options {
+                    sample_interval: Duration::from_millis(args.sample_ms),
+                    containers: !args.no_containers,
+                },
+                args.from,
+                args.depth,
+            );
         }
-        let start = Instant::now();
-        let mut collection = collect::collect(Duration::from_millis(args.sample_ms))?;
-        let mut root = tree::build(collection.processes)?;
-        if !args.no_containers {
-            match containers::collect() {
-                Ok(containers) => root.children.push(containers),
-                Err(error) => collection.warnings.push(format!("Containers: {error}")),
-            }
-        }
-        tree::validate_references(&root)?;
-        let mut root = tree::select(&root, &args.from)?;
-        tree::limit_depth(&mut root, args.depth);
-        let snapshot = Snapshot {
-            schema: "reswho/7",
-            captured_unix_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .context("system clock before Unix epoch")?
-                .as_millis() as u64,
-            sample_ms: collection.sample_ms,
-            collection_ms: start.elapsed().as_millis() as u64,
-            system: collection.system,
-            scope: args.from,
-            warnings: collection.warnings,
-            root,
-        };
+        let mut snapshot = snapshot::capture(
+            &Options {
+                sample_interval: Duration::from_millis(args.sample_ms),
+                containers: !args.no_containers,
+            },
+            &Cancellation::default(),
+        )?;
+        snapshot.root = tree::select(&snapshot.root, &args.from)?;
+        snapshot.scope = args.from;
         if args.json {
+            tree::limit_depth(&mut snapshot.root, args.depth);
             format!("{}\n", serde_json::to_string_pretty(&snapshot)?)
         } else {
-            output::markdown(&snapshot)
+            output::markdown_with_depth(&snapshot, args.depth)
         }
     };
     match io::stdout().lock().write_all(content.as_bytes()) {

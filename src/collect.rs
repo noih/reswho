@@ -23,15 +23,22 @@ pub fn cpu_percent(previous: u64, current: u64, elapsed_ticks: u64) -> Option<f6
     (elapsed_ticks > 0).then(|| delta as f64 * 100.0 / elapsed_ticks as f64)
 }
 
-#[cfg(target_os = "macos")]
 pub fn collect(interval: Duration) -> Result<Collection> {
+    collect_with_cancel(interval, &crate::snapshot::Cancellation::default())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn collect_with_cancel(
+    interval: Duration,
+    cancel: &crate::snapshot::Cancellation,
+) -> Result<Collection> {
     use std::time::Instant;
     let initial_cpu = macos::host_cpu_ticks();
-    let first = macos::scan(false)?;
+    let first = macos::scan(false, cancel)?;
     let start = Instant::now();
-    std::thread::sleep(interval);
+    cancel.wait(interval)?;
     let final_cpu = macos::host_cpu_ticks();
-    let mut second = macos::scan(true)?;
+    let mut second = macos::scan(true, cancel)?;
     let sample_ms = start.elapsed().as_millis() as u64;
     for (pid, observation) in &mut second {
         observation.process.cpu_percent = first.get(pid).and_then(|old| {
@@ -95,7 +102,10 @@ fn host_cpu_percent(before: [u32; 4], after: [u32; 4]) -> Option<f64> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn collect(_interval: Duration) -> Result<Collection> {
+pub(crate) fn collect_with_cancel(
+    _interval: Duration,
+    _cancel: &crate::snapshot::Cancellation,
+) -> Result<Collection> {
     bail!("resource collection currently supports macOS only")
 }
 
@@ -192,13 +202,17 @@ mod macos {
         Ok(PathBuf::from(text(buffer)))
     }
 
-    pub(super) fn scan(details: bool) -> Result<HashMap<u32, Observation>> {
+    pub(super) fn scan(
+        details: bool,
+        cancel: &crate::snapshot::Cancellation,
+    ) -> Result<HashMap<u32, Observation>> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .context("system clock before Unix epoch")?
             .as_secs();
         let mut observations = HashMap::new();
         for pid in pids()? {
+            cancel.check()?;
             let mut process = Process {
                 pid: pid as u32,
                 name: format!("process {pid}"),
