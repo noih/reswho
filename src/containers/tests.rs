@@ -1,0 +1,357 @@
+use super::*;
+use crate::{
+    model::{Process, Snapshot, SystemSummary},
+    output, tree,
+};
+
+fn runtime(endpoint: &str) -> Runtime {
+    Runtime {
+        name: "docker".into(),
+        context: Some("custom".into()),
+        endpoint_ref: Some(endpoint.into()),
+        daemon_id: Some("daemon".into()),
+        status: "available".into(),
+        inventory_complete: true,
+        collection_ms: 1,
+        unavailable: Vec::new(),
+    }
+}
+
+fn container(id: &str) -> Container {
+    Container {
+        runtime: "docker".into(),
+        endpoint_ref: "endpoint-a".into(),
+        id: id.into(),
+        name: "same-name".into(),
+        state: Some("running".into()),
+        cpu_percent: Some(0.0),
+        memory_bytes: Some(100),
+        uptime_seconds: Some(60),
+        ..Container::default()
+    }
+}
+
+#[test]
+fn container_scope_counts_once_and_remains_queryable_after_collapse() {
+    let mut one = container("one");
+    one.project = Some(Project {
+        name: "site".into(),
+        path: Some("/work/site".into()),
+        source: ProjectSource::Compose,
+    });
+    let mut two = one.clone();
+    two.id = "two".into();
+    two.memory_bytes = None;
+    let branch = build(runtime("endpoint-a"), vec![one, two]).unwrap();
+    let reference = branch.children[0].children[0].children[0].reference.clone();
+    let mut root = tree::build(vec![Process {
+        pid: 10,
+        resident_bytes: Some(500),
+        ..Process::default()
+    }])
+    .unwrap();
+    root.children.push(branch);
+    assert_eq!(root.totals.resident_bytes, 500);
+    assert_eq!(root.totals.processes, 1);
+    let selected = tree::select(&root, &reference).unwrap();
+    assert!(selected.container.is_some());
+    let mut selected = tree::select(&root, "group:containers").unwrap();
+    tree::limit_depth(&mut selected, 0);
+    let totals = selected.container_totals.as_ref().unwrap();
+    assert_eq!(totals.containers, 2);
+    assert_eq!(totals.known_memory_bytes, 100);
+    assert_eq!(totals.memory_unknown, 1);
+    assert_eq!(selected.omitted_children, 1);
+    let snapshot = Snapshot {
+        schema: "reswho/7",
+        captured_unix_ms: 0,
+        sample_ms: 250,
+        collection_ms: 300,
+        system: SystemSummary::default(),
+        scope: "group:containers".into(),
+        warnings: vec![],
+        root: selected,
+    };
+    let md = output::markdown(&snapshot);
+    assert!(md.contains("2 containers ▸"));
+    assert!(md.contains("1 unknown"));
+    assert!(!md.contains("2 processes"));
+    assert_eq!(
+        serde_json::to_value(snapshot).unwrap()["root"]["container_totals"]["containers"],
+        2
+    );
+}
+
+#[test]
+fn same_names_do_not_merge_endpoint_or_container_identity() {
+    let first = build(
+        runtime("endpoint-a"),
+        vec![container("one"), container("two")],
+    )
+    .unwrap();
+    let other = build(runtime("endpoint-b"), vec![container("one")]).unwrap();
+    let nodes = &first.children[0].children;
+    assert_eq!(nodes.len(), 2);
+    assert_ne!(nodes[0].reference, nodes[1].reference);
+    assert_ne!(nodes[0].reference, other.children[0].children[0].reference);
+    assert!(
+        build(
+            runtime("endpoint-a"),
+            vec![container("one"), container("one")]
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn compose_and_bind_inference_retain_evidence_and_conflicts() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = temp.path().join("a/site");
+    let second = temp.path().join("b/site");
+    for path in [&first, &second] {
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::write(path.join("go.mod"), "").unwrap();
+    }
+    let mut item = container("one");
+    item.mounts = vec![Mount {
+        kind: "bind".into(),
+        source: first.clone(),
+        destination: "/workspace".into(),
+    }];
+    let mut detail = docker::Inspect::default();
+    let mut discovery = tree::projects::Discovery::default();
+    attribution::classify(&mut item, &detail, true, &mut discovery);
+    assert!(matches!(
+        item.project.as_ref().unwrap().source,
+        ProjectSource::BindProject
+    ));
+    item.project = None;
+    item.mounts.push(Mount {
+        kind: "bind".into(),
+        source: second,
+        destination: "/shared".into(),
+    });
+    attribution::classify(&mut item, &detail, true, &mut discovery);
+    assert!(item.project.is_none());
+    assert_eq!(item.candidates.len(), 2);
+    detail.workdir = Some("/workspace".into());
+    attribution::classify(&mut item, &detail, true, &mut discovery);
+    assert!(matches!(
+        item.project.as_ref().unwrap().source,
+        ProjectSource::BindWorkdir
+    ));
+    assert_eq!(
+        item.project.as_ref().unwrap().path,
+        Some(first.canonicalize().unwrap())
+    );
+    detail.compose_project = Some("declared-project".into());
+    detail.compose_workdir = Some("/possibly-remote/checkout".into());
+    attribution::classify(&mut item, &detail, true, &mut discovery);
+    assert!(matches!(
+        item.project.as_ref().unwrap().source,
+        ProjectSource::Compose
+    ));
+    assert_eq!(item.candidates.len(), 2);
+    assert_eq!(item.project.as_ref().unwrap().name, "declared-project");
+    temp.close().unwrap();
+}
+
+#[test]
+fn partial_inventory_and_container_markdown_preserve_semantics() {
+    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+    let mut runtime = runtime("endpoint-a");
+    runtime.inventory_complete = false;
+    runtime.unavailable.push("inventory truncated".into());
+    let mut item = container("one");
+    item.memory_bytes = None;
+    item.state = Some("running".into());
+    item.project = Some(Project {
+        name: "site".into(),
+        path: Some("/a/space and`tick".into()),
+        source: ProjectSource::BindProject,
+    });
+    let branch = build(runtime, vec![item]).unwrap();
+    let reference = branch.children[0].children[0].children[0].reference.clone();
+    let mut snapshot = Snapshot {
+        schema: "reswho/7",
+        captured_unix_ms: 0,
+        sample_ms: 250,
+        collection_ms: 300,
+        system: SystemSummary::default(),
+        scope: "group:containers".into(),
+        warnings: vec![],
+        root: branch,
+    };
+    let md = output::markdown(&snapshot);
+    assert!(md.contains("· >=0.0% · ? · oldest >=1m · >=1 active / >=1 containers"));
+    assert!(!md.contains(">=>="));
+    assert!(md.contains("> ~ Container project inferred:"));
+    assert_eq!(md.matches("space and`tick").count(), 1);
+    let mut item_depth = 0;
+    let mut quote_depth = 0;
+    let mut observed = false;
+    for event in Parser::new(&md) {
+        match event {
+            Event::Start(Tag::Item) => item_depth += 1,
+            Event::End(TagEnd::Item) => item_depth -= 1,
+            Event::Start(Tag::BlockQuote(_)) => quote_depth += 1,
+            Event::End(TagEnd::BlockQuote(_)) => quote_depth -= 1,
+            Event::Text(text) if text.contains("same-name") => {
+                assert_eq!((item_depth, quote_depth), (3, 0));
+                observed = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(observed);
+    snapshot.root = tree::select(&snapshot.root, &reference).unwrap();
+    let detail = output::markdown(&snapshot);
+    assert!(detail.contains("~ single bind project + marker"));
+    assert!(detail.contains("! Runtime unavailable: inventory truncated"));
+    assert_eq!(snapshot.root.container.unwrap().id, "one");
+}
+
+#[test]
+fn absent_or_ambiguous_paths_never_force_project_ownership() {
+    let mut item = container("one");
+    let detail = docker::Inspect::default();
+    let mut discovery = tree::projects::Discovery::default();
+    for source in ["relative/project", "/", "/a/nonexistent/project"] {
+        item.mounts = vec![Mount {
+            kind: "bind".into(),
+            source: source.into(),
+            destination: "/workspace".into(),
+        }];
+        attribution::classify(&mut item, &detail, true, &mut discovery);
+        assert!(item.project.is_none());
+    }
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("package.json"), "{}").unwrap();
+    item.mounts = vec![Mount {
+        kind: "volume".into(),
+        source: temp.path().into(),
+        destination: "/workspace".into(),
+    }];
+    attribution::classify(&mut item, &detail, true, &mut discovery);
+    assert!(item.project.is_none());
+    temp.close().unwrap();
+}
+
+#[test]
+fn inactive_containers_do_not_make_active_metrics_unknown() {
+    let mut active = container("active");
+    active.state = Some("running".into());
+    let mut exited = container("exited");
+    exited.state = Some("exited".into());
+    exited.cpu_percent = None;
+    exited.memory_bytes = None;
+    exited.uptime_seconds = None;
+    let branch = build(runtime("endpoint-a"), vec![active.clone(), exited.clone()]).unwrap();
+    let totals = branch.container_totals.as_ref().unwrap();
+    assert_eq!(totals.cpu_unknown, 0);
+    assert_eq!(totals.memory_unknown, 0);
+    assert_eq!(totals.uptime_unknown, 0);
+    let mut snapshot = Snapshot {
+        schema: "reswho/7",
+        captured_unix_ms: 0,
+        sample_ms: 250,
+        collection_ms: 300,
+        system: SystemSummary::default(),
+        scope: "group:containers".into(),
+        warnings: vec![],
+        root: branch,
+    };
+    let md = output::markdown(&snapshot);
+    assert!(md.contains("oldest 1m · 1 active / 2 containers"));
+    assert!(md.contains("· - · - · - · exited"));
+    assert!(!md.contains("unknown"));
+    assert!(!md.contains(">="));
+    active.memory_bytes = None;
+    snapshot.root = build(runtime("endpoint-a"), vec![active, exited.clone()]).unwrap();
+    assert!(output::markdown(&snapshot).contains("· 0.0% · ? · oldest 1m"));
+    snapshot.root = build(runtime("endpoint-a"), vec![exited]).unwrap();
+    let md = output::markdown(&snapshot);
+    assert!(md.contains("· - · - · oldest - · 0 active / 1 containers"));
+    assert!(!md.contains("unknown"));
+}
+
+#[test]
+fn compose_group_notes_use_one_line_without_losing_pathless_evidence() {
+    let mut item = container("compose");
+    item.project = Some(Project {
+        name: "site".into(),
+        path: Some("/work/site".into()),
+        source: ProjectSource::Compose,
+    });
+    let mut snapshot = Snapshot {
+        schema: "reswho/7",
+        captured_unix_ms: 0,
+        sample_ms: 250,
+        collection_ms: 300,
+        system: SystemSummary::default(),
+        scope: "group:containers".into(),
+        warnings: vec![],
+        root: build(runtime("endpoint-a"), vec![item.clone()]).unwrap(),
+    };
+    let md = output::markdown(&snapshot);
+    assert_eq!(md.matches("> compose `/work/site`").count(), 1);
+    assert!(!md.contains("Compose project label"));
+    assert!(!md.contains("> path "));
+    item.project.as_mut().unwrap().path = None;
+    snapshot.root = build(runtime("endpoint-a"), vec![item]).unwrap();
+    assert!(output::markdown(&snapshot).contains("> compose\n"));
+}
+
+#[test]
+fn unknown_and_transitional_activity_remains_distinct_from_inactive() {
+    let mut totals = ContainerTotals::default();
+    for state in [
+        Some("running"),
+        Some("paused"),
+        Some("restarting"),
+        Some("created"),
+        Some("exited"),
+        Some("dead"),
+        Some("removing"),
+        Some("future-state"),
+        None,
+    ] {
+        let item = Container {
+            state: state.map(str::to_owned),
+            ..Container::default()
+        };
+        totals.add(&item);
+    }
+    assert_eq!(totals.containers, 9);
+    assert_eq!(totals.active_containers, 3);
+    assert_eq!(totals.inactive_containers, 3);
+    assert_eq!(totals.activity_unknown, 3);
+    assert_eq!(totals.cpu_unknown, 6);
+    assert_eq!(totals.memory_unknown, 6);
+    assert_eq!(totals.uptime_unknown, 6);
+    let json = serde_json::to_value(&totals).unwrap();
+    assert_eq!(json["active_containers"], 3);
+    assert_eq!(json["inactive_containers"], 3);
+    assert_eq!(json["activity_unknown"], 3);
+    let mut root = build(
+        runtime("endpoint-a"),
+        vec![Container {
+            id: "unknown".into(),
+            ..Container::default()
+        }],
+    )
+    .unwrap();
+    tree::limit_depth(&mut root, 0);
+    let snapshot = Snapshot {
+        schema: "reswho/7",
+        captured_unix_ms: 0,
+        sample_ms: 250,
+        collection_ms: 300,
+        system: SystemSummary::default(),
+        scope: "group:containers".into(),
+        warnings: vec![],
+        root,
+    };
+    let md = output::markdown(&snapshot);
+    assert!(md.contains("· ? · ? · oldest ? · ? active / 1 containers ▸"));
+}

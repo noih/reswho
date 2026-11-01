@@ -2,17 +2,33 @@ use crate::model::{Network, Node, Process, Protocol, Snapshot, Totals};
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
+mod containers;
 #[cfg(test)]
 mod markdown_tests;
 
-pub const FORMAT_HELP: &str = "reswho-md/8 (collection prototype)\n\n\
+pub const FORMAT_HELP: &str = "reswho-md/10 (collection prototype)\n\n\
 | Row | Fields, in order |\n\
 | --- | --- |\n\
 | Process | name · pid ref · CPU · RSS · uptime · ports |\n\
 | Group | name [grouping] · group ref · CPU sum · RSS sum · oldest uptime · process count |\n\
+| Container | name [container] · group ref · CPU · memory · uptime · state · published ports |\n\
 | Category summary | group ref · CPU sum · RSS sum · oldest uptime · process count |\n\
 \n\
-Grouping: [app], [repo], [checkout], [project], [bin], [system], [unknown]; categories have no tag.\n\
+Container groups use container counts and Docker CLI memory, not process RSS.\n\
+Host process totals exclude the separate Containers subtree; never add both scopes.\n\
+Docker uses the current context / DOCKER_CONTEXT / DOCKER_HOST; --no-containers skips it.\n\
+Docker CLI queries share a 10s deadline and a 256-container inventory limit; partial inventory uses >=.\n\
+Only the Docker adapter is implemented; Linux daemon stats are rounded CLI values (memory excludes cache).\n\
+Container CPU 100% is one daemon logical core; sampling differs from host processes.\n\
+Container active = running/paused/restarting; created/exited/dead metrics are not applicable (-), excluded from unknown counts.\n\
+Container summaries show active / total; unknown activity or incomplete inventory keeps active counts partial.\n\
+Removing or unrecognized/missing states remain unknown, not inactive. Uptime is for the current running/paused incarnation.\n\
+Published tcp:HOST->CONTAINER ports are configuration, not observed listeners or traffic.\n\
+Compose labels declare project ownership; ~ bind inference requires local Unix transport and project markers.\n\
+Remote bind paths are not checked locally. Ambiguous candidates are shown in container details.\n\
+--from group:REF shows container mounts, start time, service and attribution candidates.\n\
+Runtime diagnostics omit raw CLI stderr which may contain endpoint credentials.\n\
+Grouping: [runtime], [container], [app], [repo], [checkout], [project], [bin], [system], [unknown]; categories have no tag.\n\
 The selected root is a paragraph; child categories use ## headings with a ref/totals summary.\n\
 Other resources use nested - lists; indented > blocks contain attributes, not child resources.\n\
 Headings, notes and whitespace do not change --depth. List nesting uses four spaces.\n\
@@ -28,7 +44,7 @@ oldest >=2h means at least 2h with unknown members; oldest ? means unavailable.\
 CPU 100% means one logical core for processes/groups; host CPU is 0–100%.\n\
 Memory uses binary units (KiB/MiB/GiB). Process rows show own RSS.\n\
 Group rows sum known descendant values once; shared pages can overlap.\n\
->= marks a partial sum with unknown members; ? means unavailable, - means known absent.\n\
+>= marks a partial sum with unknown members; ? means unavailable, - means known absent, or not applicable for inactive container metrics.\n\
 Ports: tcp:N = TCP listening port; udp:N = bound UDP port (not proof of a server).\n\
 A trailing + ? means partial socket coverage. Details show local/remote endpoints and TCP state.\n\
 Sockets count unique observed TCP/UDP sockets per process, not descriptors; no cross-process sum.\n\
@@ -69,14 +85,14 @@ reswho --md --from REF --depth N\n\
 ```\n\
 \n\
 Group refs are deterministic, not display positions. PID refs query the current PID.\n\
-JSON schema reswho/5 includes grouping (null for processes), raw byte counts, unknown counts and sample timing.\n\
-Command arguments, environment, container contents and review rules are not collected.\n";
+JSON schema reswho/7 includes grouping (null for processes), raw byte counts, unknown counts and sample timing.\n\
+Command arguments, environment, container-internal processes and review rules are not collected.\n";
 
 pub fn markdown(snapshot: &Snapshot) -> String {
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "# reswho\n\nFormat: reswho-md/8 · help: reswho --help-format  "
+        "# reswho\n\nFormat: reswho-md/10 · help: reswho --help-format  "
     );
     let _ = writeln!(
         text,
@@ -138,6 +154,9 @@ fn group_values(node: &Node) -> String {
     } else {
         ""
     };
+    if let Some(totals) = &node.container_totals {
+        return containers::totals(&node.reference, totals, collapsed);
+    }
     format!(
         "{} · {} · {} · oldest {} · {} processes{collapsed}",
         node.reference,
@@ -151,7 +170,9 @@ fn group_values(node: &Node) -> String {
 fn write_node(text: &mut String, node: &Node, level: usize) {
     let indent = "    ".repeat(level.saturating_sub(1));
     let bullet = if level == 0 { "" } else { "- " };
-    if let Some(process) = &node.process {
+    if let Some(container) = &node.container {
+        let _ = writeln!(text, "{indent}{bullet}{}", containers::row(node, container));
+    } else if let Some(process) = &node.process {
         let collapsed = if node.omitted_children > 0 {
             " ▸"
         } else {
@@ -184,7 +205,7 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
             group_values(node)
         );
     }
-    let mut notes = Vec::new();
+    let mut notes = containers::notes(node, level == 0);
     if level == 0
         && let Some(process) = &node.process
     {
@@ -227,7 +248,7 @@ fn write_children(text: &mut String, node: &Node, level: usize, categories: bool
             );
             write_children(text, child, 1, false);
         } else {
-            let is_group = child.process.is_none();
+            let is_group = child.process.is_none() && child.container.is_none();
             if previous_group.is_some_and(|previous| previous || is_group) {
                 blank_line(text);
             }
@@ -386,10 +407,13 @@ fn uptime(value: Option<u64>) -> String {
 }
 
 fn evidence_markdown(value: &str) -> String {
-    if value.starts_with("Inferred from ancestor pid:") {
+    if value.starts_with("Inferred from ancestor pid:")
+        || value.starts_with("Container project inferred:")
+    {
         return format!("~ {}", escaped(value));
     }
-    if value.starts_with("Repository metadata unavailable: ")
+    if value.starts_with("Runtime unavailable: ")
+        || value.starts_with("Repository metadata unavailable: ")
         || value == "Parent chain cycle or depth limit; displayed as a separate root"
     {
         return format!("! {}", escaped(value));
@@ -400,6 +424,8 @@ fn evidence_markdown(value: &str) -> String {
         ("Git root from working directory: ", "git"),
         ("repo ", "repo"),
         ("exe ", "exe"),
+        ("container project path ", "path"),
+        ("compose ", "compose"),
     ] {
         if let Some(path) = value.strip_prefix(prefix) {
             return format!("{label} {}", code(path));

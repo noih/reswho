@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, Parser};
-use reswho::{collect, model::Snapshot, output, tree};
+use reswho::{collect, containers, model::Snapshot, output, tree};
 use std::{
     io::{self, IsTerminal, Write},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -27,6 +27,8 @@ struct Args {
     depth: usize,
     #[arg(long, default_value = "250", value_parser = clap::value_parser!(u64).range(200..=5000), help = "Minimum CPU sampling interval in milliseconds")]
     sample_ms: u64,
+    #[arg(long, help = "Skip container runtime queries")]
+    no_containers: bool,
 }
 
 fn parse_reference(value: &str) -> Result<String, String> {
@@ -65,12 +67,19 @@ fn run() -> Result<()> {
             bail!("TUI is not implemented in this collection prototype; use --md or --json");
         }
         let start = Instant::now();
-        let collection = collect::collect(Duration::from_millis(args.sample_ms))?;
-        let root = tree::build(collection.processes)?;
+        let mut collection = collect::collect(Duration::from_millis(args.sample_ms))?;
+        let mut root = tree::build(collection.processes)?;
+        if !args.no_containers {
+            match containers::collect() {
+                Ok(containers) => root.children.push(containers),
+                Err(error) => collection.warnings.push(format!("Containers: {error}")),
+            }
+        }
+        tree::validate_references(&root)?;
         let mut root = tree::select(&root, &args.from)?;
         tree::limit_depth(&mut root, args.depth);
         let snapshot = Snapshot {
-            schema: "reswho/5",
+            schema: "reswho/7",
             captured_unix_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .context("system clock before Unix epoch")?

@@ -13,7 +13,7 @@ pub struct Collection {
 }
 
 pub(crate) const COLLECTION_NOTES: [&str; 3] = [
-    "Collection prototype: command arguments, container contents and review heuristics are not implemented.",
+    "Collection prototype: command arguments, container-internal processes and review heuristics are not implemented.",
     "TCP/UDP sockets are a non-atomic snapshot, not traffic or inactivity history; sockets may change during collection.",
     "Process memory is RSS; shared pages may overlap between processes. Group totals are sums of known RSS, not unique physical memory.",
 ];

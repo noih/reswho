@@ -98,6 +98,8 @@ impl Totals {
 #[serde(rename_all = "lowercase")]
 pub enum Grouping {
     Category,
+    Runtime,
+    Container,
     App,
     Repo,
     Checkout,
@@ -111,6 +113,8 @@ impl Grouping {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Category => "",
+            Self::Runtime => "runtime",
+            Self::Container => "container",
             Self::App => "app",
             Self::Repo => "repo",
             Self::Checkout => "checkout",
@@ -130,6 +134,9 @@ pub struct Node {
     pub grouping: Option<Grouping>,
     pub evidence: Vec<String>,
     pub process: Option<Process>,
+    pub container: Option<crate::containers::Container>,
+    pub runtime: Option<crate::containers::Runtime>,
+    pub container_totals: Option<crate::containers::ContainerTotals>,
     pub totals: Totals,
     pub children: Vec<Node>,
     pub omitted_children: usize,
@@ -149,6 +156,9 @@ impl Node {
             grouping: Some(grouping),
             evidence,
             process: None,
+            container: None,
+            runtime: None,
+            container_totals: None,
             totals: Totals::default(),
             children: Vec::new(),
             omitted_children: 0,

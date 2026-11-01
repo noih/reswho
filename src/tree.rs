@@ -10,7 +10,7 @@ mod applications;
 mod executables;
 #[cfg(test)]
 mod project_tests;
-mod projects;
+pub(crate) mod projects;
 
 #[derive(Clone, Debug)]
 struct Assignment {
@@ -22,7 +22,7 @@ struct Assignment {
     project: Option<projects::Project>,
 }
 
-fn stable_ref(category: &str, key: &str) -> String {
+pub(crate) fn stable_ref(category: &str, key: &str) -> String {
     let digest = Sha256::digest(format!("{category}\0{key}"));
     format!("group:{}", &format!("{digest:x}")[..16])
 }
@@ -260,16 +260,21 @@ pub fn build(processes: Vec<Process>) -> Result<Node> {
     for category in &root.children {
         root.totals.add(&category.totals);
     }
+    validate_references(&root)?;
+    sort_children(&mut root);
+    Ok(root)
+}
+
+pub fn validate_references(root: &Node) -> Result<()> {
     let mut references = HashSet::new();
-    let mut pending = vec![&root];
+    let mut pending = vec![root];
     while let Some(node) = pending.pop() {
         if !references.insert(&node.reference) {
             bail!("resource identity collision: {}", node.reference);
         }
         pending.extend(&node.children);
     }
-    sort_children(&mut root);
-    Ok(root)
+    Ok(())
 }
 
 fn sort_children(node: &mut Node) {
@@ -335,6 +340,9 @@ fn process_node(
         grouping: None,
         evidence: evidence.remove(&pid).unwrap_or_default(),
         process: Some(process),
+        container: None,
+        runtime: None,
+        container_totals: None,
         totals,
         children: Vec::new(),
         omitted_children: 0,
@@ -362,6 +370,14 @@ pub fn select(root: &Node, reference: &str) -> Result<Node> {
         if node.kind == "group" && node.reference != "group:all" {
             context.push(format!("Grouped under: {} ({})", node.name, node.reference));
             context.extend(node.evidence.clone());
+            if let Some(runtime) = &node.runtime {
+                context.extend(
+                    runtime
+                        .unavailable
+                        .iter()
+                        .map(|issue| format!("Runtime unavailable: {issue}")),
+                );
+            }
         }
         pending.extend(node.children.iter().map(|child| (child, context.clone())));
     }

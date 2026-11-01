@@ -1,0 +1,49 @@
+# 容器採集
+
+已實作 Docker 唯讀 adapter。Tenqo：rw-9。Markdown `reswho-md/10`，JSON `reswho/7`。Podman、Apple container 尚未接入。
+
+## 連線與範圍
+
+透過 PATH 的 `docker` CLI，依 Docker 的有效設定連線：非空 `DOCKER_CONTEXT` 優先，其次 `DOCKER_HOST`，否則讀取目前 context。保留 Docker 原有的 TLS／設定目錄行為；不寫入 context，不預設 socket 路徑，不啟動 runtime。查詢使用固定 argv，沒有 shell 插值；stdin 關閉、無控制終端機，不要求輸入密碼。
+
+唯讀命令包含 context show／inspect、info、container ls／inspect／stats。inspect template 只輸出所需欄位及 Compose project／working_dir／service labels，不讀取環境變數、命令參數或全部 labels。原始 CLI stderr 可能含連線憑證，因此只輸出 exit status／診斷存在的狀態，不轉印其內容。
+
+一輪 CLI 共用 10 秒期限，每個 stdout／stderr 上限 8 MiB；最多顯示 256 個容器，每批最多 32 個。超時會終止並回收本輪擁有的 CLI process group，已取得的 inventory／metadata 可保留。這是 CLI 預算，並非整機採集或檔案系統查詢的硬即時保證。一般測試用 fake runner 與自有短命程序，不連接使用者 Docker。
+
+## 分類規則
+
+| 證據 | 分類方式 | 邊界 |
+| --- | --- | --- |
+| `com.docker.compose.project` | 直接建立 Compose 專案群組 | 屬於宣告 metadata；working_dir 保留為宣告路徑，不要求目前存在 |
+| bind mount 對應 container working directory，且本機找到專案標記 | 推論專案，來源 `bind_workdir` | 僅 Unix socket 連線；採最深 mount，避免父掛載覆蓋巢狀 mount |
+| 所有可辨識 bind 路徑只指向一個專案 | 推論專案，來源 `bind_project` | 即使沒有 working directory 也保留這項有條件的線索 |
+| 多個不同專案候選，無 working directory 可區分 | 維持容器層級 | 保存 candidates，供深入查詢 |
+| remote endpoint、無標記、缺路徑、named volume | 不以這些路徑推論本機專案 | 不因同名、image 名稱或名稱前綴強制歸類 |
+
+本機專案標記沿用程序分類的 21 種 manifest／Git 規則。Unix socket 不保證 daemon 一定共享本機檔案系統，例如可能是遠端代理；所以 bind 路徑分類始終標示 `~`，不當成直接歸屬證據。Compose 宣告優先，其他可用路徑仍留在 candidates。路徑有衝突不合併成同一主機專案，容器與主機資源維持各自統計範圍。
+
+同名容器、不同 endpoint、不同 daemon 不共用 ref。容器 ref 依 runtime、endpoint hash、daemon ID、完整原生 ID 產生；與名稱、顯示位置、專案分類無關。專案群組按來源類型、名稱及路徑分開，不只靠 basename。
+
+## 資料與統計
+
+- 容器行：`name [container] · group ref · CPU · memory · uptime · state · published ports`。
+- runtime／專案群組顯示 `active / containers`，JSON 的 `container_totals` 分開記錄 `active_containers`、`inactive_containers`、`activity_unknown`；原 `totals` 只統計主機程序。全機 Resources 不加上 Containers 子樹用量，避免 VM 與內部用量重複計算。
+- Linux daemon 使用 `docker stats --no-stream --no-trunc` 的 CPU／memory。CPU 100% 為 daemon 的一個 logical core；memory 為 CLI 已扣除 cache 的數值，非主機程序 RSS。CLI 已四捨五入，JSON 的 bytes 是換算值，`memory_basis` 明示來源，不能視為 byte 精度量測。
+- 採集所有生命週期狀態的容器；只對 running／paused 取得 stats。created／exited／dead 的 CPU／memory／uptime 不適用，以 `-` 顯示，不計入 unknown 與 oldest；JSON 原指標維持 null，不偽造零值。running／paused／restarting 計入 active；removing、未知或缺失狀態的活動性維持未知，不能當成 inactive。啟動時間原字串仍保留。
+- 完整且全為 inactive 的群組用量與 oldest 為 `-`；若仍有狀態不明的成員，用量保持 `?`／部分總和。活動性未知或 inventory 不完整時，active 計數保留 `?`／`>=`。
+- stats 前後重新檢查完整 ID、狀態及有效 StartedAt。變更或不可重驗時丟棄該次用量；取樣不是原子快照，也不代表持續閒置時間。
+- Published ports 是設定映射，不代表容器內確實有 listener。摘要 `tcp:9000->8080`，詳情保留 host IP；JSON 也保留未發布的 exposed ports。host network 的 ports 標示未知。
+- 沒有 CLI、連線失敗、超時、metadata 缺失都不阻斷主機採集。完整空 inventory 為 0；失敗 inventory 為 `?`，超過上限為 `>=`。未知量與真實零不同。
+
+## 查詢
+
+```sh
+reswho --md --from group:containers --depth 3
+reswho --json --from group:containers --depth all
+reswho --md --from group:REF --depth 0
+reswho --md --no-containers
+```
+
+REF 替換為輸出中的容器 group ref。選取容器時顯示 started time、service、mounts、project candidates、published endpoints 及診斷；一般展開維持摘要。Compose 依據與路徑合為群組的一行 `> compose PATH`，缺路徑時保留 `> compose`；名稱已在群組列，不重複。主機 root → Containers → runtime → project → container 每個邊都計入 depth；無專案時省略 project 層。
+
+參考：[Docker lifecycle states](https://docs.docker.com/reference/cli/docker/container/ls/#status)、[Docker contexts](https://docs.docker.com/engine/manage-resources/contexts/)、[Docker stats](https://docs.docker.com/reference/cli/docker/container/stats/)、[Compose labels](https://github.com/docker/compose/blob/main/pkg/api/labels.go)。

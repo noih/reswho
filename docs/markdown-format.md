@@ -1,6 +1,6 @@
 # Markdown 輸出格式
 
-已實作：`reswho-md/8`。Tenqo：rw-8。JSON 維持 `reswho/5`，分類、ref 與資源計數不因版面調整而改變。
+已實作：`reswho-md/10`。Tenqo：rw-8、rw-9。JSON `reswho/7`。容器採用獨立統計範圍，詳見 [容器採集](containers.md)；既有主機分類與 ref 保留。
 
 ## 原則
 
@@ -26,13 +26,15 @@
 
 程序：`name · pid ref · CPU · RSS · uptime · ports`
 
+容器：`name [container] · group ref · CPU · memory · uptime · state · published ports`。容器群組顯示 active / containers，記憶體來源與主機 RSS 不同。
+
 群組：`name [grouping] · group ref · CPU sum · RSS sum · oldest uptime · processes`
 
 | 標記 | 出現位置 | 唯一意義 |
 | --- | --- | --- |
-| `[app]`、`[repo]`、`[checkout]`、`[project]`、`[bin]`、`[system]`、`[unknown]` | 群組名稱後 | 分組方式；大分類不重複標記 |
+| `[runtime]`、`[container]`、`[app]`、`[repo]`、`[checkout]`、`[project]`、`[bin]`、`[system]`、`[unknown]` | 群組名稱後 | 分組方式；大分類不重複標記 |
 | `?` | 對應數值欄位 | 不可取得；不能當成零 |
-| `-` | 欄位內 | 已確認沒有；行首的 `- ` 則是清單語法 |
+| `-` | 欄位內 | 已確認沒有；inactive 容器用量欄表示不適用。行首的 `- ` 則是清單語法 |
 | `>=` | 部分總量／oldest 數值前 | 只知道下界；保留 unknown 數量 |
 | `+ ?` | 已有部分 ports 資料後 | 其他 socket 資料未知；沿用既有格式 |
 | `▸` | 資源列最後 | 還有子節點未顯示；不追加重複展開指令 |

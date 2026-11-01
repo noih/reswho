@@ -26,6 +26,7 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
     );
     let reference = format!("pid:{}", child.0.id());
     let result = Command::new(env!("CARGO_BIN_EXE_reswho"))
+        .arg("--no-containers")
         .args(["--json", "--from", &reference, "--depth", "0"])
         .output()
         .unwrap();
@@ -54,6 +55,7 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
     assert!(snapshot["root"]["children"].as_array().unwrap().is_empty());
     assert!(snapshot["sample_ms"].as_u64().unwrap() >= 200);
     let tree = Command::new(env!("CARGO_BIN_EXE_reswho"))
+        .arg("--no-containers")
         .args(["--json", "--from", "group:projects", "--depth", "all"])
         .output()
         .unwrap();
@@ -72,6 +74,7 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
         .expect("fixture project is classified");
     let group_ref = group["reference"].as_str().unwrap();
     let md = Command::new(env!("CARGO_BIN_EXE_reswho"))
+        .arg("--no-containers")
         .args(["--from", group_ref, "--depth", "0"])
         .output()
         .unwrap();
@@ -95,6 +98,7 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
     )
     .unwrap();
     let nongit = Command::new(env!("CARGO_BIN_EXE_reswho"))
+        .arg("--no-containers")
         .args(["--json", "--from", "group:projects", "--depth", "all"])
         .output()
         .unwrap();
@@ -150,6 +154,7 @@ fn live_tcp_udp_ipv4_ipv6_endpoints_and_duplicate_descriptors() {
     let udp6 = UdpSocket::bind("[::1]:0").unwrap();
     let reference = format!("pid:{}", std::process::id());
     let output = Command::new(env!("CARGO_BIN_EXE_reswho"))
+        .arg("--no-containers")
         .args(["--json", "--from", &reference, "--depth", "0"])
         .output()
         .unwrap();

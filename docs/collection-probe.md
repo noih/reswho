@@ -1,6 +1,6 @@
 # macOS 採集驗證
 
-Tenqo：`rw-1` 至 `rw-8`。日期：2026-11-01。環境：macOS 26.5.2、Apple Silicon、10 logical CPUs、32 GiB RAM，Rust 1.99.1。
+Tenqo：`rw-1` 至 `rw-9`。日期：2026-11-01。環境：macOS 26.5.2、Apple Silicon、10 logical CPUs、32 GiB RAM，Rust 1.99.1。
 
 ## 可執行範圍
 
@@ -18,7 +18,9 @@ cargo run -- --help-format
 
 支援一次性 Markdown／JSON、`--from` 與 `--depth`。非互動執行預設 Markdown；互動環境預設 TUI 的分支尚未實作，因此須明確帶 `--md` 或 `--json`。`--tui` 目前回報未實作，不會以靜態輸出冒充 TUI。
 
-未實作：Ratatui 畫面、容器內部資料、命令參數、Review 規則與持續觀測。不根據本次取樣產生遺留判定。
+已加入 [Docker 容器 metadata／stats 與分類](containers.md)，可用 `--no-containers` 跳過。
+
+未實作：Ratatui 畫面、容器內程序、其他 runtime adapter、命令參數、Review 規則與持續觀測。不根據本次取樣產生遺留判定。
 
 ## 分類與計數
 
@@ -68,7 +70,7 @@ Bin 對尚未歸入 App／Project 的程序樹，依根程序完整 executable �
     - zsh · pid:75554 · 0.0% · 1.5MiB · 5h · -
 ```
 
-格式版本為 `reswho-md/8`／`reswho/5`。大分類以標題呈現、根與分類摘要為段落；診斷 `!`／推論 `~` 僅用於附註，詳見 [Markdown 輸出格式](markdown-format.md)。JSON Node 新增 `grouping`，群組值為 category/app/repo/checkout/project/bin/system/unknown，程序為 null。資源與 evidence 分開，JSON 不加入 Markdown 標記。
+格式版本為 `reswho-md/10`／`reswho/7`。大分類以標題呈現、根與分類摘要為段落；診斷 `!`／推論 `~` 僅用於附註，詳見 [Markdown 輸出格式](markdown-format.md)。JSON Node 新增 `grouping`，群組值為 category/app/repo/checkout/project/bin/system/unknown/runtime/container，程序為 null。容器資訊使用 container、runtime 與 container_totals 欄位，與主機 totals 分開。資源與 evidence 分開，JSON 不加入 Markdown 標記。
 
 ## Repository 與 checkout
 
@@ -104,7 +106,7 @@ FFI buffer 使用 libc／libproc 的固定 C struct，以實際回傳長度驗�
 
 Markdown 在群組 RAM 後顯示 `oldest`：組內最長的已知 uptime，包含閒置時間；未知成員存在時加 `>=`，全部未知為 `?`。數值在限制深度前計算，收合不影響結果。JSON `reswho/2` 的 totals 加入 `oldest_uptime_seconds` 與 `uptime_unknown`，既有欄位保留。
 
-目前 Markdown 為 `reswho-md/8`。一般樹狀展開只顯示程序摘要；`--from pid:N` 顯示選取 PID 的詳細資訊，其子程序仍為摘要。完全無可讀身分、路徑或指標的程序合併成 `Unreadable · N processes`，不附 ref／展開箭頭；部分可讀程序不折疊。此為 Markdown 呈現規則，不改變分類與 totals；JSON 保留個別程序，明確 PID 查詢仍可讀取診斷原因。
+目前 Markdown 為 `reswho-md/10`。一般樹狀展開只顯示程序摘要；`--from pid:N` 顯示選取 PID 的詳細資訊，其子程序仍為摘要。完全無可讀身分、路徑或指標的程序合併成 `Unreadable · N processes`，不附 ref／展開箭頭；部分可讀程序不折疊。此為 Markdown 呈現規則，不改變分類與 totals；JSON 保留個別程序，明確 PID 查詢仍可讀取診斷原因。
 
 ## Socket 採集與格式
 
@@ -121,6 +123,18 @@ Markdown 在群組 RAM 後顯示 `oldest`：組內最長的已知 uptime，包�
 rw-2 當時格式更新為 `reswho-md/2`／`reswho/2`（目前 Markdown 為 `/8`）：新增 network 資料與逐程序歸屬證據；移除名稱特例，因此舊 `group:containers`／Unknown project 分組可能不存在。hash 演算法不變，沒有提供舊 group ref alias；應從新快照複製 ref。
 
 參考：[libproc socket types](https://docs.rs/libproc/0.14.11/libproc/net_info/index.html)、[Apple proc_info.h](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info.h)。
+
+## rw-9 容器驗證
+
+後續修正 C1／C2：Markdown `/10`、JSON `/7` 將 inactive 排除於用量與 uptime 的 unknown 計數，增加 active／inactive／activity_unknown 計數，Compose 附註合為單行。52 個一般測試、fmt、clippy 通過；回歸測試先重現 exited 造成 unknown，再驗證 mixed／全 inactive／狀態未知／轉換中／部分 inventory。真機 JSON 為 14 容器、5 active、9 inactive，三項 unknown 計數均為 0，約 3024ms；Markdown 顯示 `5 active / 14 containers`，已停止列為 `- · - · -`。兩次快照用量不同屬正常取樣差異。
+
+C3 唯讀調查：當時未分類的 bf9 容器為 PostgreSQL image，僅有自訂 `owner=bf9-a1`、Docker volume，缺 Compose metadata、working directory 與本機 bind 路徑，因此保留容器層級；不把該 label 或名稱前綴當作專案路徑。未啟停既有服務或容器。測試自有程序已回收；`target/` 約 1.4 GiB，沿用本專案開發快取，下階段再檢視。
+
+`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、49 個一般測試通過。容器測試涵蓋 context／DOCKER_HOST 優先順序、遠端路徑隔離、Compose／bind 推論與候選衝突、缺 CLI／缺欄位／停止與消失／重啟、inventory 上限、零與未知、端點身分、獨立總計、Markdown parser 與深入查詢。超時測試以自有 shell exec sleep 驗證 partial output、kill／wait 及 PID 不再存在。
+
+最終真機唯讀 JSON 快照為 735 個主機程序、15 個容器（6 running，6 份可用 memory），整輪採集約 3039ms。程式核對主機 RSS／程序數只來自主機節點，容器數／memory 只來自 container 節點，所有 refs 唯一；選取一個容器後以 `--depth 0` 成功讀取 Markdown 詳情。先前快照為 13 個容器／4 running，期間環境自行變動，非固定測試資料或效能保證。
+
+另用自有暫存目錄下不存在的 Unix socket 作唯讀失敗檢查，Docker unavailable 不阻斷主機快照，inventory 不假報 0。暫存目錄已移除，測試自有短命程序已回收；沒有建立、停止或刪除容器。未重跑未修改的 native process／socket live tests，沿用既有 native 採集證據。`target/` 約 1.3 GiB，為本專案後續開發保留，下一階段再檢視。
 
 ## rw-8 Markdown 語意格式驗證
 
@@ -202,4 +216,4 @@ Live fixture 先以自有 `.git` 分類同一個 sleep，再換成 `go.mod`，�
 - Live fixture 的 sleep 已 kill／wait；臨時目錄由 TempDir 清除。Loopback sockets 隨 handle／測試程序退出釋放。沒有啟動容器或常駐採集程序。
 - `target/` 約 655 MiB，為 reswho 後續開發保留的共用 build cache；下一階段邊界檢查大小，不與其他工作共用或任意清理其他 cache。
 
-下一階段先補容器 adapter，再基於已驗證的資料接上 Ratatui 和 Review。
+Docker adapter 已接入；下一階段可基於已驗證的資料接上 Ratatui，再做持續觀測與 Review。

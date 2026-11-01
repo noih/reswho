@@ -33,7 +33,7 @@ const MANIFESTS: &[&str] = &[
 ];
 
 #[derive(Clone, Debug)]
-pub(super) struct Project {
+pub(crate) struct Project {
     pub root: PathBuf,
     checkout: Option<PathBuf>,
     manifest: Option<&'static str>,
@@ -69,7 +69,7 @@ impl Project {
 }
 
 #[derive(Default)]
-pub(super) struct Discovery {
+pub(crate) struct Discovery {
     cache: HashMap<PathBuf, Option<Project>>,
 }
 

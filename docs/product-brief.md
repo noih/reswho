@@ -2,7 +2,7 @@
 
 ## 狀態
 
-本文件記錄產品方向。macOS 唯讀採集原型已實作，詳見 [採集驗證](collection-probe.md)；已加入 TCP／UDP 端點與通用結構分類；TUI、容器內部採集與 Review 尚未實作。以下完整第一版範圍不代表已完成。
+本文件記錄產品方向。macOS 唯讀採集原型已實作，詳見 [採集驗證](collection-probe.md)；已加入 TCP／UDP 端點與通用結構分類；Docker 容器 metadata／stats 已接入，見 [容器採集](containers.md)；TUI、容器內程序與 Review 尚未實作。以下完整第一版範圍不代表已完成。
 
 ## 已確認方向
 

@@ -33,14 +33,14 @@ fn fixture_snapshot() -> Snapshot {
         ..Process::default()
     };
     Snapshot {
-        schema: "reswho/5",
+        schema: "reswho/7",
         captured_unix_ms: 1000,
         sample_ms: 250,
         collection_ms: 300,
         system: SystemSummary::default(),
         scope: "group:all".into(),
         warnings: vec![
-            "Collection prototype: command arguments, container contents and review heuristics are not implemented.".into(),
+            "Collection prototype: command arguments, container-internal processes and review heuristics are not implemented.".into(),
             "Host swap: OS query unavailable or sample incomplete.".into(),
             "Host swap: OS query unavailable or sample incomplete.".into(),
         ],
@@ -53,7 +53,7 @@ fn report_categories_quotes_and_process_lists_have_distinct_structure() {
     let snapshot = fixture_snapshot();
     let md = markdown(&snapshot);
     assert!(md.starts_with("# reswho\n\n"));
-    assert!(md.contains("reswho-md/8"));
+    assert!(md.contains("reswho-md/10"));
     assert!(!md.contains("Collection prototype:"));
     assert_eq!(md.matches("> ! Host swap:").count(), 1);
     assert!(md.contains("Resources · group:all"));
