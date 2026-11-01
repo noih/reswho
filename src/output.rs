@@ -84,6 +84,10 @@ Cwd/exe paths are hints, not proof that a process is no longer needed.\n\
 --from REF selects a branch; --depth N counts edges from that branch (root=0).\n\
 ΣN is the total host process count, including all descendants; Unreadable uses its combined process count.\n\
 Depth limits presentation only. [+N] counts collapsed direct children, not all descendants or processes; children can be groups or processes.\n\
+--sort cpu|memory|uptime|name applies to all output modes (default: memory).\n\
+Numeric sorts descend within siblings, unknown/inactive values last; names use natural ascending order.\n\
+Process sorts use own metrics; groups use their scope totals (partial totals use known values). Ties use ref.\n\
+Sorting preserves the tree and does not combine host and container totals.\n\
 Copy REF from the row. Use --depth all for unlimited expansion.\n\
 \n\
 ```sh\n\

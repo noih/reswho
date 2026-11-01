@@ -48,6 +48,8 @@ def verify(arguments, exit_key, marker):
             assert any(glyph in animation for glyph in [b"/", b"-", b"\\"]), "spinner did not advance"
             assert b"sample" not in transcript, "long sample should still be pending"
         if marker == b"sample":
+            if "--sort" in arguments:
+                assert b"Sort NAME" in transcript, "initial sort option was not applied"
             for key in [b"j", b"l", b"c", b"m", b"u", b"n", b"/reswho", b"\r", b"\x1b", b"a", b"]", b"[", b"?", b"?"]:
                 os.write(master, key)
                 drain(0.12)
@@ -72,6 +74,6 @@ def verify(arguments, exit_key, marker):
         os.close(slave)
 
 
-verify([], b"q", b"sample")
+verify(["--sort", "name"], b"q", b"sample")
 verify(["--tui", "--sample-ms", "5000"], b"\x03", b"Loading resources...")
 verify(["--tui", "--from", "pid:4294967295"], b"q", b"Unable to load resources")

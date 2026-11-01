@@ -34,3 +34,5 @@ python3 tests/pty_smoke.py
 This creates owned PTYs and reswho processes with `--no-containers`. It checks automatic TUI selection, keyboard controls, resize, missing scope errors, q/Ctrl-C exits, and spinner updates plus terminal restoration while a five-second sample is pending. All child processes and PTY descriptors are reclaimed in `finally`.
 
 JSON contract tests use the dev-only `jsonschema` validator with remote resolution disabled. They validate `schemas/reswho-8.schema.json` against synthetic examples and serialized trees, reject invalid types/node variants, and check the offline `--json-schema` CLI. Classification fixtures own temporary marker directories and remove them after use; no real containers are queried. The explicit process live test also validates the emitted JSON.
+
+Shared sorting tests cover own process metrics versus descendant totals, unknown and inactive values, container scope, natural name order, unchanged references/totals, and Markdown/JSON ordering. CLI argument tests cover every sort mode; the PTY smoke test checks `--sort name` sets the initial TUI order while automatic TTY detection still applies.

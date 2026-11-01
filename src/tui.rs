@@ -5,10 +5,11 @@ mod view;
 mod worker;
 
 use crate::snapshot::Options;
+use crate::sort::Sort;
 use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
-use state::{App, Sort};
+use state::App;
 use std::{
     io::{self, IsTerminal},
     sync::mpsc::TryRecvError,
@@ -18,6 +19,30 @@ use worker::Worker;
 
 struct TerminalRestore(bool);
 
+struct SelectionAnchor {
+    key: String,
+    screen_row: usize,
+}
+
+impl SelectionAnchor {
+    fn capture(app: &App, table: &TableState) -> Option<Self> {
+        app.rows.get(app.selected).map(|row| Self {
+            key: row.key.clone(),
+            screen_row: app.selected.saturating_sub(table.offset()),
+        })
+    }
+
+    fn restore(self, app: &App, table: &mut TableState) {
+        if app
+            .rows
+            .get(app.selected)
+            .is_some_and(|row| row.key == self.key)
+        {
+            *table.offset_mut() = app.selected.saturating_sub(self.screen_row);
+        }
+    }
+}
+
 impl Drop for TerminalRestore {
     fn drop(&mut self) {
         if self.0 {
@@ -26,14 +51,16 @@ impl Drop for TerminalRestore {
     }
 }
 
-pub fn run(options: Options, scope: String, depth: usize) -> Result<()> {
+pub fn run(options: Options, scope: String, depth: usize, sort: Sort) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("TUI requires terminal stdin and stdout; use --md or --json");
     }
     let worker = Worker::start(options);
     let mut restore = TerminalRestore(true);
     let mut terminal = ratatui::try_init().context("initialize terminal")?;
-    let result = event_loop(&mut terminal, &worker, App::new(scope, depth));
+    let mut app = App::new(scope, depth);
+    app.sort = sort;
+    let result = event_loop(&mut terminal, &worker, app);
     drop(terminal);
     let restored = ratatui::try_restore().context("restore terminal");
     restore.0 = restored.is_err();
@@ -55,7 +82,11 @@ fn event_loop(
     loop {
         match worker.results.try_recv() {
             Ok(result) => {
+                let anchor = SelectionAnchor::capture(&app, &table);
                 app.update(result);
+                if let Some(anchor) = anchor {
+                    anchor.restore(&app, &mut table);
+                }
                 dirty = true;
                 next_refresh = Instant::now() + Duration::from_secs(2);
             }
@@ -86,8 +117,12 @@ fn event_loop(
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     dirty = true;
                     let browsing = !app.editing && !app.help;
+                    let anchor = SelectionAnchor::capture(&app, &table);
                     if handle_key(&mut app, key) {
                         return Ok(());
+                    }
+                    if let Some(anchor) = anchor {
+                        anchor.restore(&app, &mut table);
                     }
                     if browsing
                         && key.code == KeyCode::Char('r')

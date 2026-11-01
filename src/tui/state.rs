@@ -1,114 +1,12 @@
 use crate::{
     model::{Node, Snapshot},
+    sort::Sort,
     tree,
 };
 use std::{
-    cmp::Ordering,
     collections::{HashMap, HashSet},
     time::Instant,
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Sort {
-    Name,
-    Memory,
-    Cpu,
-    Uptime,
-}
-
-impl Sort {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Name => "NAME",
-            Self::Memory => "RAM",
-            Self::Cpu => "CPU",
-            Self::Uptime => "UPTIME",
-        }
-    }
-    fn value(self, node: &Node) -> Option<f64> {
-        if let Some(process) = &node.process {
-            return match self {
-                Self::Name => None,
-                Self::Memory => process.resident_bytes.map(|value| value as f64),
-                Self::Cpu => process.cpu_percent,
-                Self::Uptime => process.uptime_seconds.map(|value| value as f64),
-            };
-        }
-        if let Some(container) = &node.container {
-            if container.is_inactive() {
-                return None;
-            }
-            return match self {
-                Self::Name => None,
-                Self::Memory => container.memory_bytes.map(|value| value as f64),
-                Self::Cpu => container.cpu_percent,
-                Self::Uptime => container.uptime_seconds.map(|value| value as f64),
-            };
-        }
-        if let Some(totals) = &node.container_totals {
-            let count = totals.containers - totals.inactive_containers;
-            return match self {
-                Self::Name => None,
-                Self::Memory => {
-                    (count > totals.memory_unknown).then_some(totals.known_memory_bytes as f64)
-                }
-                Self::Cpu => (count > totals.cpu_unknown).then_some(totals.known_cpu_percent),
-                Self::Uptime => totals.oldest_uptime_seconds.map(|value| value as f64),
-            };
-        }
-        match self {
-            Self::Name => None,
-            Self::Memory => (node.totals.processes > node.totals.memory_unknown)
-                .then_some(node.totals.resident_bytes as f64),
-            Self::Cpu => {
-                (node.totals.processes > node.totals.cpu_unknown).then_some(node.totals.cpu_percent)
-            }
-            Self::Uptime => node.totals.oldest_uptime_seconds.map(|value| value as f64),
-        }
-    }
-}
-
-fn natural_cmp(left: &str, right: &str) -> Ordering {
-    let left = left.to_lowercase();
-    let right = right.to_lowercase();
-    let (left, right) = (left.as_bytes(), right.as_bytes());
-    let (mut a, mut b) = (0, 0);
-    while a < left.len() && b < right.len() {
-        let order = if left[a].is_ascii_digit() && right[b].is_ascii_digit() {
-            let (start_a, start_b) = (a, b);
-            while a < left.len() && left[a].is_ascii_digit() {
-                a += 1;
-            }
-            while b < right.len() && right[b].is_ascii_digit() {
-                b += 1;
-            }
-            let digits_a = &left[start_a..a];
-            let digits_b = &right[start_b..b];
-            let number_a = &digits_a[digits_a
-                .iter()
-                .position(|digit| *digit != b'0')
-                .unwrap_or(digits_a.len())..];
-            let number_b = &digits_b[digits_b
-                .iter()
-                .position(|digit| *digit != b'0')
-                .unwrap_or(digits_b.len())..];
-            number_a
-                .len()
-                .cmp(&number_b.len())
-                .then(number_a.cmp(number_b))
-                .then(digits_a.len().cmp(&digits_b.len()))
-        } else {
-            let order = left[a].cmp(&right[b]);
-            a += 1;
-            b += 1;
-            order
-        };
-        if order != Ordering::Equal {
-            return order;
-        }
-    }
-    (left.len() - a).cmp(&(right.len() - b))
-}
 
 pub(super) struct Row {
     pub path: Vec<usize>,
@@ -333,21 +231,7 @@ impl App {
             || (!transparent && searchable(node).contains(&self.query.to_lowercase()));
         let child_depth = depth + usize::from(!transparent);
         let mut indices: Vec<_> = (0..node.children.len()).collect();
-        indices.sort_by(|a, b| {
-            let left = &node.children[*a];
-            let right = &node.children[*b];
-            if self.sort == Sort::Name {
-                return natural_cmp(&left.name, &right.name)
-                    .then(left.reference.cmp(&right.reference));
-            }
-            match (self.sort.value(left), self.sort.value(right)) {
-                (Some(a), Some(b)) => b.total_cmp(&a),
-                (Some(_), None) => Ordering::Less,
-                (None, Some(_)) => Ordering::Greater,
-                _ => Ordering::Equal,
-            }
-            .then(left.reference.cmp(&right.reference))
-        });
+        indices.sort_by(|a, b| self.sort.compare(&node.children[*a], &node.children[*b]));
         let mut children = Vec::new();
         let mut unreadable = 0;
         for index in indices {

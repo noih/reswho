@@ -3,6 +3,7 @@ use clap::{ArgGroup, Parser};
 use reswho::{
     output,
     snapshot::{self, Cancellation, Options},
+    sort::Sort,
     tree, tui,
 };
 use std::{
@@ -38,6 +39,13 @@ struct Args {
     sample_ms: u64,
     #[arg(long, help = "Skip container runtime queries")]
     no_containers: bool,
+    #[arg(
+        long,
+        value_enum,
+        default_value = "memory",
+        help = "Sort siblings by CPU, memory, uptime (descending) or natural name; also sets initial TUI sort"
+    )]
+    sort: Sort,
 }
 
 fn parse_reference(value: &str) -> Result<String, String> {
@@ -82,6 +90,7 @@ fn run() -> Result<()> {
                 },
                 args.from,
                 args.depth,
+                args.sort,
             );
         }
         let mut snapshot = snapshot::capture(
@@ -93,6 +102,7 @@ fn run() -> Result<()> {
         )?;
         snapshot.root = tree::select(&snapshot.root, &args.from)?;
         snapshot.scope = args.from;
+        args.sort.apply(&mut snapshot.root);
         if args.json {
             tree::limit_depth(&mut snapshot.root, args.depth);
             format!("{}\n", serde_json::to_string_pretty(&snapshot)?)
@@ -123,6 +133,23 @@ mod tests {
         assert!(Args::try_parse_from(["reswho", "--from", "pid:0"]).is_err());
         assert!(Args::try_parse_from(["reswho", "--depth", "-1"]).is_err());
         assert!(Args::try_parse_from(["reswho", "--depth", "129"]).is_err());
+        assert!(Args::try_parse_from(["reswho", "--sort", "random"]).is_err());
+        assert_eq!(Args::try_parse_from(["reswho"]).unwrap().sort, Sort::Memory);
+        for (value, expected) in [
+            ("cpu", Sort::Cpu),
+            ("memory", Sort::Memory),
+            ("uptime", Sort::Uptime),
+            ("name", Sort::Name),
+        ] {
+            for mode in ["--md", "--json", "--tui"] {
+                assert_eq!(
+                    Args::try_parse_from(["reswho", mode, "--sort", value])
+                        .unwrap()
+                        .sort,
+                    expected
+                );
+            }
+        }
         assert_eq!(
             Args::try_parse_from(["reswho", "--depth", "all"])
                 .unwrap()

@@ -6,7 +6,7 @@ Status: early development.
 
 ```sh
 cargo run -- --tui
-cargo run -- --md
+cargo run -- --md --sort cpu
 cargo run -- --json
 ```
 

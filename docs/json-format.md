@@ -16,6 +16,7 @@ reswho --json-schema > reswho.schema.json
 - 採集到部分資料仍可成功輸出；必須檢查診斷、unknown 計數與 `inventory_complete`，不能把 exit 0 解讀為所有資料完整。
 - 參數錯誤、查無指定 ref、無法建立快照或序列化失敗：非零 exit、診斷寫 stderr，不輸出半份快照。stdout 寫入途中發生 I/O 錯誤可能留下部分資料；接收端仍需完成 JSON parsing。下游關閉 pipe 時視為正常結束。
 - 預設 `--depth 2`；需要完整觀測樹時明確使用 `--depth all`。完整樹不表示所有系統資訊均可讀取。
+- `--sort cpu|memory|uptime|name` 控制各層 children 排序，預設 memory。數值降序、未知／不適用置後，名稱自然升序；同值以 ref 排序。程序用自身數值，群組用範圍合計（部分合計用已知下界），不改歸屬或 totals。陣列順序仍不是識別契約。
 - 先檢查 `schema`。新版本可能只輸出最新契約，不保證能指定舊版。
 - 刪除／改名欄位、改型別、改單位、改 null 或統計語意、改 ref 生成方式、增加封閉 enum 值，都須增加 `reswho/N` 的 N 並提供遷移說明。
 - 新增可忽略的欄位可視為相容擴充；讀取者必須忽略未知 object 欄位。Schema 的 `additionalProperties` 因此允許擴充。既有必填欄位不能消失，不能把新欄位變成舊讀取者的必需資訊。

@@ -396,6 +396,101 @@ fn keys_keep_search_text_separate_from_shortcuts() {
 }
 
 #[test]
+fn sorting_refresh_and_layout_keep_selected_screen_row_without_pinning_navigation() {
+    let mut source = snapshot();
+    let template = tree::select(&source.root, "pid:10").unwrap();
+    source.root.children = (1..=80)
+        .map(|pid| {
+            let mut node = template.clone();
+            node.reference = format!("pid:{pid}");
+            node.name = format!("worker{pid}");
+            let process = node.process.as_mut().unwrap();
+            process.pid = pid;
+            process.resident_bytes = Some(u64::from(pid));
+            process.cpu_percent = Some(f64::from(81 - pid));
+            node
+        })
+        .collect();
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(source.clone()));
+    select(&mut app, "pid:30@");
+    let mut table = TableState::default().with_offset(app.selected - 5);
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut table))
+        .unwrap();
+    assert_eq!(app.selected - table.offset(), 5);
+    let anchor = SelectionAnchor::capture(&app, &table).unwrap();
+    handle_key(&mut app, KeyEvent::from(KeyCode::Char('c')));
+    anchor.restore(&app, &mut table);
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut table))
+        .unwrap();
+    assert_eq!(app.node(app.selected).unwrap().reference, "pid:30");
+    assert_eq!(app.selected - table.offset(), 5);
+
+    change(&mut source.root, 30, |process| {
+        process.cpu_percent = Some(20.5)
+    });
+    let anchor = SelectionAnchor::capture(&app, &table).unwrap();
+    app.update(Ok(source));
+    anchor.restore(&app, &mut table);
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut table))
+        .unwrap();
+    assert_eq!(app.node(app.selected).unwrap().reference, "pid:30");
+    assert_eq!(app.selected - table.offset(), 5);
+    let before = table.offset();
+    for key in ['?', '?', 'a'] {
+        let anchor = SelectionAnchor::capture(&app, &table).unwrap();
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char(key)));
+        anchor.restore(&app, &mut table);
+        terminal
+            .draw(|frame| view::draw(frame, &app, &mut table))
+            .unwrap();
+        assert_eq!(table.offset(), before);
+    }
+    let anchor = SelectionAnchor::capture(&app, &table).unwrap();
+    handle_key(&mut app, KeyEvent::from(KeyCode::Down));
+    anchor.restore(&app, &mut table);
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut table))
+        .unwrap();
+    assert_eq!(table.offset(), before);
+    assert_eq!(app.selected - table.offset(), 6);
+
+    let selected_key = app.rows[app.selected].key.clone();
+    terminal.backend_mut().resize(70, 14);
+    terminal.autoresize().unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut table))
+        .unwrap();
+    assert_eq!(app.rows[app.selected].key, selected_key);
+    assert!(app.selected >= table.offset());
+    assert!(app.selected - table.offset() < 5);
+
+    let anchor = SelectionAnchor::capture(&app, &table).unwrap();
+    handle_key(&mut app, KeyEvent::from(KeyCode::Home));
+    anchor.restore(&app, &mut table);
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut table))
+        .unwrap();
+    assert_eq!(table.offset(), 0);
+    assert_eq!(app.selected, 0);
+
+    let anchor = SelectionAnchor::capture(&app, &table).unwrap();
+    app.query = "no-such-resource".into();
+    app.rebuild();
+    anchor.restore(&app, &mut table);
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut table))
+        .unwrap();
+    assert!(app.rows.is_empty());
+    assert_eq!(table.selected(), None);
+    assert_eq!(table.offset(), 0);
+}
+
+#[test]
 fn layouts_and_untrusted_strings_render_without_terminal_controls() {
     let mut app = app();
     let mut snapshot = snapshot();
