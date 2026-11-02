@@ -24,6 +24,7 @@ pub(super) struct App {
     pub active_only: bool,
     pub path_scroll: u16,
     pub help: bool,
+    pub details: Option<super::details::Details>,
     pub error: Option<String>,
     pub collecting: bool,
     pub loading_frame: usize,
@@ -88,6 +89,7 @@ impl App {
             active_only: false,
             path_scroll: 0,
             help: false,
+            details: None,
             error: None,
             collecting: false,
             loading_frame: 0,
@@ -106,6 +108,20 @@ impl App {
         }
         let path = &row.path;
         Some(node_at(&self.snapshot.as_ref()?.root, path))
+    }
+
+    pub fn open_details(&mut self) {
+        let Some(node) = self.node(self.selected) else {
+            return;
+        };
+        if node.process.is_none() {
+            return;
+        }
+        if let Some(snapshot) = &self.snapshot
+            && let Ok(node) = tree::select(&snapshot.root, &node.reference)
+        {
+            self.details = Some(super::details::Details::new(node));
+        }
     }
 
     fn selection_chain(&self) -> Vec<String> {
@@ -127,6 +143,9 @@ impl App {
 
     pub fn update(&mut self, result: Result<Snapshot, String>) {
         self.collecting = false;
+        if let Some(details) = &mut self.details {
+            details.update(&result);
+        }
         let mut snapshot = match result {
             Ok(snapshot) => snapshot,
             Err(error) => {

@@ -8,29 +8,33 @@ use std::{
 };
 
 pub(super) struct Worker {
-    requests: SyncSender<()>,
+    requests: SyncSender<Option<u32>>,
     pub results: Receiver<Result<Snapshot, String>>,
     cancel: Cancellation,
     handle: Option<JoinHandle<()>>,
 }
 
 impl Worker {
-    pub fn start(options: Options) -> Self {
-        Self::with_collector(move |cancel| {
+    pub fn start(mut options: Options) -> Self {
+        Self::with_collector(move |cancel, command_pid| {
+            options.command_pid = command_pid;
             snapshot::capture(&options, cancel).map_err(|error| format!("{error:#}"))
         })
     }
 
     pub(super) fn with_collector(
-        mut collect: impl FnMut(&Cancellation) -> Result<Snapshot, String> + Send + 'static,
+        mut collect: impl FnMut(&Cancellation, Option<u32>) -> Result<Snapshot, String> + Send + 'static,
     ) -> Self {
         let (requests, incoming) = mpsc::sync_channel(1);
         let (outgoing, results) = mpsc::sync_channel(1);
         let cancel = Cancellation::default();
         let stopping = cancel.clone();
         let handle = thread::spawn(move || {
-            while incoming.recv().is_ok() && stopping.check().is_ok() {
-                let result = collect(&stopping);
+            while let Ok(command_pid) = incoming.recv() {
+                if stopping.check().is_err() {
+                    break;
+                }
+                let result = collect(&stopping, command_pid);
                 if stopping.check().is_err() {
                     break;
                 }
@@ -47,15 +51,15 @@ impl Worker {
         }
     }
 
-    pub fn request(&self) -> bool {
-        self.requests.try_send(()).is_ok()
+    pub fn request(&self, command_pid: Option<u32>) -> bool {
+        self.requests.try_send(command_pid).is_ok()
     }
 }
 
 impl Drop for Worker {
     fn drop(&mut self) {
         self.cancel.cancel();
-        let _ = self.requests.try_send(());
+        let _ = self.requests.try_send(None);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }

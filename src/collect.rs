@@ -15,7 +15,7 @@ pub struct Collection {
 }
 
 pub(crate) const COLLECTION_NOTES: [&str; 3] = [
-    "Command details are queried only for a selected PID in Markdown/JSON; container-internal processes are not implemented.",
+    "Command arguments are queried on demand for selected PID details; container-internal processes are not implemented.",
     "TCP/UDP sockets are a non-atomic snapshot, not traffic or inactivity history; sockets may change during collection.",
     "Process memory is RSS; shared pages may overlap between processes. Group totals are sums of known RSS, not unique physical memory.",
 ];

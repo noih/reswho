@@ -40,7 +40,7 @@ fn fixture_snapshot() -> Snapshot {
         system: SystemSummary::default(),
         scope: "group:all".into(),
         warnings: vec![
-            "Command details are queried only for a selected PID in Markdown/JSON; container-internal processes are not implemented.".into(),
+            "Command arguments are queried on demand for selected PID details; container-internal processes are not implemented.".into(),
             "Host swap: OS query unavailable or sample incomplete.".into(),
             "Host swap: OS query unavailable or sample incomplete.".into(),
         ],

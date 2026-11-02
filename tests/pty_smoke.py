@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def verify(arguments, exit_key, marker):
+def verify(arguments, exit_key, marker, details=False):
     master, slave = pty.openpty()
     process = None
     transcript = bytearray()
@@ -55,7 +55,32 @@ def verify(arguments, exit_key, marker):
             animation = transcript[previous:]
             assert any(glyph in animation for glyph in [b"/", b"-", b"\\"]), "spinner did not advance"
             assert b"sample" not in transcript, "long sample should still be pending"
-        if marker == b"sample":
+        if marker == b"sample" and details:
+            os.write(master, b"pd")
+            opened = len(transcript)
+            deadline = time.monotonic() + 5
+            while b"[filtered]" not in transcript[opened:] and time.monotonic() < deadline:
+                drain(0.1)
+                assert process.poll() is None
+            rendered = transcript[opened:]
+            assert b"Process details" in rendered, "details did not open"
+            assert b"Loading command" in rendered, "details loading was not shown"
+            assert b"[filtered]" in rendered and b"--token" in rendered, "filtered command missing"
+            assert b"fixture-private-value" not in transcript, "command exposed sensitive value"
+            for key in [b"j", b"\x1b[6~", b"\x1b[5~", b"k"]:
+                os.write(master, key)
+                drain(0.1)
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 14, 80, 0, 0))
+            drain(0.2)
+            os.write(master, b"\x1b")
+            drain(0.2)
+            reopened = len(transcript)
+            os.write(master, b"d")
+            deadline = time.monotonic() + 2
+            while b"Loading command" not in transcript[reopened:] and time.monotonic() < deadline:
+                drain(0.05)
+            assert b"Loading command" in transcript[reopened:], "reopening must query fresh command data"
+        if marker == b"sample" and not details:
             if "--sort" in arguments:
                 assert b"Sort NAME" in transcript, "initial sort option was not applied"
             for key in [b"j", b"l", b"c", b"m", b"u", b"n", b"/reswho", b"\r", b"\x1b", b"a", b"]", b"[", b"?", b"?"]:
@@ -86,3 +111,14 @@ def verify(arguments, exit_key, marker):
 verify(["--sort", "name"], b"q", b"sample")
 verify(["--tui", "--sample-ms", "5000"], b"\x03", b"Loading resources...")
 verify(["--tui", "--from", "pid:4294967295"], b"q", b"Unable to load resources")
+
+fixture = subprocess.Popen(
+    ["/bin/sh", "-c", "read -r owned_fixture_input", "fixture", "--token", "fixture-private-value"],
+    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+)
+try:
+    verify(["--tui", "--from", f"pid:{fixture.pid}", "--sample-ms", "1000"], b"q", b"sample", details=True)
+finally:
+    fixture.terminate()
+    fixture.wait()
+    fixture.stdin.close()

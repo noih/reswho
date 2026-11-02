@@ -334,6 +334,23 @@ fn write_children(text: &mut String, node: &Node, level: usize, categories: bool
     }
 }
 
+pub(crate) fn command_text(argv: &[String]) -> String {
+    argv.iter()
+        .map(|arg| {
+            if arg.is_empty()
+                || arg
+                    .chars()
+                    .any(|c| c.is_whitespace() || matches!(c, '"' | '\\'))
+            {
+                serde_json::to_string(arg).expect("string serialization")
+            } else {
+                arg.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn process_details(process: &Process) -> Vec<String> {
     let mut notes = vec![format!(
         "PPID {} · UID {}",
@@ -347,21 +364,7 @@ fn process_details(process: &Process) -> Vec<String> {
     }
     if let Some(command) = &process.command {
         if let Some(argv) = &command.argv {
-            let rendered = argv
-                .iter()
-                .map(|arg| {
-                    if arg.is_empty()
-                        || arg
-                            .chars()
-                            .any(|c| c.is_whitespace() || matches!(c, '"' | '\\'))
-                    {
-                        serde_json::to_string(arg).expect("string serialization")
-                    } else {
-                        arg.clone()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
+            let rendered = command_text(argv);
             notes.push(if argv.is_empty() {
                 "cmd: []".into()
             } else {

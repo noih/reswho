@@ -26,7 +26,7 @@ reswho --json-schema > reswho.schema.json
 
 ## 指定 PID 的命令資訊
 
-`--json --from pid:N` 只查詢選取程序的命令，子程序、一般群組查詢與 TUI 不查詢。新增的 `process.command` 是 `/8` 相容擴充；新版輸出此欄，舊版輸出可缺省。`null` 表示未要求查詢；物件存在但 `argv: null` 表示已要求、但無法取得，原因在該物件的 `unavailable`。
+`--json --from pid:N` 只查詢選取程序的命令，子程序與一般群組查詢不查詢；TUI 只有開啟程序詳情時才查詢選取 PID。新增的 `process.command` 是 `/8` 相容擴充；新版輸出此欄，舊版輸出可缺省。`null` 表示未要求查詢；物件存在但 `argv: null` 表示已要求、但無法取得，原因在該物件的 `unavailable`。
 
 | 欄位 | 意義 |
 | --- | --- |

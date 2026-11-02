@@ -1,3 +1,4 @@
+mod details;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -64,7 +65,7 @@ pub fn run(options: Options, scope: String, depth: usize, sort: Sort) -> Result<
     let mut restore = TerminalRestore(true);
     let mut app = App::new(scope, depth);
     app.sort = sort;
-    app.collecting = worker.request();
+    request_snapshot(&worker, &mut app);
     let mut table = TableState::default();
     let mut terminal = io::stdout()
         .sync_update(|_| -> Result<_> {
@@ -105,8 +106,12 @@ fn event_loop(
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => bail!("resource collector stopped unexpectedly"),
         }
-        if !app.collecting && !app.paused && Instant::now() >= next_refresh {
-            app.collecting = worker.request();
+        let detail_request = app
+            .details
+            .as_ref()
+            .is_some_and(|details| details.needs_query);
+        if !app.collecting && (detail_request || (!app.paused && Instant::now() >= next_refresh)) {
+            request_snapshot(worker, &mut app);
             dirty |= app.snapshot.is_none();
         }
         let loading_frame = if app.snapshot.is_none() && app.collecting {
@@ -126,7 +131,7 @@ fn event_loop(
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     dirty = true;
-                    let browsing = !app.editing && !app.help;
+                    let browsing = !app.editing && !app.help && app.details.is_none();
                     let anchor = SelectionAnchor::capture(&app, &table);
                     if handle_key(&mut app, key) {
                         return Ok(());
@@ -140,7 +145,7 @@ fn event_loop(
                         && !app.help
                         && !app.collecting
                     {
-                        app.collecting = worker.request();
+                        request_snapshot(worker, &mut app);
                     }
                 }
                 Event::Resize(_, _) => dirty = true,
@@ -150,9 +155,35 @@ fn event_loop(
     }
 }
 
+fn request_snapshot(worker: &Worker, app: &mut App) {
+    let pid = app.details.as_ref().and_then(details::Details::query_pid);
+    app.collecting = worker.request(pid);
+    if app.collecting
+        && let Some(details) = &mut app.details
+    {
+        details.needs_query = false;
+    }
+}
+
 fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         return true;
+    }
+    if let Some(details) = &mut app.details {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('d') => app.details = None,
+            KeyCode::Char('q') => return true,
+            KeyCode::Down | KeyCode::Char('j') => details.scroll(1),
+            KeyCode::Up | KeyCode::Char('k') => details.scroll(-1),
+            KeyCode::PageDown => details.scroll(10),
+            KeyCode::PageUp => details.scroll(-10),
+            KeyCode::Home => details.scroll(isize::MIN),
+            KeyCode::End => details.scroll(isize::MAX),
+            KeyCode::Char('r') => details.refresh(),
+            KeyCode::Char('p') => app.paused = !app.paused,
+            _ => {}
+        }
+        return false;
     }
     if app.help {
         if matches!(key.code, KeyCode::Char('?') | KeyCode::Esc) {
@@ -188,6 +219,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     }
     match key.code {
         KeyCode::Char('q') => return true,
+        KeyCode::Char('d') => app.open_details(),
         KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
         KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
         KeyCode::PageDown => app.move_selection(10),
