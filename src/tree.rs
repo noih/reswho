@@ -3,7 +3,7 @@ use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 mod applications;
@@ -28,28 +28,12 @@ pub(crate) fn stable_ref(category: &str, key: &str) -> String {
     format!("group:{}", &format!("{digest:x}")[..16])
 }
 
-fn app_bundle(path: &Path) -> Option<PathBuf> {
-    let mut bundle = PathBuf::new();
-    for component in path.components() {
-        bundle.push(component);
-        let name = bundle
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default();
-        if (name.ends_with(".app") || name.ends_with(".app.bundle"))
-            && path
-                .strip_prefix(&bundle)
-                .ok()
-                .is_some_and(|rest| rest.starts_with("Contents"))
-        {
-            return Some(bundle);
-        }
-    }
-    None
-}
-
-fn assignment(process: &Process, cache: &mut projects::Discovery) -> Assignment {
-    if let Some(bundle) = process.executable.as_deref().and_then(app_bundle) {
+fn assignment(
+    process: &Process,
+    cache: &mut projects::Discovery,
+    app_bundles: &BTreeMap<u32, PathBuf>,
+) -> Assignment {
+    if let Some(bundle) = app_bundles.get(&process.pid) {
         let key = bundle.to_string_lossy().into_owned();
         let filename = bundle.file_name().unwrap_or_default().to_string_lossy();
         let name = filename
@@ -143,6 +127,31 @@ fn ancestor_assignment<'a>(
 }
 
 pub fn build(processes: Vec<Process>) -> Result<Node> {
+    let settings = crate::extensions::default_settings()?;
+    let cancel = crate::snapshot::Cancellation::default();
+    build_with_context(
+        processes,
+        &crate::extensions::Context::new(&settings, &cancel),
+    )
+}
+
+pub(crate) fn build_with_context(
+    processes: Vec<Process>,
+    context: &crate::extensions::Context<'_>,
+) -> Result<Node> {
+    build_with_providers(
+        processes,
+        context,
+        &[&crate::extensions::Builtin::AppBundle],
+    )
+}
+
+pub fn build_with_providers(
+    processes: Vec<Process>,
+    context: &crate::extensions::Context<'_>,
+    providers: &[&dyn crate::extensions::Extension],
+) -> Result<Node> {
+    let (app_bundles, diagnostics) = crate::extensions::classify(providers, context, &processes);
     let mut seen = HashSet::new();
     let mut cache = projects::Discovery::default();
     let mut buckets: BTreeMap<String, (Assignment, Vec<Process>)> = BTreeMap::new();
@@ -153,7 +162,7 @@ pub fn build(processes: Vec<Process>) -> Result<Node> {
     }
     let direct: HashMap<_, _> = processes
         .iter()
-        .map(|process| (process.pid, assignment(process, &mut cache)))
+        .map(|process| (process.pid, assignment(process, &mut cache, &app_bundles)))
         .collect();
     let by_pid: HashMap<_, _> = processes
         .iter()
@@ -283,6 +292,7 @@ pub fn build(processes: Vec<Process>) -> Result<Node> {
         Vec::new(),
         Grouping::Category,
     );
+    root.diagnostics = diagnostics;
     root.children = categories.into_values().collect();
     for category in &root.children {
         root.totals.add(&category.totals);

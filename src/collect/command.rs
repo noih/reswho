@@ -214,7 +214,7 @@ fn inline_code_option(value: &str) -> bool {
         && value.contains(['c', 'e']))
 }
 
-fn sanitize(mut argv: Vec<String>, executable: Option<&Path>) -> ProcessCommand {
+pub(super) fn sanitize(mut argv: Vec<String>, executable: Option<&Path>) -> ProcessCommand {
     let python_flags_end = if executable
         .and_then(Path::file_name)
         .and_then(|s| s.to_str())

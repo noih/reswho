@@ -18,7 +18,7 @@ use anyhow::{Result, bail};
 pub use model::{Container, ContainerTotals, Mount, Port, Project, ProjectSource, Runtime};
 use std::{
     collections::{BTreeMap, HashSet},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 pub fn collect() -> Result<Node> {
@@ -32,47 +32,74 @@ pub(crate) fn collect_with_cancel(
     cancel: &crate::snapshot::Cancellation,
     sample_interval: Duration,
 ) -> Result<Node> {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let sources = std::thread::scope(|scope| -> Result<Vec<(Runtime, Vec<Container>)>> {
-        let docker = scope.spawn(|| {
-            let mut runner = command::RuntimeCommand {
-                cancel: cancel.clone(),
-                program: "docker".into(),
-                deadline,
-                sample_interval,
-                api_version: std::env::var("DOCKER_API_VERSION").ok(),
-            };
-            docker::collect(
-                &mut runner,
-                std::env::var("DOCKER_CONTEXT").ok(),
-                std::env::var("DOCKER_HOST").ok(),
-                time::OffsetDateTime::now_utc(),
-            )
-        });
-        #[cfg(target_os = "macos")]
-        let apple = command::find_program("container").map(|program| {
-            scope.spawn(move || apple::native(program, cancel, deadline, sample_interval))
-        });
-        let mut sources = vec![
-            docker
-                .join()
-                .map_err(|_| anyhow::anyhow!("Docker collector failed"))?,
-        ];
-        #[cfg(target_os = "macos")]
-        if let Some(apple) = apple {
-            sources.push(
-                apple
-                    .join()
-                    .map_err(|_| anyhow::anyhow!("Apple collector failed"))?,
-            );
-        }
-        Ok(sources)
-    })?;
-    cancel.check()?;
-    build_all(sources)
+    let settings = crate::extensions::settings_registry()?.resolve(
+        &crate::settings::Config::default(),
+        &BTreeMap::from([(
+            "sampling.interval_ms".into(),
+            serde_json::Value::from(sample_interval.as_millis() as u64),
+        )]),
+    )?;
+    collect_with_context(&crate::extensions::Context::new(&settings, cancel))
 }
 
-fn build_all(sources: Vec<(Runtime, Vec<Container>)>) -> Result<Node> {
+pub(crate) fn collect_with_context(context: &crate::extensions::Context<'_>) -> Result<Node> {
+    let providers: Vec<&dyn crate::extensions::Extension> = crate::extensions::BUILTINS
+        .iter()
+        .filter(|extension| {
+            use crate::extensions::Extension;
+            extension.descriptor().enabled
+                && extension
+                    .descriptor()
+                    .capabilities
+                    .contains(&crate::extensions::Capability::Collect)
+                && (!matches!(extension, crate::extensions::Builtin::Apple)
+                    || command::find_program("container").is_some())
+        })
+        .map(|extension| extension as &dyn crate::extensions::Extension)
+        .collect();
+    crate::extensions::collect(&providers, context)
+}
+
+pub(crate) fn collect_docker(
+    context: &crate::extensions::Context<'_>,
+) -> Result<(Runtime, Vec<Container>)> {
+    let mut runner = command::RuntimeCommand {
+        cancel: context.cancel.clone(),
+        program: "docker".into(),
+        deadline: context.deadline,
+        sample_interval: context.settings.interval("sampling.interval_ms"),
+        api_version: std::env::var("DOCKER_API_VERSION").ok(),
+    };
+    Ok(docker::collect(
+        &mut runner,
+        std::env::var("DOCKER_CONTEXT").ok(),
+        std::env::var("DOCKER_HOST").ok(),
+        time::OffsetDateTime::now_utc(),
+    ))
+}
+
+pub(crate) fn collect_apple(
+    context: &crate::extensions::Context<'_>,
+) -> Result<(Runtime, Vec<Container>)> {
+    #[cfg(target_os = "macos")]
+    {
+        let program = command::find_program("container")
+            .ok_or_else(|| anyhow::anyhow!("Apple Container CLI unavailable"))?;
+        Ok(apple::native(
+            program,
+            context.cancel,
+            context.deadline,
+            context.settings.interval("sampling.interval_ms"),
+        ))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = context;
+        bail!("Apple Container requires macOS");
+    }
+}
+
+pub(crate) fn build_all(sources: Vec<(Runtime, Vec<Container>)>) -> Result<Node> {
     let mut root = Node::group(
         "group:containers".into(),
         "Containers".into(),
@@ -95,7 +122,18 @@ fn build_all(sources: Vec<(Runtime, Vec<Container>)>) -> Result<Node> {
     Ok(root)
 }
 
+pub(crate) fn validate_containers(containers: &[Container]) -> Result<()> {
+    let mut ids = HashSet::new();
+    for container in containers {
+        if !ids.insert(&container.id) {
+            bail!("duplicate container identity");
+        }
+    }
+    Ok(())
+}
+
 fn build(runtime: Runtime, containers: Vec<Container>) -> Result<Node> {
+    validate_containers(&containers)?;
     let endpoint = runtime.endpoint_ref.as_deref().unwrap_or("unresolved");
     let runtime_key = format!(
         "{}\0{endpoint}\0{}",
@@ -121,11 +159,7 @@ fn build(runtime: Runtime, containers: Vec<Container>) -> Result<Node> {
         ..ContainerTotals::default()
     };
     let mut projects: BTreeMap<String, Node> = BTreeMap::new();
-    let mut ids = HashSet::new();
     for container in containers {
-        if !ids.insert(container.id.clone()) {
-            bail!("duplicate container identity");
-        }
         totals.add(&container);
         let project_key = container
             .project

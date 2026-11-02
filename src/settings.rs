@@ -113,6 +113,10 @@ fn valid_namespace(key: &str, provider: &str) -> bool {
 }
 
 impl Registry {
+    pub fn definition(&self, key: &str) -> Option<&Definition> {
+        self.definitions.get(key)
+    }
+
     pub fn core() -> Self {
         let mut registry = Self {
             definitions: BTreeMap::new(),

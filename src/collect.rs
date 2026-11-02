@@ -29,19 +29,91 @@ pub fn collect(interval: Duration) -> Result<Collection> {
     collect_with_cancel(interval, &crate::snapshot::Cancellation::default(), None)
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn collect_with_cancel(
     interval: Duration,
     cancel: &crate::snapshot::Cancellation,
     command_pid: Option<u32>,
 ) -> Result<Collection> {
+    let settings = crate::extensions::settings_registry()?.resolve(
+        &crate::settings::Config::default(),
+        &std::collections::BTreeMap::from([(
+            "sampling.interval_ms".into(),
+            serde_json::Value::from(interval.as_millis() as u64),
+        )]),
+    )?;
+    collect_with_context(
+        &crate::extensions::Context::new(&settings, cancel),
+        command_pid,
+    )
+}
+
+pub(crate) fn extension_command(
+    process: &Process,
+    pointer_width: usize,
+) -> crate::model::ProcessCommand {
+    #[cfg(target_os = "macos")]
+    {
+        command::collect(
+            process.pid as i32,
+            process.executable.as_deref(),
+            pointer_width,
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (process, pointer_width);
+        crate::model::ProcessCommand::default()
+    }
+}
+
+pub(crate) fn validate_extension_command(
+    mut value: crate::model::ProcessCommand,
+    executable: Option<&std::path::Path>,
+) -> Result<crate::model::ProcessCommand> {
+    if let Some(argv) = value.argv.take() {
+        if !value.unavailable.is_empty() {
+            bail!("extension command mixes arguments and unavailable diagnostics");
+        }
+        if argv.len() > 4096
+            || argv.iter().any(|arg| arg.len() > 16_384)
+            || argv.iter().map(String::len).sum::<usize>() > 1_048_576
+        {
+            bail!("extension command exceeds limits");
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let mut sanitized = command::sanitize(argv, executable);
+            sanitized.unavailable = value.unavailable;
+            return Ok(sanitized);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (argv, executable);
+            bail!("command details require macOS");
+        }
+    }
+    if value.unavailable.is_empty() {
+        bail!("extension command has neither arguments nor diagnostics");
+    }
+    value.entrypoint = None;
+    value.redacted_indices.clear();
+    Ok(value)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn collect_with_context(
+    context: &crate::extensions::Context<'_>,
+    command_pid: Option<u32>,
+) -> Result<Collection> {
     use std::time::Instant;
+    let cancel = context.cancel;
+    let interval = context.settings.interval("sampling.interval_ms");
     let initial_cpu = macos::host_cpu_ticks();
-    let first = macos::scan(false, cancel, None)?;
+    let first = macos::scan(false, context, None)?;
     let start = Instant::now();
     cancel.wait(interval)?;
     let final_cpu = macos::host_cpu_ticks();
-    let mut second = macos::scan(true, cancel, command_pid)?;
+    let mut second = macos::scan(true, context, command_pid)?;
     let sample_ms = start.elapsed().as_millis() as u64;
     for (pid, observation) in &mut second {
         observation.process.cpu_percent = first.get(pid).and_then(|old| {
@@ -123,9 +195,8 @@ fn host_cpu_percent(before: [u32; 4], after: [u32; 4]) -> Option<f64> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn collect_with_cancel(
-    _interval: Duration,
-    _cancel: &crate::snapshot::Cancellation,
+pub(crate) fn collect_with_context(
+    _context: &crate::extensions::Context<'_>,
     _command_pid: Option<u32>,
 ) -> Result<Collection> {
     bail!("resource collection currently supports macOS only")
@@ -226,9 +297,10 @@ mod macos {
 
     pub(super) fn scan(
         details: bool,
-        cancel: &crate::snapshot::Cancellation,
+        context: &crate::extensions::Context<'_>,
         command_pid: Option<u32>,
     ) -> Result<HashMap<u32, Observation>> {
+        let cancel = context.cancel;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .context("system clock before Unix epoch")?
@@ -306,7 +378,19 @@ mod macos {
                     } else {
                         4
                     };
-                    command::collect(pid, process.executable.as_deref(), pointer_width)
+                    crate::extensions::details(
+                        &crate::extensions::Builtin::Command,
+                        context,
+                        &process,
+                        pointer_width,
+                    )
+                    .unwrap_or_else(|_| {
+                        command::unavailable(Diagnostic::new(
+                            "command_failed",
+                            "extensions.command.details",
+                            "Command extension unavailable",
+                        ))
+                    })
                 } else {
                     command::unavailable(Diagnostic::new(
                         "unavailable",

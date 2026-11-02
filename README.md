@@ -15,3 +15,5 @@ Interactive terminals open the TUI automatically; redirected output defaults to 
 JSON consumers: see the [data contract](docs/json-format.md), or run `reswho --json-schema` for the offline schema.
 
 Settings: `reswho settings --json` shows effective values offline. Use `--config PATH`, `--sample-ms` or `--refresh-ms` to override the defaults; see the [settings contract](docs/extensions-settings.md) for the read-only JSON config format. Extension installation is not available yet.
+
+Built-in extensions: `reswho extensions --json` lists collectors, classifiers and on-demand details offline. Availability is reported as unknown until collection; external extension installation is not available yet.

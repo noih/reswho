@@ -164,3 +164,53 @@ fn settings_json_rejects_format_conflicts_across_subcommand_positions() {
         assert_eq!(report["settings"]["sampling.interval_ms"]["value"], 250);
     }
 }
+
+#[test]
+fn extensions_list_is_offline_and_distinguishes_enabled_from_availability() {
+    let dir = tempfile::tempdir().unwrap();
+    for args in [vec!["extensions", "--json"], vec!["--json", "extensions"]] {
+        let result = Command::new(env!("CARGO_BIN_EXE_reswho"))
+            .env("XDG_CONFIG_HOME", dir.path())
+            .env("PATH", "")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let entries: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        let entries = entries.as_array().unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["docker", "apple", "app_bundle", "command"]
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry["availability"] == "unknown"
+                    && entry["source"] == "builtin"
+                    && entry["version"] == "1")
+        );
+        assert!(entries[0]["enabled"].as_bool().unwrap());
+        assert_eq!(entries[2]["capabilities"][0], "classify");
+        assert_eq!(entries[3]["capabilities"][0], "details");
+    }
+    let result = Command::new(env!("CARGO_BIN_EXE_reswho"))
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("PATH", "")
+        .args(["extensions", "--no-containers"])
+        .output()
+        .unwrap();
+    assert!(result.status.success());
+    let output = String::from_utf8(result.stdout).unwrap();
+    assert!(output.contains(
+        "docker/1 source=builtin capabilities=collect enabled=false availability=unknown"
+    ));
+    assert!(!output.contains("Loading"));
+    dir.close().unwrap();
+}

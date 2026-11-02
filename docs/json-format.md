@@ -282,3 +282,7 @@ reswho --json --depth all | jq '
 ```
 
 `cargo test` 會以離線 Schema 驗證範例、實際建構／序列化的節點與收合／選取結果，並驗證錯誤型別、缺欄位、不合法組合會被拒絕。原生 live 測試另驗證本機採集輸出符合 Schema。
+
+## 內建 extension 與離線清單
+
+階段2將既有 app-bundle 分類與 selected-PID command 詳情接入共同 extension dispatcher，輸出仍使用既有 Attribution／ProcessCommand，版本維持 reswho/8。分類 proposal 必須符合本輪 PID＋start 與 executable path；詳情經身分驗證與核心 sanitizer 後才進入 snapshot。`reswho extensions --json` 是獨立的內建 metadata 陣列，不適用資源 snapshot Schema，也不採集資源或探測來源服務。外部自有分類／parsed details 與 provenance 尚屬階段3，沒有預先擴大本版 wire contract。

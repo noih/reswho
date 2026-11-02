@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, Subcommand};
 use reswho::{
-    output, settings,
+    extensions, output, settings,
     snapshot::{self, Cancellation, Options},
     sort::Sort,
     tree, tui,
@@ -10,6 +10,7 @@ use std::{
     collections::BTreeMap,
     io::{self, IsTerminal, Write},
     path::PathBuf,
+    sync::Arc,
 };
 
 #[derive(Debug, Parser)]
@@ -52,7 +53,7 @@ struct Args {
         help = "Override TUI wait after each result in ms (positive; default 2000)"
     )]
     refresh_ms: Option<u64>,
-    #[arg(long, help = "Skip container runtime queries")]
+    #[arg(long, global = true, help = "Skip container runtime queries")]
     no_containers: bool,
     #[arg(
         long,
@@ -81,6 +82,8 @@ impl Args {
 enum Command {
     #[command(about = "Show effective settings offline without collecting resources")]
     Settings,
+    #[command(about = "List built-in extensions offline without collecting resources")]
+    Extensions,
 }
 
 fn parse_reference(value: &str) -> Result<String, String> {
@@ -128,11 +131,36 @@ fn run() -> Result<()> {
                 overrides.insert(key.into(), value.into());
             }
         }
-        let resolved = settings::Registry::core().resolve(&user, &overrides)?;
+        let resolved = extensions::settings_registry()?.resolve(&user, &overrides)?;
         for key in &resolved.report().unknown_keys {
             eprintln!("reswho: unknown setting {key} (not applied)");
         }
-        if matches!(args.command, Some(Command::Settings)) {
+        if matches!(args.command, Some(Command::Extensions)) {
+            let entries = extensions::list(&resolved, !args.no_containers);
+            if args.json {
+                format!("{}\n", serde_json::to_string_pretty(&entries)?)
+            } else {
+                entries
+                    .iter()
+                    .map(|entry| {
+                        format!(
+                            "{}/{} source={} capabilities={} enabled={} availability={}\n",
+                            entry.id,
+                            entry.version,
+                            entry.source,
+                            entry
+                                .capabilities
+                                .iter()
+                                .map(|capability| format!("{capability:?}").to_lowercase())
+                                .collect::<Vec<_>>()
+                                .join(","),
+                            entry.enabled,
+                            entry.availability
+                        )
+                    })
+                    .collect()
+            }
+        } else if matches!(args.command, Some(Command::Settings)) {
             let report = resolved.report();
             if args.json {
                 format!("{}\n", serde_json::to_string_pretty(report)?)
@@ -152,6 +180,8 @@ fn run() -> Result<()> {
                     .collect()
             }
         } else {
+            let refresh_interval = resolved.interval("refresh.interval_ms");
+            let resolved = Arc::new(resolved);
             if args.tui
                 || (!args.md
                     && !args.json
@@ -160,19 +190,19 @@ fn run() -> Result<()> {
             {
                 return tui::run(
                     Options {
-                        sample_interval: resolved.interval("sampling.interval_ms"),
+                        settings: Arc::clone(&resolved),
                         containers: !args.no_containers,
                         command_pid: None,
                     },
                     args.from,
                     args.depth,
                     args.sort,
-                    resolved.interval("refresh.interval_ms"),
+                    refresh_interval,
                 );
             }
             let mut snapshot = snapshot::capture(
                 &Options {
-                    sample_interval: resolved.interval("sampling.interval_ms"),
+                    settings: Arc::clone(&resolved),
                     containers: !args.no_containers,
                     command_pid: args
                         .from

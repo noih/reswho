@@ -36,7 +36,7 @@ impl Cancellation {
 
 #[derive(Clone)]
 pub struct Options {
-    pub sample_interval: Duration,
+    pub settings: Arc<crate::settings::Resolved>,
     pub containers: bool,
     pub command_pid: Option<u32>,
 }
@@ -44,13 +44,16 @@ pub struct Options {
 pub fn capture(options: &Options, cancel: &Cancellation) -> Result<Snapshot> {
     let start = Instant::now();
     cancel.check()?;
-    let mut collection =
-        collect::collect_with_cancel(options.sample_interval, cancel, options.command_pid)?;
+    let context = crate::extensions::Context::new(&options.settings, cancel);
+    let mut collection = collect::collect_with_context(&context, options.command_pid)?;
     cancel.check()?;
-    let mut root = tree::build(collection.processes)?;
+    let mut root = tree::build_with_context(collection.processes, &context)?;
     if options.containers {
         cancel.check()?;
-        match containers::collect_with_cancel(cancel, options.sample_interval) {
+        match containers::collect_with_context(&crate::extensions::Context::new(
+            &options.settings,
+            cancel,
+        )) {
             Ok(containers) => root.children.push(containers),
             Err(error) => collection.warnings.push(crate::model::Diagnostic::new(
                 "collection_failed",

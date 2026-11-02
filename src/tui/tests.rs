@@ -1194,3 +1194,88 @@ fn refresh_wait_pause_and_manual_requests_are_independent_of_sampling() {
         next + Duration::from_secs(5)
     ));
 }
+
+#[test]
+fn extension_command_details_render_on_demand_with_core_redaction() {
+    let render = |app: &App| {
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, app, &mut TableState::default()))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    use crate::extensions::{
+        self, Capability, Contribution, Descriptor, DetailProposal, Extension, ProcessIdentity,
+        Request,
+    };
+    struct CommandFixture;
+    impl Extension for CommandFixture {
+        fn descriptor(&self) -> Descriptor {
+            Descriptor {
+                id: "fixture",
+                version: "1",
+                protocol_version: 1,
+                source: "builtin",
+                platforms: vec!["macos"],
+                capabilities: vec![Capability::Details],
+                enabled: true,
+                availability: "unknown",
+            }
+        }
+        fn execute(
+            &self,
+            _: &extensions::Context<'_>,
+            request: Request<'_>,
+        ) -> anyhow::Result<Contribution> {
+            let Request::Details { process, .. } = request else {
+                anyhow::bail!("unexpected fixture request");
+            };
+            Ok(Contribution::Details {
+                proposal: DetailProposal {
+                    identity: ProcessIdentity::observed(process).unwrap(),
+                    command: crate::model::ProcessCommand {
+                        argv: Some(vec![
+                            "demo".into(),
+                            "--token".into(),
+                            "fixture-secret".into(),
+                        ]),
+                        ..Default::default()
+                    },
+                },
+            })
+        }
+    }
+    let settings = extensions::default_settings().unwrap();
+    let cancel = Cancellation::default();
+    let context = extensions::Context::new(&settings, &cancel);
+    let mut app = App::new("pid:10".into(), 2);
+    app.update(Ok(snapshot()));
+    app.open_details();
+    assert_eq!(app.details.as_ref().unwrap().query_pid(), Some(10));
+    assert!(render(&app).contains("Loading command"));
+    let mut result = snapshot();
+    fn attach(node: &mut Node, context: &extensions::Context<'_>) {
+        if let Some(process) = &mut node.process
+            && process.pid == 10
+        {
+            process.command =
+                Some(extensions::details(&CommandFixture, context, process, 8).unwrap());
+        }
+        for child in &mut node.children {
+            attach(child, context);
+        }
+    }
+    attach(&mut result.root, &context);
+    app.update(Ok(result));
+    let text = render(&app);
+    assert!(text.contains("[filtered]"));
+    assert!(!text.contains("fixture-secret"));
+    handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+    assert!(app.details.is_none());
+}

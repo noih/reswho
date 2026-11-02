@@ -2,7 +2,7 @@
 
 Tenqo：rw-27。
 
-狀態：階段1已實作設定 registry、設定檔載入、離線查詢與 sample／refresh 接入，待獨立 review。共同 extension 執行介面、安裝與外部協定仍未實作；現有 Docker／Apple adapter 是階段2遷移對象。
+狀態：階段1於 6bccd35 驗收通過。階段2已接入共同內建 extension 介面、離線清單、app-bundle 分類與按需命令詳情，整合驗證通過，待獨立 review。安裝與外部協定屬階段3，尚未提供。
 
 ## Extension 邊界
 
@@ -77,7 +77,7 @@ Refresh 與 sampling 是不同用途。保持目前同時最多一輪採集、�
 
 每階段由開發 owner 執行針對性測試，整合後依 TESTING.md 完成 fmt／Clippy／一般 Rust 測試；CLI／排程改動補受影響的 PTY 範圍。每階段一次獨立 review，修復只重驗受影響範圍。一般測試不得啟動真實容器服務，外部協定使用自有假程序／fixture；既有 native container probes 的未改動證據可沿用。
 
-目前：階段1已接入 CLI／TUI，驗證結果見下方；停在獨立 review 邊界。階段2／3待下一次派工，尚不提供 extension 安裝。target 沿用專案開發 cache，階段結束記錄大小；自有 temp／child／PTY 由 fixture Drop／finally 回收，不建立或改寫真正使用者設定。
+目前：階段1已驗收；階段2由同一 owner 實作，整合驗證後停在獨立 review 邊界。階段3待下一次派工，尚不提供 extension 安裝。target 沿用專案開發 cache；自有 temp／child／PTY 由 fixture Drop／finally 回收，不建立或改寫真正使用者設定。
 
 ## 階段1可用介面
 
@@ -106,7 +106,40 @@ reswho --tui --config /path/to/config.json --refresh-ms 3000
 
 Integer 型別是 JSON 非負整數；min／max 是含端點界限，allowed 是允許值集合。sample 為200–5000ms；refresh 必須為正整數 u64 毫秒，且本機 `Instant::checked_add` 可安全排程，排程當下也再次 checked-add。TUI 仍使用既有100ms事件輪詢，因此極短 refresh 是最短等待要求，不是精密計時保證。收到結果（含失敗）才開始下一次等待，不追趕積欠輪次；暫停、手動刷新與詳情按需查詢沿用原規則。
 
-驗證紀錄：focused CLI assertion 先以 `unexpected argument 'settings'` 失敗；敏感 report fixture 先捕捉 allowed-values 洩漏，已遮蔽 metadata。PTY 首次斷言未處理游標控制碼、其次誤用大寫 PAUSED，皆修正 fixture，未改產品行為。整合完成後 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test` 通過（123 passed、6 個既有 live／measurement ignored）；`cargo build` 與最終 `python3 tests/pty_smoke.py` 通過（原有4種流程及新增 auto／wait／pause）。Rust temp 由 tempfile guard 清理；PTY runner 自有 config temp、shell 與終端 descriptor 皆在 finally 回收，target 保留給下一階段。未修改 native collector／runtime transport，不重跑 live 或接觸 Docker／Apple 服務。
+階段1驗證：fmt／Clippy／一般 Rust suite 及 PTY 通過；review 修復 allowed-set 相容性及 CLI 跨 subcommand 格式衝突後，8 settings／2 parser／6 CLI tests 與 fmt／Clippy 通過。6bccd35 已由 leader 驗收。
+
+## 階段2：內建 extension
+
+```sh
+reswho extensions
+reswho extensions --json
+reswho extensions --no-containers --json
+```
+
+離線清單依固定順序列出 `docker`、`apple`、`app_bundle`、`command`；各有 id、version、protocol_version、source、platforms、capabilities、enabled、availability。`source=builtin`；`enabled` 代表平台與本次設定允許執行，與來源是否可用分開。`--no-containers` 停用本次 container collect；不影響 classify／details。清單不執行 CLI、服務或資源查詢，因此 `availability=unknown`，不宣稱服務正常。
+
+共同 Rust API 是 `extensions::Extension::execute(Context, Request) -> Contribution`。Context 含同輪不可變 resolved settings、Cancellation 與 deadline；Request／Contribution 分為 collect、classify、details，dispatcher 依能力驗證並以 provider／version 包裝可序列化的 Response。設定 registry 先建 core，再依上述順序註冊；Docker／Apple 透過 uses 引用同一 `sampling.interval_ms`。`Options.settings` 以 Arc 持有一次解析結果，worker 更新 selected PID 時不重讀設定。
+
+Docker／Apple 使用現有 transport、Runtime／Container DTO 及同輪採樣；container dispatcher 同時啟動來源，按固定順序加入核心建樹。原本10秒 container deadline 仍從 container 階段開始，不與 host 取樣共用耗時額度。在 deadline 內回傳的原生 partial／unavailable diagnostics 保留；逾時結果拒絕，不以完成呼叫視為成功；provider 失敗或重複 container identity 只使該來源 unavailable，其他來源保留。不建立跨輪快取。Apple CLI 不存在時仍沿用原本跳過採集的行為，離線清單仍保留該內建 extension。
+
+`app_bundle` 是遷移既有分類邏輯的實際範例：批次閱讀觀測 executable，提出帶 PID＋started_unix_us 的 AppBundle path 證據。核心核對觀測身分、絕對路徑與 Contents 所屬 bundle；stale、missing／unknown identity 或不符路徑的 proposal 被拒絕並留下 `extensions.<id>.classify` diagnostic。有效 app 證據沿用原本 app 優於 cwd project 的裁決，project 與 ancestor 邏輯留在核心；proposal 不含 metrics，不新增／複製 PID。重複有效 proposal 不重算 totals。
+
+`command` 是按需 details 的實際範例：只有 selected-PID 查詢會提出 details request，仍在原生掃描的 identity.before／after、UID 與 executable 重驗之間執行原有 KERN_PROCARGS2 查詢。DetailProposal 綁定 PID＋start；核心驗證身分與 argv 大小界限，沿用 sanitizer、entrypoint 推導及 `[filtered]` 規則，忽略未驗證的 entrypoint／redacted_indices。缺少 argv 與診斷的空詳情會被拒絕。關閉詳情後不再查詢，pause／manual refresh 與單 worker 行為保留。
+
+snapshot 沿用既有 Attribution／ProcessCommand 與 `reswho/8` Schema；MD／JSON／TUI 使用同一份經驗證資料，沒有新增封閉 enum 或 wire 欄位。`extensions --json` 是 metadata 清單，不是資源快照。本階段的 app-bundle 證據與 command DTO 只涵蓋已遷移能力，不是完整外部擴充契約；階段3仍須支援作者自有分類證據、namespaced parsed detail fields／provenance，屆時依實際 wire 變更處理版本與 Schema。
+
+階段2驗證：合成 providers 覆蓋平行 dispatch／有效設定、失敗與重複 identity 隔離、stale／invalid 分類、單次 PID metrics、詳情身分與 redaction、既有 JSON Schema 及三種 renderer。離線 CLI fixture 將 PATH 清空，驗證仍能列出 metadata。`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test` 均通過；其後補齊空詳情／argv 界限 fixture 與顯式 temp close，重驗5個 extension tests、7個 CLI tests 及 fmt／Clippy 通過。`cargo build`、既有 `python3 tests/pty_smoke.py` 全通過（含 selected-PID details、config sampling／auto／wait／pause）。native transport 未修改，不跑 live／measurement 或啟動容器服務。
 
 
-階段交接：本地 main，基準 cdb3348；沒有 push、額外 thread／branch／worktree 或 Tenqo 寫入。target 約5.0GiB（incremental 約2.1GiB、deps 約2.7GiB），由本專案保留作後續開發 cache，下次階段邊界再檢視。PTY runner 確認所有自有 child 已 wait、descriptor 已 close、temp path 已移除；未啟動容器或停止既有程序。較原估20分鐘多出的工作是敏感 metadata 的失敗斷言及 PTY fixture 診斷；驗收範圍未降低。剩餘能力為同 owner review 修復；階段2／3及獨立 review 未執行，由 leader 接續裁定與同步 rw-27。
+階段2交接：同一 main，本地 commit 後停在 review 邊界；未另開 thread／branch／worktree、未 push、未寫 Tenqo。可執行範例位於 `src/extensions/tests.rs` 的 real classifier＋validated details fixture，透過共同 API 產生核心樹、selected-PID Markdown／JSON 並驗證既有 Schema；`src/tui/tests.rs` 的 extension detail fixture 驗證按需載入與 `[filtered]` 呈現。新 CLI temp 使用顯式 close；平行 collector fixture 的 scoped threads 全部 join；PTY runner 確認 child wait、descriptor close、config temp path 移除。target 約5.2GiB（incremental 約2.2GiB、deps 約2.9GiB），保留給同專案後續開發，下一階段邊界再檢視。階段3未開始，完整外部契約與安裝能力仍待派工。
+
+
+## Extension 錯誤邊界
+
+使用者要求 collect／classify／details 任一 extension 的一般錯誤或可 unwind Rust panic 只能使該 extension 失敗，不得中止 app 或污染 terminal。共同 dispatch 將 descriptor、execute 及 provider error 轉換包在同一捕捉邊界；每次只讀 metadata 一次，fallback 不再次呼叫 extension。已取得 id 時保留來源識別；metadata 本身失敗時使用本輪穩定 unidentified 序號診斷。錯誤不回顯 provider Err、panic payload 或原始 stderr。
+
+Panic hook 只安裝一次，以 thread-local guard 遮蔽邊界內的 panic 輸出；不逐次交換 process-global hook，並將邊界外 panic 交回原 hook。此機制涵蓋由 dispatcher 執行的 extension 呼叫；不構成 OS 沙箱，無法攔截 panic=abort、native fault 或程序被外部終止。階段3的外部程序仍須由有界 runner 接住退出／stderr／逾時，回收 child。
+
+Execute 前後都檢查完整 context（Cancellation＋deadline），晚到結果不能生效。ProcessCommand 有 argv 時，unavailable 必須為空，以符合既有 reswho/8 Schema；混合資料在 rendering 前整筆拒絕，不轉送其診斷文字。
+
+階段2 review 修復驗證：子程序 fixtures 覆蓋三種能力的 descriptor／execute panic、fallback、健康 sibling、stderr sentinel 與邊界外普通 panic；deadline fixture 覆蓋過期 admission 與 execute 期間到期；混合詳情 fixture 驗證拒絕、無 sentinel 與 Schema-safe snapshot。fmt／Clippy、9個 extension tests、8個 command tests、TUI extension detail test、7個 CLI tests 與5個 JSON contract tests 通過。PTY 因共用 hook 涉及 worker stderr 而重驗一次，既有7種流程全部通過；terminal 還原、child wait、descriptor close 與 config temp path 移除均確認。子程序 sentinel tests 使用 Command::output 等待並回收 child，未建立額外 temp。target 約5.3GiB，保留開發 cache。未重跑 full suite／native。

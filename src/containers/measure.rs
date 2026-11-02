@@ -162,7 +162,7 @@ fn measure_full_snapshot() {
         assert!(Instant::now() < deadline, "measurement budget exhausted");
         let snapshot = crate::snapshot::capture(
             &crate::snapshot::Options {
-                sample_interval: Duration::from_millis(250),
+                settings: std::sync::Arc::new(crate::extensions::default_settings().unwrap()),
                 containers: true,
                 command_pid: None,
             },

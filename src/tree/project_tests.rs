@@ -1,5 +1,6 @@
 use super::*;
 use std::fs;
+use std::path::Path;
 
 fn process(pid: u32, cwd: &Path) -> Process {
     Process {
