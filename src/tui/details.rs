@@ -57,6 +57,16 @@ impl Details {
         (!matches!(self.status, Status::Unavailable(_))).then_some(self.pid)
     }
 
+    pub fn retryable_error(&self) -> bool {
+        matches!(self.status, Status::Failed(_))
+            || self
+                .node
+                .as_ref()
+                .and_then(|node| node.process.as_ref())
+                .and_then(|process| process.command.as_ref())
+                .is_some_and(|command| !command.unavailable.is_empty())
+    }
+
     pub fn refresh(&mut self) {
         if self.query_pid().is_some() {
             self.needs_query = true;
@@ -247,7 +257,7 @@ impl Details {
         self.vertical = self.vertical.min(max).saturating_add_signed(delta).min(max);
     }
 
-    pub fn draw(&self, frame: &mut Frame, area: Rect, paused: bool) {
+    pub fn draw(&self, frame: &mut Frame, area: Rect, paused: bool, refresh_hint: &str) {
         let [title, body, position, controls] = Layout::vertical([
             Constraint::Length(2),
             Constraint::Min(1),
@@ -292,10 +302,17 @@ impl Details {
             .style(Style::default().fg(Color::DarkGray)),
             position,
         );
-        let keys = if area.width < 66 {
-            "j/k  r refresh  p pause  Esc back  q"
+        let refresh = if refresh_hint.is_empty() {
+            String::new()
         } else {
-            "j/k scroll  PgUp/PgDn page  r refresh  p pause  Esc back  q quit"
+            format!("{refresh_hint}  ")
+        };
+        let keys = if area.width < 40 {
+            format!("j/k  {refresh}p  Esc back  q")
+        } else if area.width < 66 {
+            format!("j/k  {refresh}p pause  Esc back  q quit")
+        } else {
+            format!("j/k scroll  PgUp/PgDn page  {refresh}p pause  Esc back  q quit")
         };
         frame.render_widget(Paragraph::new(keys), controls);
     }

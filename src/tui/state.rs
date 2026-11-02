@@ -13,6 +13,11 @@ pub(super) struct Row {
     pub unreadable: usize,
 }
 
+pub(super) enum ManualRefresh {
+    Refresh,
+    Retry,
+}
+
 pub(super) struct App {
     pub snapshot: Option<Snapshot>,
     pub rows: Vec<Row>,
@@ -27,6 +32,7 @@ pub(super) struct App {
     pub details: Option<super::details::Details>,
     pub error: Option<String>,
     pub collecting: bool,
+    pub manual_refresh: Option<ManualRefresh>,
     pub loading_frame: usize,
     pub paused: bool,
     scope: String,
@@ -92,6 +98,7 @@ impl App {
             details: None,
             error: None,
             collecting: false,
+            manual_refresh: None,
             loading_frame: 0,
             paused: false,
             scope,
@@ -124,6 +131,57 @@ impl App {
         }
     }
 
+    fn refresh_failed(&self) -> bool {
+        self.error.is_some()
+            || self
+                .details
+                .as_ref()
+                .is_some_and(|details| details.retryable_error())
+    }
+
+    pub fn refresh_hint(&self) -> &'static str {
+        if let Some(request) = &self.manual_refresh {
+            return match request {
+                ManualRefresh::Refresh => "refreshing",
+                ManualRefresh::Retry => "retrying",
+            };
+        }
+        if self
+            .details
+            .as_ref()
+            .is_some_and(|details| details.query_pid().is_none())
+        {
+            return "";
+        }
+        if self.refresh_failed() {
+            "r retry"
+        } else {
+            "r refresh"
+        }
+    }
+
+    pub fn request_refresh(&mut self) {
+        if self
+            .details
+            .as_ref()
+            .is_some_and(|details| details.query_pid().is_none())
+        {
+            return;
+        }
+        if self.manual_refresh.is_none() {
+            self.manual_refresh = Some(if self.refresh_failed() {
+                ManualRefresh::Retry
+            } else {
+                ManualRefresh::Refresh
+            });
+        }
+        if !self.collecting
+            && let Some(details) = &mut self.details
+        {
+            details.refresh();
+        }
+    }
+
     fn selection_chain(&self) -> Vec<String> {
         let Some(row) = self.rows.get(self.selected) else {
             return Vec::new();
@@ -143,6 +201,7 @@ impl App {
 
     pub fn update(&mut self, result: Result<Snapshot, String>) {
         self.collecting = false;
+        self.manual_refresh = None;
         if let Some(details) = &mut self.details {
             details.update(&result);
         }

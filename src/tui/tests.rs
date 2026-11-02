@@ -155,6 +155,66 @@ fn command_snapshot(pid: u32) -> Snapshot {
 }
 
 #[test]
+fn refresh_hint_stays_visible_and_acknowledges_manual_requests() {
+    let mut app = app();
+    let render = |app: &App| {
+        let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, app, &mut TableState::default()))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    for detail in [false, true] {
+        if detail {
+            select(&mut app, "pid:11");
+            app.open_details();
+            app.update(Ok(command_snapshot(11)));
+        }
+        assert!(render(&app).contains("r refresh"));
+        app.collecting = true;
+        assert!(!render(&app).contains("refreshing"));
+        app.collecting = false;
+        app.paused = true;
+        assert!(render(&app).contains("r refresh"));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('r')));
+        assert!(render(&app).contains("refreshing"));
+        app.collecting = true;
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('r')));
+        app.update(Ok(command_snapshot(11)));
+        assert!(app.paused);
+        assert!(render(&app).contains("r refresh"));
+        assert!(!render(&app).contains("refreshing"));
+        app.paused = false;
+        app.update(Err("fixture failure".into()));
+        assert!(render(&app).contains("r retry"));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('r')));
+        assert!(render(&app).contains("retrying"));
+        app.update(Ok(command_snapshot(11)));
+        assert!(!render(&app).contains("r retry"));
+        assert!(!render(&app).contains("retrying"));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('r')));
+        assert!(render(&app).contains("refreshing"));
+        app.update(Ok(command_snapshot(11)));
+    }
+    handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+    handle_key(&mut app, KeyEvent::from(KeyCode::Char('?')));
+    assert!(render(&app).contains("r: refresh once"));
+    handle_key(&mut app, KeyEvent::from(KeyCode::Char('r')));
+    assert!(app.manual_refresh.is_none());
+    handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+    handle_key(&mut app, KeyEvent::from(KeyCode::Char('/')));
+    handle_key(&mut app, KeyEvent::from(KeyCode::Char('r')));
+    assert_eq!(app.query, "r");
+    assert!(app.manual_refresh.is_none());
+}
+
+#[test]
 fn details_replace_the_list_with_a_single_page() {
     let mut app = app();
     select(&mut app, "pid:11");
@@ -360,6 +420,10 @@ fn details_never_retarget_reused_missing_or_unverified_pids() {
     app.open_details();
     assert_eq!(app.details.as_ref().unwrap().query_pid(), None);
     assert!(!app.details.as_ref().unwrap().needs_query);
+    app.paused = true;
+    assert_eq!(app.refresh_hint(), "");
+    handle_key(&mut app, KeyEvent::from(KeyCode::Char('r')));
+    assert!(app.manual_refresh.is_none());
 }
 
 #[test]
@@ -404,6 +468,9 @@ fn details_errors_and_late_results_do_not_reveal_stale_commands() {
             .join("\n")
             .contains("permission denied")
     );
+    assert_eq!(app.refresh_hint(), "r retry");
+    handle_key(&mut app, KeyEvent::from(KeyCode::Char('r')));
+    assert_eq!(app.refresh_hint(), "retrying");
 }
 
 #[test]
@@ -966,6 +1033,11 @@ fn first_snapshot_wait_shows_loading_then_data_or_error() {
             .collect::<String>()
     };
     let first = render(&app, &mut terminal, &mut table);
+    let heading_column = |terminal: &Terminal<TestBackend>| {
+        (0..80).find(|&x| terminal.backend().buffer()[(x, 3)].symbol() == "R")
+    };
+    let loading_column = heading_column(&terminal);
+    assert_eq!(loading_column, Some(3));
     assert!(first.contains("| Loading resources..."));
     assert!(first.contains("Resources"));
     assert!(first.contains("Memory"));
@@ -976,11 +1048,17 @@ fn first_snapshot_wait_shows_loading_then_data_or_error() {
     assert!(render(&app, &mut terminal, &mut table).contains("/ Loading resources..."));
     app.update(Err("collection failed".into()));
     let error = render(&app, &mut terminal, &mut table);
+    assert_eq!(heading_column(&terminal), loading_column);
     assert!(error.contains("Unable to load resources"));
     assert!(error.contains("collection failed"));
     assert!(!error.contains("Loading resources..."));
     app.update(Ok(snapshot()));
     let loaded = render(&app, &mut terminal, &mut table);
+    assert_eq!(
+        loading_column,
+        heading_column(&terminal),
+        "column headings must keep their padding before and after loading"
+    );
     let header: String = terminal.backend().buffer().content[..80]
         .iter()
         .map(|cell| cell.symbol())
@@ -994,6 +1072,12 @@ fn first_snapshot_wait_shows_loading_then_data_or_error() {
     assert!(toolbar.starts_with("Sort RAM"));
     assert!(loaded.contains("Resources"));
     assert!(!loaded.contains("Loading resources..."));
+    app.query = "no-matching-fixture".into();
+    app.rebuild();
+    render(&app, &mut terminal, &mut table);
+    assert_eq!(heading_column(&terminal), loading_column);
+    app.query.clear();
+    app.rebuild();
     assert!(!loaded.contains("s ago"));
     assert!(!loaded.contains("| live"));
     app.collecting = true;

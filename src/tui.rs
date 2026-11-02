@@ -110,7 +110,11 @@ fn event_loop(
             .details
             .as_ref()
             .is_some_and(|details| details.needs_query);
-        if !app.collecting && (detail_request || (!app.paused && Instant::now() >= next_refresh)) {
+        if !app.collecting
+            && (app.manual_refresh.is_some()
+                || detail_request
+                || (!app.paused && Instant::now() >= next_refresh))
+        {
             request_snapshot(worker, &mut app);
             dirty |= app.snapshot.is_none();
         }
@@ -131,21 +135,12 @@ fn event_loop(
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     dirty = true;
-                    let browsing = !app.editing && !app.help && app.details.is_none();
                     let anchor = SelectionAnchor::capture(&app, &table);
                     if handle_key(&mut app, key) {
                         return Ok(());
                     }
                     if let Some(anchor) = anchor {
                         anchor.restore(&app, &mut table);
-                    }
-                    if browsing
-                        && key.code == KeyCode::Char('r')
-                        && !app.editing
-                        && !app.help
-                        && !app.collecting
-                    {
-                        request_snapshot(worker, &mut app);
                     }
                 }
                 Event::Resize(_, _) => dirty = true,
@@ -179,7 +174,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             KeyCode::PageUp => details.scroll(-10),
             KeyCode::Home => details.scroll(isize::MIN),
             KeyCode::End => details.scroll(isize::MAX),
-            KeyCode::Char('r') => details.refresh(),
+            KeyCode::Char('r') => app.request_refresh(),
             KeyCode::Char('p') => app.paused = !app.paused,
             _ => {}
         }
@@ -220,6 +215,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Char('q') => return true,
         KeyCode::Char('d') => app.open_details(),
+        KeyCode::Char('r') => app.request_refresh(),
         KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
         KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
         KeyCode::PageDown => app.move_selection(10),

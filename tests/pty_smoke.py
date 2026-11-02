@@ -67,6 +67,13 @@ def verify(arguments, exit_key, marker, details=False):
             assert b"Loading command" in rendered, "details loading was not shown"
             assert b"[filtered]" in rendered and b"--token" in rendered, "filtered command missing"
             assert b"fixture-private-value" not in transcript, "command exposed sensitive value"
+            manual = len(transcript)
+            os.write(master, b"r")
+            deadline = time.monotonic() + 2
+            while b"efreshing" not in transcript[manual:] and time.monotonic() < deadline:
+                drain(0.05)
+            assert b"efreshing" in transcript[manual:], "manual refresh feedback missing"
+            drain(1.2)
             for key in [b"j", b"\x1b[6~", b"\x1b[5~", b"k"]:
                 os.write(master, key)
                 drain(0.1)

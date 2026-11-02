@@ -5,7 +5,9 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::Line,
-    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{
+        Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
+    },
 };
 
 pub(super) fn safe(value: &str) -> String {
@@ -241,6 +243,7 @@ pub(super) fn draw(frame: &mut Frame, app: &App, table: &mut TableState) {
                 area.height.saturating_sub(header.height),
             ),
             app.paused,
+            app.refresh_hint(),
         );
         return;
     }
@@ -331,7 +334,8 @@ pub(super) fn draw(frame: &mut Frame, app: &App, table: &mut TableState) {
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("» ");
+        .highlight_symbol("» ")
+        .highlight_spacing(HighlightSpacing::Always);
     table.select((!app.rows.is_empty()).then_some(app.selected));
     frame.render_stateful_widget(widget, tree_area, table);
     if app.rows.is_empty() && app.snapshot.is_some() {
@@ -410,7 +414,12 @@ pub(super) fn draw(frame: &mut Frame, app: &App, table: &mut TableState) {
                     )
             })
         });
-    frame.render_widget(Paragraph::new(vec![Line::styled(diagnostic, Style::default().fg(Color::Yellow)), Line::raw("j/k move  enter toggle  d details  c/m/u/n sort  / search  a active  r refresh  p pause  ? help  q quit")]), footer);
+    let refresh = if app.refresh_hint().is_empty() {
+        String::new()
+    } else {
+        format!("{}  ", app.refresh_hint())
+    };
+    frame.render_widget(Paragraph::new(vec![Line::styled(diagnostic, Style::default().fg(Color::Yellow)), Line::raw(format!("j/k move  {refresh}enter toggle  d details  c/m/u/n sort  / search  a active  p pause  ? help  q quit"))]), footer);
     if app.help {
         help(frame, area, app);
     }
@@ -424,7 +433,7 @@ fn help(frame: &mut Frame, area: Rect, app: &App) {
         area.height.saturating_sub(2),
     );
     frame.render_widget(Clear, popup);
-    let mut text = "reswho controls\n\nUp/Down or k/j: move    Left/h: collapse or parent\nRight/l: expand or child    Enter/Space: toggle\nd: process details    Esc: back to list\nDetails: j/k/PgUp/PgDn scroll, r refresh, p pause\nc: CPU    m: memory    u: uptime (descending within siblings)\nn: name (natural order, case-insensitive; node2 before node10)\n/: search name, PID, ref or path    Enter: accept    Esc: clear\na: all / active containers (unknown retained)\n[ / ]: scroll path    PgUp/PgDn: move 10 rows\nr: refresh now    p: pause automatic refresh\nq / Ctrl-C: quit    ? / Esc: close help\n\nRefresh: 2 seconds after each completed collection; one query at a time.\nHost CPU: whole-machine usage (0-100%). CPU/core: 100% = one core.\nRows can exceed 100%; >= means a partial total with unreadable values.\nAge is process uptime or oldest group member, including idle time.\nHost RSS and container memory are separate scopes; never add both.\nFilters affect visible rows, not aggregate totals. Unknown is not zero.\nSearch reveals matching branches without changing saved expansion.\n".to_owned();
+    let mut text = "reswho controls\n\nUp/Down or k/j: move    Left/h: collapse or parent\nRight/l: expand or child    Enter/Space: toggle\nd: process details    Esc: back to list\nDetails: j/k/PgUp/PgDn scroll, r refresh, p pause\nc: CPU    m: memory    u: uptime (descending within siblings)\nn: name (natural order, case-insensitive; node2 before node10)\n/: search name, PID, ref or path    Enter: accept    Esc: clear\na: all / active containers (unknown retained)\n[ / ]: scroll path    PgUp/PgDn: move 10 rows\nr: refresh once (keeps pause); reuse pending collection\np: pause automatic refresh\nq / Ctrl-C: quit    ? / Esc: close help\n\nRefresh: 2 seconds after each completed collection; one query at a time.\nHost CPU: whole-machine usage (0-100%). CPU/core: 100% = one core.\nRows can exceed 100%; >= means a partial total with unreadable values.\nAge is process uptime or oldest group member, including idle time.\nHost RSS and container memory are separate scopes; never add both.\nFilters affect visible rows, not aggregate totals. Unknown is not zero.\nSearch reveals matching branches without changing saved expansion.\n".to_owned();
     if let Some(error) = &app.error {
         text.push_str(&format!("\nSTALE: {}\n", safe(error)));
     }
