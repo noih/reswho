@@ -194,7 +194,7 @@ fn extensions_list_is_offline_and_distinguishes_enabled_from_availability() {
                 .iter()
                 .all(|entry| entry["availability"] == "unknown"
                     && entry["source"] == "builtin"
-                    && entry["version"] == "1")
+                    && entry["version"] == env!("CARGO_PKG_VERSION"))
         );
         assert!(entries[0]["enabled"].as_bool().unwrap());
         assert_eq!(entries[2]["capabilities"][0], "classify");
@@ -209,8 +209,59 @@ fn extensions_list_is_offline_and_distinguishes_enabled_from_availability() {
     assert!(result.status.success());
     let output = String::from_utf8(result.stdout).unwrap();
     assert!(output.contains(
-        "docker/1 source=builtin capabilities=collect enabled=false availability=unknown"
+        "docker/0.1.0 source=builtin capabilities=collect enabled=false availability=unknown"
     ));
     assert!(!output.contains("Loading"));
+    dir.close().unwrap();
+}
+
+#[test]
+fn lifecycle_commands_are_offline_and_updates_preserve_state_on_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.json");
+    std::fs::write(&config, r#"{"version":1,"settings":{}}"#).unwrap();
+    let manifest = dir.path().join("manifest.json");
+    let value = serde_json::json!({"id":"local","version":"1.0.0","engines":{"reswho":">99"},"protocol_version":1,"platforms":["macos"],"capabilities":["collect"],"executable":"/usr/bin/false"});
+    std::fs::write(&manifest, value.to_string()).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_reswho"))
+            .arg("--config")
+            .arg(&config)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(
+        run(&["extensions", "install", manifest.to_str().unwrap()])
+            .status
+            .success()
+    );
+    let result = run(&["extensions", "--json"]);
+    let entries: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let entry = entries.as_array().unwrap().last().unwrap();
+    assert_eq!(entry["version"], "1.0.0");
+    assert_eq!(entry["compatible"], false);
+    assert_eq!(entry["explicit_enabled"], true);
+    assert_eq!(entry["enabled"], false);
+    assert!(entry["reason"].as_str().unwrap().contains("engines"));
+    let state = dir.path().join("extensions.json");
+    let before = std::fs::read(&state).unwrap();
+    std::fs::write(&manifest, "{}").unwrap();
+    assert!(
+        !run(&["extensions", "install", manifest.to_str().unwrap()])
+            .status
+            .success()
+    );
+    assert_eq!(std::fs::read(&state).unwrap(), before);
+    for action in ["disable", "enable", "remove"] {
+        assert!(run(&["extensions", action, "local"]).status.success());
+    }
+    let result = run(&["extensions", "--json"]);
+    let entries: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(entries.as_array().unwrap().len(), 4);
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        r#"{"version":1,"settings":{}}"#
+    );
     dir.close().unwrap();
 }

@@ -5,7 +5,9 @@ fn builtin_list_is_deterministic_and_does_not_probe_sources() {
     let settings = default_settings().unwrap();
     let list = list(&settings, false);
     assert_eq!(
-        list.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+        list.iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>(),
         ["docker", "apple", "app_bundle", "command"]
     );
     assert!(list.iter().all(|entry| entry.availability == "unknown"));
@@ -39,11 +41,11 @@ impl Fixture {
 impl Extension for Fixture {
     fn descriptor(&self) -> Descriptor {
         Descriptor {
-            id: self.id,
-            version: "fixture/1",
+            id: self.id.into(),
+            version: "fixture/1".into(),
             protocol_version: 1,
             source: "builtin",
-            platforms: vec!["macos"],
+            platforms: vec!["macos".into()],
             capabilities: vec![self.contribution.capability()],
             enabled: true,
             availability: "unknown",
@@ -320,11 +322,11 @@ impl Extension for Panicking {
             panic!("SECRET_DESCRIPTOR_SENTINEL");
         }
         Descriptor {
-            id: "panicking",
-            version: "1",
+            id: "panicking".into(),
+            version: "1".into(),
             protocol_version: 1,
             source: "builtin",
-            platforms: vec!["macos"],
+            platforms: vec!["macos".into()],
             capabilities: vec![self.capability],
             enabled: true,
             availability: "unknown",
@@ -376,7 +378,7 @@ fn boundary_subprocess_scenario() {
                     );
                 }
                 Capability::Classify => {
-                    let (accepted, diagnostics) = classify(
+                    let (accepted, _, diagnostics) = classify(
                         &[&bad, &Builtin::AppBundle],
                         &context,
                         std::slice::from_ref(&process),
@@ -497,11 +499,11 @@ fn every_capability_rejects_expired_admission_and_late_results() {
     impl Extension for Late {
         fn descriptor(&self) -> Descriptor {
             Descriptor {
-                id: "late",
-                version: "1",
+                id: "late".into(),
+                version: "1".into(),
                 protocol_version: 1,
                 source: "builtin",
-                platforms: vec!["macos"],
+                platforms: vec!["macos".into()],
                 capabilities: vec![self.output.capability()],
                 enabled: true,
                 availability: "unknown",
@@ -546,6 +548,7 @@ fn every_capability_rejects_expired_admission_and_late_results() {
             let context = Context {
                 settings: &settings,
                 cancel: &cancel,
+                failed: Mutex::new(HashSet::new()),
                 deadline: Instant::now()
                     + if expired {
                         Duration::ZERO
@@ -599,13 +602,21 @@ fn failed_metadata_and_hyphenated_provider_operations_validate_as_full_snapshots
             root.children
                 .push(collect(&[&bad_metadata, &hyphenated], &context).unwrap());
         } else {
-            root.diagnostics = classify(&[&bad_metadata, &hyphenated], &context, &[process()]).1;
+            root.diagnostics = classify(&[&bad_metadata, &hyphenated], &context, &[process()]).2;
             assert!(
                 root.diagnostics
                     .iter()
                     .any(|diagnostic| diagnostic.message.contains("my-extension"))
             );
         }
+        let healthy = Fixture::new(
+            "unidentified-0",
+            Contribution::Collect {
+                runtime: runtime("healthy"),
+                containers: vec![],
+            },
+        );
+        assert!(dispatch(&healthy, &context, Request::Collect).is_ok());
         let snapshot = Snapshot {
             schema: crate::model::JSON_SCHEMA_VERSION,
             captured_unix_ms: 0,
@@ -622,5 +633,207 @@ fn failed_metadata_and_hyphenated_provider_operations_validate_as_full_snapshots
             .map(|error| error.to_string())
             .collect();
         assert!(errors.is_empty(), "{errors:?}");
+    }
+}
+
+#[test]
+fn unrepresentable_container_aggregate_rejects_only_the_overflowing_source() {
+    let settings = default_settings().unwrap();
+    let cancel = Cancellation::default();
+    let context = Context::new(&settings, &cancel);
+    let good = Fixture::new(
+        "good",
+        Contribution::Collect {
+            runtime: runtime("good"),
+            containers: vec![Container {
+                id: "good".into(),
+                state: Some("running".into()),
+                memory_bytes: Some(100),
+                ..Default::default()
+            }],
+        },
+    );
+    let overflow = Fixture::new(
+        "overflow",
+        Contribution::Collect {
+            runtime: runtime("overflow"),
+            containers: vec![Container {
+                id: "huge".into(),
+                state: Some("running".into()),
+                memory_bytes: Some(u64::MAX),
+                ..Default::default()
+            }],
+        },
+    );
+    let root = collect(&[&good, &overflow], &context).unwrap();
+    let totals = root.container_totals.unwrap();
+    assert_eq!(totals.containers, 1);
+    assert_eq!(totals.known_memory_bytes, 100);
+    assert!(!totals.inventory_complete);
+}
+
+#[test]
+fn capability_validation_failures_skip_later_calls_only_in_the_current_round() {
+    struct Invalid {
+        kind: &'static str,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl Extension for Invalid {
+        fn descriptor(&self) -> Descriptor {
+            Descriptor {
+                id: "invalid".into(),
+                version: "1.0.0".into(),
+                protocol_version: 1,
+                source: "builtin",
+                platforms: vec!["macos".into()],
+                capabilities: vec![
+                    Capability::Collect,
+                    Capability::Classify,
+                    Capability::Details,
+                ],
+                enabled: true,
+                availability: "unknown",
+            }
+        }
+        fn execute(&self, _: &Context<'_>, request: Request<'_>) -> Result<Contribution> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            match request {
+                Request::Details { process, .. } => {
+                    if self.kind == "parsed" {
+                        return Ok(Contribution::ParsedDetails {
+                            identity: ProcessIdentity::observed(process).unwrap(),
+                            fields: vec![crate::model::DetailField {
+                                key: "extensions.other.field".into(),
+                                label: "invalid".into(),
+                                value: serde_json::json!("value"),
+                                sensitive: false,
+                            }],
+                        });
+                    }
+                    let mut identity = ProcessIdentity::observed(process).unwrap();
+                    if self.kind == "identity" {
+                        identity.started_unix_us += 1;
+                    }
+                    let mut command = ProcessCommand {
+                        argv: Some(vec!["demo".into()]),
+                        ..Default::default()
+                    };
+                    if self.kind == "data" {
+                        command.unavailable.push(Diagnostic::new(
+                            "invalid_data",
+                            "fixture",
+                            "SECRET_VALIDATION_SENTINEL",
+                        ));
+                    }
+                    Ok(Contribution::Details {
+                        proposal: DetailProposal { identity, command },
+                    })
+                }
+                Request::Collect => Ok(Contribution::Collect {
+                    runtime: runtime("separate-runtime"),
+                    containers: if self.kind == "overflow" {
+                        vec![Container {
+                            id: "huge".into(),
+                            state: Some("running".into()),
+                            memory_bytes: Some(u64::MAX),
+                            ..Default::default()
+                        }]
+                    } else {
+                        vec![Container::default(), Container::default()]
+                    },
+                }),
+                Request::Classify(_) => Ok(Contribution::Classify {
+                    proposals: if self.kind == "classify" {
+                        vec![ClassificationProposal {
+                            identity: ProcessIdentity {
+                                pid: 999,
+                                started_unix_us: 123,
+                            },
+                            evidence: ClassificationEvidence::AppBundle {
+                                path: "/wrong.app".into(),
+                            },
+                        }]
+                    } else {
+                        vec![]
+                    },
+                }),
+            }
+        }
+    }
+    let settings = default_settings().unwrap();
+    let cancel = Cancellation::default();
+    let process = process();
+    for kind in [
+        "identity", "data", "collect", "classify", "overflow", "parsed",
+    ] {
+        let invalid = Invalid {
+            kind,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let context = Context::new(&settings, &cancel);
+        match kind {
+            "parsed" => {
+                let mut selected = process.clone();
+                assert_eq!(
+                    external::attach_details(&[&invalid], &context, &mut selected).len(),
+                    1
+                );
+            }
+            "overflow" => {
+                let prefix = Fixture::new(
+                    "prefix",
+                    Contribution::Collect {
+                        runtime: runtime("prefix"),
+                        containers: vec![Container {
+                            id: "small".into(),
+                            state: Some("running".into()),
+                            memory_bytes: Some(100),
+                            ..Default::default()
+                        }],
+                    },
+                );
+                collect(&[&prefix, &invalid], &context).unwrap();
+            }
+            "collect" => {
+                collect(&[&invalid], &context).unwrap();
+            }
+            "classify" => {
+                assert_eq!(
+                    classify(&[&invalid], &context, std::slice::from_ref(&process))
+                        .2
+                        .len(),
+                    1
+                );
+            }
+            _ => {
+                let error = details(&invalid, &context, &process, 8).err().unwrap();
+                assert!(!error.to_string().contains("SECRET"));
+            }
+        }
+        let healthy = Fixture::new("healthy", Contribution::Classify { proposals: vec![] });
+        assert_eq!(
+            classify(
+                &[&invalid, &healthy],
+                &context,
+                std::slice::from_ref(&process)
+            )
+            .2
+            .len(),
+            1
+        );
+        assert_eq!(
+            invalid.calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "{kind}"
+        );
+        assert_eq!(healthy.seen.lock().unwrap().len(), 1);
+        let fresh = Context::new(&settings, &cancel);
+        let _ = classify(&[&invalid], &fresh, std::slice::from_ref(&process));
+        assert_eq!(
+            invalid.calls.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "{kind}"
+        );
     }
 }

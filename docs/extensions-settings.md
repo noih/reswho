@@ -2,7 +2,7 @@
 
 Tenqo：rw-27。
 
-狀態：階段1於 6bccd35 驗收通過。階段2已接入共同內建 extension 介面、離線清單、app-bundle 分類與按需命令詳情，整合驗證通過，待獨立 review。安裝與外部協定屬階段3，尚未提供。
+狀態：階段1／2已驗收。階段3的本機 executable 安裝、state／版本相容性、batch JSON transport、custom evidence／parsed details、public scalar settings metadata 與 reswho/9 已實作並完成開發驗證，待獨立 review。Drop-in 目錄掃描不在本次範圍。
 
 ## Extension 邊界
 
@@ -77,7 +77,7 @@ Refresh 與 sampling 是不同用途。保持目前同時最多一輪採集、�
 
 每階段由開發 owner 執行針對性測試，整合後依 TESTING.md 完成 fmt／Clippy／一般 Rust 測試；CLI／排程改動補受影響的 PTY 範圍。每階段一次獨立 review，修復只重驗受影響範圍。一般測試不得啟動真實容器服務，外部協定使用自有假程序／fixture；既有 native container probes 的未改動證據可沿用。
 
-目前：階段1已驗收；階段2由同一 owner 實作，整合驗證後停在獨立 review 邊界。階段3待下一次派工，尚不提供 extension 安裝。target 沿用專案開發 cache；自有 temp／child／PTY 由 fixture Drop／finally 回收，不建立或改寫真正使用者設定。
+目前：階段3功能與 scoped 驗證完成，提交 coherent 本地 commit 後停在獨立 review 邊界。使用明確 manifest install 與既有 config root；未實作自動 drop-in discovery、marketplace、設定 editor 或 multiselect。target 保留開發 cache；測試僅用 isolated state/config，沒有修改真正使用者設定或啟動服務。
 
 ## 階段1可用介面
 
@@ -100,11 +100,11 @@ reswho --tui --config /path/to/config.json --refresh-ms 3000
 }
 ```
 
-`settings --json` 是設定報告，不是 `reswho/8` 資源快照；包含 `settings`、`unknown_keys`、`disabled_extensions`。各有效項有 `value`、`source`（cli／user／default）及 `definition`（key、value_type、unit、limits、default、description、provider、version、sensitive）。敏感 value／default 遮蔽為 `[redacted]`，敏感 allowed-values 不公開。未知 key 只列名稱並寫 stderr 提示，保存的值仍留在原設定檔，不能作為有效設定使用。JSON 語法／格式錯誤只顯示位置，不回顯檔案內容。
+`settings --json` 是設定報告，不是 `reswho/8` 資源快照；包含 `settings`、`unknown_keys`、`disabled_extensions`。各有效項有 `value`、`source`（cli／user／default）及 `definition`（key、type、unit、options、min、max、integer、default、description、provider、version、sensitive）。敏感 value／default 遮蔽為 `[redacted]`，敏感 options 不公開。未知 key 只列名稱並寫 stderr 提示，保存的值仍留在原設定檔，不能作為有效設定使用。JSON 語法／格式錯誤只顯示位置，不回顯檔案內容。
 
 `settings::Registry::core` 先建核心定義；`register_extension` 按呼叫順序原子註冊，`resolve_uses`／`resolve` 在全部定義後檢查引用。相容性也要求 sensitive 一致，避免後來的候選解除既有遮蔽。專屬值或 uses 無效時，報告隔離該 extension 並移除其專屬有效值；核心／共用值錯誤中止解析。解析結果只提供不可變引用。本階段透過真 API fixtures 證明 extension 語意，沒有安裝器、持久安裝序或外部 wire 空殼。
 
-Integer 型別是 JSON 非負整數；min／max 是含端點界限，allowed 是允許值集合。sample 為200–5000ms；refresh 必須為正整數 u64 毫秒，且本機 `Instant::checked_add` 可安全排程，排程當下也再次 checked-add。TUI 仍使用既有100ms事件輪詢，因此極短 refresh 是最短等待要求，不是精密計時保證。收到結果（含失敗）才開始下一次等待，不追趕積欠輪次；暫停、手動刷新與詳情按需查詢沿用原規則。
+Public type 為 number／string／boolean；number 支援有限負數與小數，integer 約束適用於 whole values。min／max 是含端點界限，options 是非空同型別單選集合；沒有 options 為自由輸入。sample 為200–5000ms；refresh 必須為正整數 u64 毫秒，且本機 `Instant::checked_add` 可安全排程，排程當下也再次 checked-add。TUI 仍使用既有100ms事件輪詢，因此極短 refresh 是最短等待要求，不是精密計時保證。收到結果（含失敗）才開始下一次等待，不追趕積欠輪次；暫停、手動刷新與詳情按需查詢沿用原規則。
 
 階段1驗證：fmt／Clippy／一般 Rust suite 及 PTY 通過；review 修復 allowed-set 相容性及 CLI 跨 subcommand 格式衝突後，8 settings／2 parser／6 CLI tests 與 fmt／Clippy 通過。6bccd35 已由 leader 驗收。
 
@@ -143,3 +143,29 @@ Panic hook 只安裝一次，以 thread-local guard 遮蔽邊界內的 panic 輸
 Execute 前後都檢查完整 context（Cancellation＋deadline），晚到結果不能生效。ProcessCommand 有 argv 時，unavailable 必須為空，以符合既有 reswho/8 Schema；混合資料在 rendering 前整筆拒絕，不轉送其診斷文字。
 
 階段2 review 修復驗證：子程序 fixtures 覆蓋三種能力的 descriptor／execute panic、fallback、健康 sibling、stderr sentinel 與邊界外普通 panic；deadline fixture 覆蓋過期 admission 與 execute 期間到期；混合詳情 fixture 驗證拒絕、無 sentinel 與 Schema-safe snapshot。fmt／Clippy、9個 extension tests、8個 command tests、TUI extension detail test、7個 CLI tests 與5個 JSON contract tests 通過。PTY 因共用 hook 涉及 worker stderr 而重驗一次，既有7種流程全部通過；terminal 還原、child wait、descriptor close 與 config temp path 移除均確認。子程序 sentinel tests 使用 Command::output 等待並回收 child，未建立額外 temp。target 約5.3GiB，保留開發 cache。未重跑 full suite／native。
+
+階段3 checkpoint：新增 node-semver 2.2.0，使用 Version／Range 的預設 npm 語意，不啟用 loose 或隱含 prerelease。State 與 selected --config 同目錄（預設 config root），讀取不建立檔案；mutation 使用 flock、0600 temp、fsync＋rename。安裝同 id 更新／重裝保留原序號，remove 保留 tombstone 與 canonical shared definitions；forward uses 可先保存並 effective disabled。Lifecycle、版本、external protocol fixtures、Schema9 與 isolated example 的 MD／JSON／TUI 接入已驗證。
+
+
+## 階段3交接與證據
+
+Manifest／wire／developer example 與安裝、版本、state、單輪失敗隔離、bounds 見 [extension-protocol.md](extension-protocol.md)。本版採 npm node-semver 2.2.0 的標準 Range，不使用 Rust VersionReq；host.version 與 builtin versions 為實際 CARGO_PKG_VERSION，protocol_version 獨立。合法但不相容版本／平台／protocol 登記為 effective disabled，不執行或注入新 definitions；失效 uses 與明確 disabled 分開呈現。Update 保留原本明確 disabled 狀態；remove／reinstall 保留序號與 canonical 定義。
+
+Public settings metadata 已改為 type（number／string／boolean）、非空同型別單選 options、numeric min／max／integer、必填 default 及原有 owner／description／unit／sensitive；uses 使用同樣攤平 contract 且無 default。Number 接受有限負數／小數；core intervals 仍以安全 whole unsigned 值與既有 bounds／Instant 排程驗證，不 clamp 或 round。Options 依集合比較，相容候選不覆寫 canonical 順序／default。敏感 options 隱藏，report default／value 是明確遮蔽展示值，不是可再匯入 manifest 的原始數值。沒有 array／multiselect 設定值。
+
+驗證：整合執行 cargo fmt --check、cargo clippy --all-targets -- -D warnings 與一次 cargo test。首次 full suite 的唯一失敗是 Apple synthetic fixture 固定讀舊 Schema8；已改用共用 JSON_SCHEMA，5個 Apple fixtures 通過。其餘 lib tests 的未變動有效結果保留；後續修復／metadata 追加以 affected scope 補驗。最終 fmt／Clippy、11 settings tests、20 extension tests（含 state、wire、npm、單輪 suppression）、8 native command sanitizer tests、external TUI test、2 parser、8 CLI、6 JSON contract tests 通過。Live／measurement 維持 ignored，未執行 native live 或真實 runtime 操作。
+
+既有 PTY runner 已擴充 isolated install example：自有 shell 產生 custom classification／parsed details，production 一次性 JSON 與 TUI 皆通過；原有 controls、resize、pause／manual refresh 與退出還原也通過。後續 public metadata 變更只改 manifests／serde contract，依裁定不為此再次跑 PTY。新舊 Schema 各驗證正確版本；Schema8 原檔保留，Current examples 使用9；自訂來源／失敗來源的完整 snapshot 也有 assertions。
+
+Cleanup：provider children 由共用 bounded runner 的 owned process-group guard 回收，timeout／cancel fixtures 確認 owned PID 不存在；Command::output 子程序已 wait；state mutation temp rename／cleanup 及 flock handle 皆釋放，tempdir close 成功。PTY runner 確認 child wait、descriptor close、config temp path 移除。target 約6.7GiB（incremental 約2.8GiB、deps 約3.5GiB），留給同專案 review／後續開發，下次階段邊界再檢視。沒有 push、額外 thread／worktree 或 Tenqo 寫入；後續 drop-in 需求由 leader 分票。
+
+Metadata 收尾：public adapter／manifest Schema／example 統一使用 type/options/min/max/integer；JSON numeric bounds 保留整數精度（含 u64::MAX），整數／浮點界限比較不以有損轉換代替。最後 scoped fmt／Clippy、11 settings、20 extensions、8 CLI、6 JSON tests 通過；原 state／transport／PTY 證據依未變動範圍沿用，不因 metadata 再跑 PTY。Drop-in 功能已按使用者指示延後由 leader 分票，本次沒有 discovery／storage redesign。
+
+
+### 階段3 scoped review 修復
+
+3f9010e 的兩項必修已完成，待一次 scoped recheck。Runner 使用 waitid(WNOWAIT) 偵測 direct child 退出，保留未 reap 的 PID，先清理該 child 以 setsid 建立的自有 process group，再 wait 取得原始退出狀態。正常與非零退出都不遺留已關閉 stdio 的 descendant；timeout／cancel／pipe error 同樣由 owned guard 清理。清理時 leader PID 尚未釋放，避免在 PID／PGID 重用後發送訊號；不使用全域 process census。
+
+Context::finish 集中所有 post-dispatch capability 驗證失敗的本輪 bookkeeping：shared command details 的身分／資料、parsed fields、classification evidence、collect duplicate identity／aggregate overflow。Aggregate 另保留原 provider id，不用 runtime display name 代替。Metadata 不可得時的 fallback label 不加入其他合法 provider 的 failure key；同輪後續能力跳過、fresh context 可重試、健康 sibling 保留。
+
+Regression 先重現正常退出的 descendant 存活與 shared details 拒絕後仍執行其他能力。修復後 fmt／Clippy、4個 runner lifecycle tests、21個 extension tests、8個 command sanitizer tests、2個 TUI detail tests 與6個 JSON contract tests 通過；其中 scope 包含 normal／nonzero descendant、timeout／cancel、各 capability validation rejection、fresh-round retry、metadata fallback id collision 與健康 sibling。測試自有 descendants 確認消失，先前失敗 regression 的 owned PID 也確認不存在；子程序／scoped threads／temp 已釋放，target 約6.7GiB保留。未改 terminal routing，依裁定沿用 full suite／PTY／native 的未受影響證據，沒有重跑或新功能工作。

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 #[serde(rename_all = "snake_case")]
 pub enum AttributionSource {
     AppBundle,
+    Extension,
     BundleId,
     GitRoot,
     GitCommonDir,
@@ -24,6 +25,8 @@ pub struct Attribution {
     pub bundle_id: Option<String>,
     pub inferred: bool,
     pub via_pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extension: Option<super::ExtensionAttribution>,
 }
 
 impl Attribution {
@@ -36,6 +39,7 @@ impl Attribution {
             bundle_id: None,
             inferred: false,
             via_pid: None,
+            extension: None,
         }
     }
 }

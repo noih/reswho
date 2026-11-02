@@ -1218,11 +1218,11 @@ fn extension_command_details_render_on_demand_with_core_redaction() {
     impl Extension for CommandFixture {
         fn descriptor(&self) -> Descriptor {
             Descriptor {
-                id: "fixture",
-                version: "1",
+                id: "fixture".into(),
+                version: "1".into(),
                 protocol_version: 1,
                 source: "builtin",
-                platforms: vec!["macos"],
+                platforms: vec!["macos".into()],
                 capabilities: vec![Capability::Details],
                 enabled: true,
                 availability: "unknown",
@@ -1278,4 +1278,58 @@ fn extension_command_details_render_on_demand_with_core_redaction() {
     assert!(!text.contains("fixture-secret"));
     handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
     assert!(app.details.is_none());
+}
+
+#[test]
+fn installed_external_example_renders_parsed_details_without_command_payload() {
+    use crate::extensions::{
+        self, external,
+        state::{Manifest, State},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("extensions.json");
+    let manifest = Manifest::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples/extensions/example.json")
+            .as_path(),
+    )
+    .unwrap();
+    State::mutate(&path, |state| state.install(manifest)).unwrap();
+    let state = State::load(&path).unwrap();
+    let settings = state
+        .registry()
+        .unwrap()
+        .resolve(
+            &crate::settings::Config::default(),
+            &std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+    let cancel = Cancellation::default();
+    let context = extensions::Context::new(&settings, &cancel);
+    let providers = external::installed(&state, &settings);
+    let mut app = app();
+    select(&mut app, "pid:10");
+    app.open_details();
+    let mut source = snapshot();
+    change(&mut source.root, 10, |process| {
+        assert!(external::attach_details(&[&providers[0]], &context, process).is_empty());
+    });
+    app.update(Ok(source));
+    let mut terminal = Terminal::new(TestBackend::new(150, 40)).unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("Shared sample ms"));
+    assert!(text.contains("[filtered]"));
+    assert!(text.contains("Host CLI version"));
+    assert!(!text.contains("fixture-secret-value"));
+    assert!(!text.contains("Loading command"));
+    dir.close().unwrap();
 }

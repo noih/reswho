@@ -66,6 +66,18 @@ pub(crate) fn extension_command(
     }
 }
 
+pub(crate) fn verify_identity(process: &Process) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos::verify_identity(process)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = process;
+        false
+    }
+}
+
 pub(crate) fn validate_extension_command(
     mut value: crate::model::ProcessCommand,
     executable: Option<&std::path::Path>,
@@ -293,6 +305,14 @@ mod macos {
             return Err(io::Error::last_os_error());
         }
         Ok(PathBuf::from(text(buffer)))
+    }
+
+    pub(super) fn verify_identity(process: &Process) -> bool {
+        bsd_info(process.pid as i32).is_ok_and(|identity| {
+            Some(started(&identity)) == process.started_unix_us
+                && Some(identity.pbi_uid) == process.uid
+                && executable(process.pid as i32).ok() == process.executable
+        })
     }
 
     pub(super) fn scan(

@@ -1,0 +1,26 @@
+{
+  "id": "example",
+  "version": "1.0.0",
+  "engines": {
+    "reswho": ">=0.1.0 <0.2.0"
+  },
+  "protocol_version": 1,
+  "platforms": [
+    "macos"
+  ],
+  "capabilities": [
+    "classify",
+    "details"
+  ],
+  "executable": "./example.py",
+  "uses": [
+    {
+      "key": "sampling.interval_ms",
+      "type": "number",
+      "unit": "ms",
+      "integer": true,
+      "min": 200,
+      "max": 5000
+    }
+  ]
+}

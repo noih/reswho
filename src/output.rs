@@ -6,7 +6,7 @@ pub(crate) mod containers;
 #[cfg(test)]
 mod markdown_tests;
 
-pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-8.schema.json");
+pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-9.schema.json");
 
 pub const FORMAT_HELP: &str = "reswho-md/18 (collection prototype)\n\n\
 | Row | Fields, in order |\n\
@@ -102,7 +102,7 @@ Group refs are deterministic, not display positions. PID refs query the current 
 JSON retains the original root and System services nodes; depth counts original tree edges.\n\
 JSON system.cpu_percent is whole-host 0-100%; process.cpu_percent and totals.known_cpu_percent use one-core 100%.\n\
 JSON totals are subtree aggregates, not extra usage; do not add parent totals to children.\n\
-JSON schema reswho/8 includes structured attribution and diagnostics, raw byte counts, unknown counts and sample timing.\n\
+JSON schema reswho/9 includes structured attribution and diagnostics, raw byte counts, unknown counts and sample timing.\n\
 Use --json-schema for the offline JSON Schema; see docs/json-format.md for version and identity rules.\n\
 Command arguments, environment, container-internal processes and review rules are not collected.\n";
 
@@ -380,6 +380,16 @@ fn process_details(process: &Process) -> Vec<String> {
                 .iter()
                 .map(|reason| format!("! {}", escaped(reason.as_str()))),
         );
+    }
+    for details in &process.extension_details {
+        for field in &details.fields {
+            notes.push(format!(
+                "{} · {}: {}",
+                escaped(&details.provider),
+                escaped(&field.label),
+                code(&field.value.to_string())
+            ));
+        }
     }
     if let Some(network) = &process.network {
         let suffix = if network.complete { "" } else { " + ?" };

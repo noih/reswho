@@ -17,7 +17,7 @@ config_owner = tempfile.TemporaryDirectory(prefix="reswho-pty-")
 config_root = Path(config_owner.name)
 
 
-def verify(arguments, exit_key, marker, details=False):
+def verify(arguments, exit_key, marker, details=False, external=False):
     master, slave = pty.openpty()
     process = None
     transcript = bytearray()
@@ -72,6 +72,9 @@ def verify(arguments, exit_key, marker, details=False):
             assert b"Loading command" in rendered, "details loading was not shown"
             assert b"[filtered]" in rendered and b"--token" in rendered, "filtered command missing"
             assert b"fixture-private-value" not in transcript, "command exposed sensitive value"
+            if external:
+                assert b"Shared" in transcript and b"Example" in transcript, "external parsed details missing"
+                assert b"fixture-secret-value" not in transcript, "external details exposed sensitive field"
             manual = len(transcript)
             os.write(master, b"r")
             deadline = time.monotonic() + 2
@@ -211,6 +214,25 @@ try:
         fixture.terminate()
         fixture.wait()
         fixture.stdin.close()
+    example_root = config_root / "example"
+    example_root.mkdir()
+    (example_root / ".reswho-example").write_text("")
+    config = example_root / "config.json"
+    config.write_text(json.dumps({"version":1,"settings":{"sampling.interval_ms":400}}))
+    subprocess.run([str(ROOT / "target/debug/reswho"), "--config", str(config), "extensions", "install", str(ROOT / "examples/extensions/example.json")], check=True, capture_output=True)
+    external_fixture = subprocess.Popen(["/bin/sh", "-c", "read -r owned_external_input", "fixture", "--token", "fixture-private-value"], cwd=example_root, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        result = subprocess.run([str(ROOT / "target/debug/reswho"), "--config", str(config), "--no-containers", "--json", "--from", f"pid:{external_fixture.pid}"], check=True, capture_output=True, timeout=10)
+        snapshot = json.loads(result.stdout)
+        assert snapshot["schema"] == "reswho/9"
+        assert snapshot["root"]["attribution"]["extension"]["provider"] == "example"
+        assert snapshot["root"]["process"]["extension_details"][0]["fields"][0]["value"] == 400
+        assert b"fixture-secret-value" not in result.stdout
+        verify(["--tui", "--config", str(config), "--from", f"pid:{external_fixture.pid}", "--sample-ms", "1000"], b"q", b"sample", details=True, external=True)
+    finally:
+        external_fixture.terminate()
+        external_fixture.wait()
+        external_fixture.stdin.close()
     for mode in ["auto", "wait", "pause"]:
         verify_schedule(mode)
 finally:

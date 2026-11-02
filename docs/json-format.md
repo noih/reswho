@@ -1,6 +1,6 @@
 # JSON 資料契約
 
-目前版本：`reswho/8`。規格檔：[reswho-8.schema.json](../schemas/reswho-8.schema.json)，使用 JSON Schema Draft 2020-12。它是 reswho 的資料契約，並非跨監控工具共用的資料模型。
+目前版本：`reswho/9`。規格檔：[reswho-9.schema.json](../schemas/reswho-9.schema.json)，使用 JSON Schema Draft 2020-12。它是 reswho 的資料契約，並非跨監控工具共用的資料模型。
 
 ```sh
 reswho --json --depth all > snapshot.json
@@ -66,7 +66,7 @@ JSON 整數範圍可能超出 JavaScript `Number.MAX_SAFE_INTEGER`。需要完�
 
 | 欄位 | 型別與意義 |
 | --- | --- |
-| `schema` | 固定 `reswho/8` |
+| `schema` | 固定 `reswho/9` |
 | `captured_unix_ms` | 本輪收集完成附近的 Unix 時間，不是所有欄位共同的原子採樣時刻 |
 | `sample_ms` | 本機兩次掃描取樣階段的經過時間；各程序觀察時間及 Docker 取樣不同 |
 | `collection_ms` | 本輪採集與分類總耗時；不含輸出序列化時間 |
@@ -175,7 +175,7 @@ Runtime：`name`（目前 docker / apple）、`context`、`endpoint_ref`、`daem
 
 Port：`protocol` 來源字串、`container_port`（uint16）、`host_ip`（string/null）、`host_port`（uint16/null）。這是發布設定，不是觀測到的 listener／流量。
 
-本機 Unix endpoint 的 Linux Docker stats 使用同輪兩次 one-shot，間隔沿用 `--sample-ms`（預設250ms）；`cpu_percent` 是該輪樣本間的平均，沒有跨輪平滑。SSH／TCP 等端點或不支援的 API 版本沿用 CLI 的取樣方式。`sample_ms` 仍只描述主機取樣階段，不代表容器的實際取樣窗。這些來源差異不改變 JSON 欄位結構；版本仍為 `reswho/8`。
+本機 Unix endpoint 的 Linux Docker stats 使用同輪兩次 one-shot，間隔沿用 `--sample-ms`（預設250ms）；`cpu_percent` 是該輪樣本間的平均，沒有跨輪平滑。SSH／TCP 等端點或不支援的 API 版本沿用 CLI 的取樣方式。`sample_ms` 仍只描述主機取樣階段，不代表容器的實際取樣窗。這些來源差異不改變 JSON 欄位結構；版本目前為 `reswho/9`，指標語意保留。
 
 Apple Container 1.6.1 以同輪兩次 XPC counters 與回應的 monotonic 時間差計算 CPU，等待沿用 `--sample-ms`，無跨輪資料。未知版本只提供 inventory 並回報 unsupported；不以慢速 CLI stats 偷換取樣方式。`apple` endpoint 依本機使用者服務識別，daemon_id 為 null。
 
@@ -262,7 +262,7 @@ Schema 驗證型別、必填欄位、值域與節點組合；跨欄位／跨節�
 
 ```sh
 reswho --json --depth all | jq '
-  if .schema != "reswho/8" then error("unsupported reswho schema") else . end
+  if .schema != "reswho/9" then error("unsupported reswho schema") else . end
   | .root | recurse(.children[])
   | select(.kind == "process")
   | {ref: .reference, pid: .process.pid, start: .process.started_unix_us,
@@ -283,6 +283,10 @@ reswho --json --depth all | jq '
 
 `cargo test` 會以離線 Schema 驗證範例、實際建構／序列化的節點與收合／選取結果，並驗證錯誤型別、缺欄位、不合法組合會被拒絕。原生 live 測試另驗證本機採集輸出符合 Schema。
 
-## 內建 extension 與離線清單
+## 從 reswho/8 遷移至 reswho/9
 
-階段2將既有 app-bundle 分類與 selected-PID command 詳情接入共同 extension dispatcher，輸出仍使用既有 Attribution／ProcessCommand，版本維持 reswho/8。分類 proposal 必須符合本輪 PID＋start 與 executable path；詳情經身分驗證與核心 sanitizer 後才進入 snapshot。`reswho extensions --json` 是獨立的內建 metadata 陣列，不適用資源 snapshot Schema，也不採集資源或探測來源服務。外部自有分類／parsed details 與 provenance 尚屬階段3，沒有預先擴大本版 wire contract。
+Attribution source 的封閉 enum 新增 `extension`；其 `extension` 物件保存 provider、version、key、label、basis，path 仍在 attribution.path。原有 app／project 證據優先序、PID metrics 與 totals 不變。Process 可新增 `extension_details` 陣列，各組包含 provider、version 與 parsed typed fields（key、label、value、sensitive）；只在 selected-PID details 查詢時提供，敏感值已由核心改成 `[filtered]`。原有 command DTO 與 native redaction 保留。
+
+[reswho-8.schema.json](../schemas/reswho-8.schema.json) 原樣保留供舊 snapshots 使用；它不接受新版本或新 attribution source。Current examples 與 `--json-schema` 使用9。消費端應先檢查 schema；不能把新資料宣稱為8或假設所有來源都屬既有 enum。Schema 驗證 current examples、custom attribution／details 及錯誤來源的完整 snapshot。
+
+`reswho extensions --json` 是獨立的 metadata 陣列，不套用 snapshot Schema，也不執行 provider 或探測來源服務。外部 manifest、host CLI engines、JSON wire、設定範圍及 runtime DTO 的使用方式見 [extension-protocol.md](extension-protocol.md)。

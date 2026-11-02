@@ -1,8 +1,8 @@
 use crate::model::Diagnostic;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Runtime {
     pub name: String,
     pub context: Option<String>,
@@ -14,7 +14,7 @@ pub struct Runtime {
     pub unavailable: Vec<Diagnostic>,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Container {
     pub runtime: String,
     pub endpoint_ref: String,
@@ -50,7 +50,7 @@ impl Container {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Port {
     pub protocol: String,
     pub container_port: u16,
@@ -65,7 +65,7 @@ pub struct Mount {
     pub destination: PathBuf,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectSource {
     Compose,
@@ -73,14 +73,14 @@ pub enum ProjectSource {
     BindProject,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
     pub path: Option<PathBuf>,
     pub source: ProjectSource,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ContainerTotals {
     pub containers: usize,
     pub active_containers: usize,

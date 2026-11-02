@@ -36,6 +36,7 @@ impl Details {
         let pid = process.pid;
         let started = process.started_unix_us;
         process.command = None;
+        process.extension_details.clear();
         node.children.clear();
         Self {
             pid,
@@ -104,7 +105,7 @@ impl Details {
             );
             return;
         }
-        self.needs_query = process.command.is_none();
+        self.needs_query = process.command.is_none() && process.extension_details.is_empty();
         self.status = if self.needs_query {
             Status::Loading
         } else {
@@ -155,6 +156,15 @@ impl Details {
                         .iter()
                         .map(|error| DetailRow::notice(format!("! {error}"))),
                 );
+            }
+            for details in &process.extension_details {
+                rows.push(DetailRow::heading(format!(
+                    "Extension {}/{}",
+                    details.provider, details.version
+                )));
+                for field in &details.fields {
+                    rows.push(DetailRow::field(&field.label, field.value.to_string()));
+                }
             }
             for (label, path) in [("Cwd", &process.cwd), ("Exe", &process.executable)] {
                 if let Some(path) = path {

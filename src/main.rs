@@ -83,7 +83,18 @@ enum Command {
     #[command(about = "Show effective settings offline without collecting resources")]
     Settings,
     #[command(about = "List built-in extensions offline without collecting resources")]
-    Extensions,
+    Extensions {
+        #[command(subcommand)]
+        action: Option<ExtensionAction>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ExtensionAction {
+    Install { manifest: PathBuf },
+    Enable { id: String },
+    Disable { id: String },
+    Remove { id: String },
 }
 
 fn parse_reference(value: &str) -> Result<String, String> {
@@ -120,7 +131,24 @@ fn run() -> Result<()> {
         output::JSON_SCHEMA.into()
     } else if args.help_format {
         output::FORMAT_HELP.into()
+    } else if let Some(Command::Extensions {
+        action: Some(action),
+    }) = &args.command
+    {
+        let path = extensions::state::State::path(args.config.as_deref())?;
+        extensions::state::State::mutate(&path, |state| match action {
+            ExtensionAction::Install { manifest } => {
+                state.install(extensions::state::Manifest::read(manifest)?)
+            }
+            ExtensionAction::Enable { id } => state.toggle(id, true, false),
+            ExtensionAction::Disable { id } => state.toggle(id, false, false),
+            ExtensionAction::Remove { id } => state.toggle(id, false, true),
+        })?;
+        "Extension registry updated\n".into()
     } else {
+        let state = extensions::state::State::load(&extensions::state::State::path(
+            args.config.as_deref(),
+        )?)?;
         let user = settings::Config::load(args.config.as_deref())?;
         let mut overrides = BTreeMap::new();
         for (key, value) in [
@@ -131,12 +159,12 @@ fn run() -> Result<()> {
                 overrides.insert(key.into(), value.into());
             }
         }
-        let resolved = extensions::settings_registry()?.resolve(&user, &overrides)?;
+        let resolved = state.registry()?.resolve(&user, &overrides)?;
         for key in &resolved.report().unknown_keys {
             eprintln!("reswho: unknown setting {key} (not applied)");
         }
-        if matches!(args.command, Some(Command::Extensions)) {
-            let entries = extensions::list(&resolved, !args.no_containers);
+        if matches!(args.command, Some(Command::Extensions { .. })) {
+            let entries = state.list(&resolved, !args.no_containers);
             if args.json {
                 format!("{}\n", serde_json::to_string_pretty(&entries)?)
             } else {
@@ -144,18 +172,20 @@ fn run() -> Result<()> {
                     .iter()
                     .map(|entry| {
                         format!(
-                            "{}/{} source={} capabilities={} enabled={} availability={}\n",
-                            entry.id,
-                            entry.version,
-                            entry.source,
+                            "{}/{} source={} capabilities={} enabled={} availability={} requires={} compatible={} reason={}\n",
+                            entry.descriptor.id,
+                            entry.descriptor.version,
+                            entry.descriptor.source,
                             entry
+                                .descriptor
                                 .capabilities
                                 .iter()
                                 .map(|capability| format!("{capability:?}").to_lowercase())
                                 .collect::<Vec<_>>()
                                 .join(","),
-                            entry.enabled,
-                            entry.availability
+                            entry.descriptor.enabled,
+                            entry.descriptor.availability,
+                            entry.requires, entry.compatible, entry.reason.as_deref().unwrap_or("none")
                         )
                     })
                     .collect()
@@ -191,6 +221,7 @@ fn run() -> Result<()> {
                 return tui::run(
                     Options {
                         settings: Arc::clone(&resolved),
+                        extensions: Arc::new(state.clone()),
                         containers: !args.no_containers,
                         command_pid: None,
                     },
@@ -203,6 +234,7 @@ fn run() -> Result<()> {
             let mut snapshot = snapshot::capture(
                 &Options {
                     settings: Arc::clone(&resolved),
+                    extensions: Arc::new(state.clone()),
                     containers: !args.no_containers,
                     command_pid: args
                         .from

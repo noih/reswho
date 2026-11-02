@@ -8,3 +8,5 @@ pub mod snapshot;
 pub mod sort;
 pub mod tree;
 pub mod tui;
+
+mod redaction;

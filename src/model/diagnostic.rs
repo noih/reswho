@@ -1,9 +1,9 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{fmt, io};
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Diagnostic {
-    pub code: &'static str,
+    pub code: String,
     pub operation: String,
     pub message: String,
     pub os_error: Option<i32>,
@@ -16,7 +16,7 @@ impl Diagnostic {
         message: impl Into<String>,
     ) -> Self {
         Self {
-            code,
+            code: code.into(),
             operation: operation.into(),
             message: message.into(),
             os_error: None,
@@ -30,7 +30,7 @@ impl Diagnostic {
             _ => "io_error",
         };
         Self {
-            code,
+            code: code.into(),
             operation: operation.into(),
             message: format!("{operation}: {error}"),
             os_error: error.raw_os_error(),

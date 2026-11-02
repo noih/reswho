@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 mod attribution;
@@ -6,7 +6,7 @@ mod diagnostic;
 pub use attribution::{Attribution, AttributionSource};
 pub use diagnostic::Diagnostic;
 
-pub const JSON_SCHEMA_VERSION: &str = "reswho/8";
+pub const JSON_SCHEMA_VERSION: &str = "reswho/9";
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Process {
@@ -19,6 +19,8 @@ pub struct Process {
     pub executable: Option<PathBuf>,
     pub cwd: Option<PathBuf>,
     pub command: Option<ProcessCommand>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extension_details: Vec<ExtensionDetails>,
     pub cpu_percent: Option<f64>,
     pub resident_bytes: Option<u64>,
     pub network: Option<Network>,
@@ -40,7 +42,32 @@ impl Process {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DetailField {
+    pub key: String,
+    pub label: String,
+    pub value: serde_json::Value,
+    pub sensitive: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExtensionDetails {
+    pub provider: String,
+    pub version: String,
+    pub fields: Vec<DetailField>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExtensionAttribution {
+    pub provider: String,
+    pub version: String,
+    pub key: String,
+    pub label: String,
+    pub basis: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ProcessCommand {
     pub argv: Option<Vec<String>>,
     pub redacted_indices: Vec<usize>,

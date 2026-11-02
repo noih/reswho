@@ -151,7 +151,8 @@ pub fn build_with_providers(
     context: &crate::extensions::Context<'_>,
     providers: &[&dyn crate::extensions::Extension],
 ) -> Result<Node> {
-    let (app_bundles, diagnostics) = crate::extensions::classify(providers, context, &processes);
+    let (app_bundles, custom, diagnostics) =
+        crate::extensions::classify(providers, context, &processes);
     let mut seen = HashSet::new();
     let mut cache = projects::Discovery::default();
     let mut buckets: BTreeMap<String, (Assignment, Vec<Process>)> = BTreeMap::new();
@@ -194,6 +195,35 @@ pub fn build_with_providers(
                 root.root.display()
             ));
         }
+        if selected.category == "unclassified"
+            && let Some((path, extension)) = custom.get(&process.pid)
+        {
+            let mut attribution =
+                Attribution::new(AttributionSource::Extension, Some(path.clone()));
+            attribution.extension = Some(extension.clone());
+            let reason = format!(
+                "Extension {}/{}: {} ({})",
+                extension.provider,
+                extension.version,
+                extension.label,
+                path.display()
+            );
+            selected = Assignment {
+                category: "extensions",
+                category_name: "Extensions",
+                key: format!(
+                    "{}\0{}\0{}",
+                    extension.provider,
+                    extension.key,
+                    path.display()
+                ),
+                name: extension.label.clone(),
+                evidence: reason.clone(),
+                project: None,
+                attribution: Some(attribution),
+            };
+            reasons = vec![reason];
+        }
         attributions.insert(
             process.pid,
             selected.attribution.clone().or_else(|| {
@@ -234,6 +264,7 @@ pub fn build_with_providers(
                 .expect("project assignment")
                 .grouping(),
             "system" => Grouping::System,
+            "extensions" => Grouping::Project,
             _ => Grouping::Unknown,
         };
         let mut group = Node::group(

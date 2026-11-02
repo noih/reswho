@@ -8,8 +8,8 @@ fn definition(id: &str, key: &str, default: u64) -> Definition {
             value_type: ValueType::Integer,
             unit: Some("ms".into()),
             limits: Limits {
-                min: Some(1),
-                max: Some(5000),
+                min: Some(1.into()),
+                max: Some(5000.into()),
                 allowed: None,
             },
         },
@@ -79,7 +79,7 @@ fn conflicting_registration_rolls_back_all_new_keys() {
                 conflict.default = json!(true);
             }
             1 => conflict.contract.unit = Some("seconds".into()),
-            2 => conflict.contract.limits.max = Some(6000),
+            2 => conflict.contract.limits.max = Some(6000.into()),
             _ => conflict.sensitive = true,
         }
         assert!(
@@ -445,4 +445,198 @@ fn allowed_sets_ignore_order_in_declarations_and_uses_without_changing_canonical
             .unwrap();
         assert!(uses_registry.resolve_uses()["d"][0].contains("incompatible use"));
     }
+}
+
+#[test]
+fn public_scalar_metadata_supports_signed_fractional_numbers_and_safe_integer_intervals() {
+    let definition:Definition=serde_json::from_value(json!({"key":"shared.number","type":"number","min":-2.5,"max":2.5,"default":-1.25,"description":"number","provider":"a","version":"1.0.0","sensitive":false})).unwrap();
+    let mut registry = Registry::core();
+    registry
+        .register_extension("a", vec![definition], vec![])
+        .unwrap();
+    let resolved = registry
+        .resolve(
+            &config(json!({"shared.number":-0.75,"sampling.interval_ms":250.0})),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    assert_eq!(resolved.get("shared.number"), Some(&json!(-0.75)));
+    assert_eq!(
+        resolved.interval("sampling.interval_ms"),
+        Duration::from_millis(250)
+    );
+    let report = serde_json::to_value(resolved.report()).unwrap();
+    let definition = &report["settings"]["sampling.interval_ms"]["definition"];
+    assert_eq!(definition["type"], "number");
+    assert_eq!(definition["integer"], true);
+    assert_eq!(
+        report["settings"]["refresh.interval_ms"]["definition"]["max"],
+        json!(u64::MAX)
+    );
+    assert!(definition.get("value_type").is_none());
+    assert!(definition.get("limits").is_none());
+    assert!(definition.get("options").is_none());
+    for value in [
+        json!(-3),
+        json!(3.5),
+        json!([1, 2]),
+        json!("1"),
+        json!(true),
+    ] {
+        assert!(
+            registry
+                .resolve(&config(json!({"shared.number":value})), &BTreeMap::new())
+                .is_err()
+        );
+    }
+    let exact:Definition=serde_json::from_value(json!({"key":"shared.exact","type":"number","integer":true,"min":9007199254740993u64,"default":9007199254740994u64,"description":"exact","provider":"exact","version":"1.0.0","sensitive":false})).unwrap();
+    registry
+        .register_extension("exact", vec![exact], vec![])
+        .unwrap();
+    assert!(
+        registry
+            .resolve(
+                &config(json!({"shared.exact":9007199254740992u64})),
+                &BTreeMap::new()
+            )
+            .is_err()
+    );
+    assert!(serde_json::from_value::<Definition>(json!({"key":"shared.false","type":"number","integer":false,"default":1,"description":"false flag","sensitive":false})).is_err());
+    let integer:Definition=serde_json::from_value(json!({"key":"shared.integer","type":"number","integer":true,"default":-2,"description":"whole","provider":"b","version":"1.0.0","sensitive":false})).unwrap();
+    registry
+        .register_extension("b", vec![integer], vec![])
+        .unwrap();
+    assert!(
+        registry
+            .resolve(&config(json!({"shared.integer":-0.5})), &BTreeMap::new())
+            .is_err()
+    );
+    assert_eq!(
+        registry
+            .resolve(&Config::default(), &BTreeMap::new())
+            .unwrap()
+            .get("shared.integer"),
+        Some(&json!(-2))
+    );
+}
+
+#[test]
+fn public_options_are_homogeneous_nonempty_scalar_sets_with_canonical_defaults() {
+    let wire = json!({"key":"shared.choice","type":"number","options":[-1.5,0,2.5],"default":-1.5,"description":"choice","provider":"a","version":"1.0.0","sensitive":false});
+    let first: Definition = serde_json::from_value(wire.clone()).unwrap();
+    let mut registry = Registry::core();
+    registry
+        .register_extension("a", vec![first.clone()], vec![])
+        .unwrap();
+    let mut candidate = first.clone();
+    candidate.provider = "b".into();
+    candidate.default = json!(0);
+    candidate
+        .contract
+        .limits
+        .allowed
+        .as_mut()
+        .unwrap()
+        .reverse();
+    registry
+        .register_extension("b", vec![candidate], vec![])
+        .unwrap();
+    let resolved = registry
+        .resolve(&Config::default(), &BTreeMap::new())
+        .unwrap();
+    assert_eq!(resolved.get("shared.choice"), Some(&json!(-1.5)));
+    assert_eq!(
+        resolved.report().settings["shared.choice"]
+            .definition
+            .provider,
+        "a"
+    );
+    assert!(
+        registry
+            .resolve(&config(json!({"shared.choice":1})), &BTreeMap::new())
+            .is_err()
+    );
+    for options in [
+        json!([]),
+        json!([1, "two"]),
+        json!([true, 1]),
+        json!([[1], [2]]),
+    ] {
+        let mut invalid = wire.clone();
+        invalid["options"] = options;
+        assert!(serde_json::from_value::<Definition>(invalid).is_err());
+    }
+    let mut invalid = first.clone();
+    invalid.provider = "c".into();
+    invalid.contract.limits.allowed = Some(vec![json!(-1.5), json!("wrong")]);
+    assert!(
+        registry
+            .register_extension(
+                "c",
+                vec![definition("c", "shared.rollback", 1), invalid],
+                vec![]
+            )
+            .is_err()
+    );
+    assert!(registry.definition("shared.rollback").is_none());
+    let mut default = wire.clone();
+    default["default"] = json!(42);
+    let default: Definition = serde_json::from_value(default).unwrap();
+    assert!(
+        Registry::core()
+            .register_extension("a", vec![default], vec![])
+            .is_err()
+    );
+    let mut integer = first;
+    integer.provider = "c".into();
+    integer.default = json!(0);
+    integer.contract.value_type = ValueType::Integer;
+    integer.contract.limits.allowed = None;
+    assert!(
+        registry
+            .register_extension("c", vec![integer], vec![])
+            .is_err()
+    );
+    let usage: Use = serde_json::from_value(
+        json!({"key":"shared.choice","type":"number","options":[2.5,0,-1.5]}),
+    )
+    .unwrap();
+    registry
+        .register_extension("c", vec![], vec![usage.clone()])
+        .unwrap();
+    assert!(registry.resolve_uses().is_empty());
+    let value = serde_json::to_value(usage).unwrap();
+    assert!(value.get("default").is_none());
+    assert!(value.get("contract").is_none());
+    assert_eq!(value["type"], "number");
+    assert!(
+        serde_json::from_value::<Use>(json!({"key":"shared.x","type":"boolean","default":false}))
+            .is_err()
+    );
+}
+
+#[test]
+fn public_manifest_schema_and_report_agree_on_scalar_metadata() {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../schemas/reswho-extension-manifest-1.schema.json"
+    ))
+    .unwrap();
+    let example: Value =
+        serde_json::from_str(include_str!("../../examples/extensions/example.json")).unwrap();
+    assert!(
+        jsonschema::validator_for(&schema)
+            .unwrap()
+            .is_valid(&example)
+    );
+    let definition_schema = json!({"$defs":schema["$defs"],"$ref":"#/$defs/definition"});
+    let validator = jsonschema::validator_for(&definition_schema).unwrap();
+    let report = Registry::core()
+        .resolve(&Config::default(), &BTreeMap::new())
+        .unwrap();
+    for effective in report.report().settings.values() {
+        let definition = serde_json::to_value(&effective.definition).unwrap();
+        assert!(validator.is_valid(&definition), "{definition}");
+    }
+    let invalid = json!({"key":"shared.x","type":"number","options":[1,"bad"],"default":1,"description":"invalid","sensitive":false});
+    assert!(!validator.is_valid(&invalid));
 }

@@ -97,8 +97,7 @@ fn fresh_identity_metrics_attribution_ports_and_output_contract() {
         root,
     };
     let json = serde_json::to_value(&snapshot).unwrap();
-    let schema: Value =
-        serde_json::from_str(include_str!("../../../schemas/reswho-8.schema.json")).unwrap();
+    let schema: Value = serde_json::from_str(crate::output::JSON_SCHEMA).unwrap();
     assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&json));
     assert!(!json.to_string().contains("never-print"));
     let md = output::markdown(&snapshot);

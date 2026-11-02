@@ -1,35 +1,83 @@
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Number, Value};
+use std::cmp::Ordering;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ValueType {
     Integer,
+    Number,
     Boolean,
     String,
 }
 
-#[derive(Clone, Debug, Eq, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Limits {
-    pub min: Option<u64>,
-    pub max: Option<u64>,
+    pub min: Option<Number>,
+    pub max: Option<Number>,
     pub allowed: Option<Vec<Value>>,
+}
+
+fn numeric_cmp(left: &Number, right: &Number) -> Ordering {
+    let integer = |number: &Number| {
+        number
+            .as_i64()
+            .map(i128::from)
+            .or_else(|| number.as_u64().map(i128::from))
+    };
+    match (integer(left), integer(right)) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        (Some(left), None) => {
+            let right = right.as_f64().expect("finite JSON number");
+            let approximate = (left as f64)
+                .partial_cmp(&right)
+                .expect("finite JSON number");
+            if approximate == Ordering::Equal {
+                left.cmp(&(right as i128))
+            } else {
+                approximate
+            }
+        }
+        (None, Some(_)) => numeric_cmp(right, left).reverse(),
+        (None, None) => left
+            .as_f64()
+            .partial_cmp(&right.as_f64())
+            .expect("finite JSON numbers"),
+    }
+}
+
+fn optional_number_equal(left: &Option<Number>, right: &Option<Number>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => numeric_cmp(left, right) == Ordering::Equal,
+        _ => false,
+    }
+}
+
+fn scalar_equal(left: &Value, right: &Value) -> bool {
+    match (left.as_number(), right.as_number()) {
+        (Some(left), Some(right)) => numeric_cmp(left, right) == Ordering::Equal,
+        _ => left == right,
+    }
 }
 
 impl PartialEq for Limits {
     fn eq(&self, other: &Self) -> bool {
-        self.min == other.min
-            && self.max == other.max
+        optional_number_equal(&self.min, &other.min)
+            && optional_number_equal(&self.max, &other.max)
             && match (&self.allowed, &other.allowed) {
                 (Some(left), Some(right)) => {
-                    left.iter().all(|value| right.contains(value))
-                        && right.iter().all(|value| left.contains(value))
+                    left.iter()
+                        .all(|value| right.iter().any(|other| scalar_equal(value, other)))
+                        && right
+                            .iter()
+                            .all(|value| left.iter().any(|other| scalar_equal(value, other)))
                 }
                 (None, None) => true,
                 _ => false,
@@ -37,7 +85,8 @@ impl PartialEq for Limits {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "PublicContract", into = "PublicContract")]
 pub struct Contract {
     pub value_type: ValueType,
     pub unit: Option<String>,
@@ -47,16 +96,33 @@ pub struct Contract {
 impl Contract {
     fn validate(&self, value: &Value) -> Result<()> {
         let valid_type = match self.value_type {
-            ValueType::Integer => value.as_u64().is_some(),
+            ValueType::Integer => {
+                value.as_i64().is_some()
+                    || value.as_u64().is_some()
+                    || value.as_f64().is_some_and(|number| {
+                        number.is_finite()
+                            && number.fract() == 0.0
+                            && number.abs() <= 9_007_199_254_740_992.0
+                    })
+            }
+            ValueType::Number => value.as_f64().is_some_and(f64::is_finite),
             ValueType::Boolean => value.is_boolean(),
             ValueType::String => value.is_string(),
         };
         if !valid_type {
             bail!("wrong value type");
         }
-        if let Some(number) = value.as_u64()
-            && (self.limits.min.is_some_and(|min| number < min)
-                || self.limits.max.is_some_and(|max| number > max))
+        if let Some(number) = value.as_number()
+            && (self
+                .limits
+                .min
+                .as_ref()
+                .is_some_and(|min| numeric_cmp(number, min) == Ordering::Less)
+                || self
+                    .limits
+                    .max
+                    .as_ref()
+                    .is_some_and(|max| numeric_cmp(number, max) == Ordering::Greater))
         {
             bail!("value outside limits");
         }
@@ -64,7 +130,7 @@ impl Contract {
             .limits
             .allowed
             .as_ref()
-            .is_some_and(|allowed| !allowed.contains(value))
+            .is_some_and(|allowed| !allowed.iter().any(|option| scalar_equal(option, value)))
         {
             bail!("value outside allowed values");
         }
@@ -72,22 +138,155 @@ impl Contract {
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublicContract {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    options: Option<Vec<Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    min: Option<Number>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max: Option<Number>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    integer: Option<bool>,
+}
+
+impl From<Contract> for PublicContract {
+    fn from(contract: Contract) -> Self {
+        Self {
+            kind: match contract.value_type {
+                ValueType::Integer | ValueType::Number => "number",
+                ValueType::String => "string",
+                ValueType::Boolean => "boolean",
+            }
+            .into(),
+            integer: (contract.value_type == ValueType::Integer).then_some(true),
+            unit: contract.unit,
+            options: contract.limits.allowed,
+            min: contract.limits.min,
+            max: contract.limits.max,
+        }
+    }
+}
+
+impl TryFrom<PublicContract> for Contract {
+    type Error = String;
+    fn try_from(public: PublicContract) -> std::result::Result<Self, Self::Error> {
+        let value_type = match public.kind.as_str() {
+            "number" if public.integer == Some(true) => ValueType::Integer,
+            "number" => ValueType::Number,
+            "string" => ValueType::String,
+            "boolean" => ValueType::Boolean,
+            _ => return Err("unsupported setting type".into()),
+        };
+        if public.integer.is_some_and(|value| !value)
+            || (public.integer == Some(true) && value_type != ValueType::Integer)
+        {
+            return Err("integer must be true and applies only to number".into());
+        }
+        let contract = Self {
+            value_type,
+            unit: public.unit,
+            limits: Limits {
+                min: public.min,
+                max: public.max,
+                allowed: public.options,
+            },
+        };
+        contract
+            .validate_contract()
+            .map_err(|error| error.to_string())?;
+        Ok(contract)
+    }
+}
+
+impl Contract {
+    fn validate_contract(&self) -> Result<()> {
+        if self
+            .limits
+            .min
+            .as_ref()
+            .zip(self.limits.max.as_ref())
+            .is_some_and(|(min, max)| numeric_cmp(min, max) == Ordering::Greater)
+            || self
+                .limits
+                .min
+                .iter()
+                .chain(self.limits.max.iter())
+                .any(|value| !value.as_f64().is_some_and(f64::is_finite))
+            || (!matches!(self.value_type, ValueType::Integer | ValueType::Number)
+                && (self.limits.min.is_some() || self.limits.max.is_some()))
+        {
+            bail!("invalid numeric constraints");
+        }
+        if let Some(options) = &self.limits.allowed
+            && (options.is_empty() || options.iter().any(|option| self.validate(option).is_err()))
+        {
+            bail!("invalid setting options");
+        }
+        Ok(())
+    }
+}
+
+fn unsigned_integer(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| {
+        value
+            .as_f64()
+            .filter(|number| {
+                number.is_finite()
+                    && *number >= 0.0
+                    && number.fract() == 0.0
+                    && *number <= 9_007_199_254_740_992.0
+            })
+            .map(|number| number as u64)
+    })
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Definition {
     pub key: String,
     #[serde(flatten)]
     pub contract: Contract,
     pub default: Value,
     pub description: String,
+    #[serde(default)]
     pub provider: String,
+    #[serde(default)]
     pub version: String,
     pub sensitive: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct Use {
     pub key: String,
+    #[serde(flatten)]
     pub contract: Contract,
+}
+
+impl<'de> Deserialize<'de> for Use {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let mut value = Value::deserialize(deserializer)?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| serde::de::Error::custom("setting use must be an object"))?;
+        if object.contains_key("default") {
+            return Err(serde::de::Error::custom(
+                "setting use cannot declare default",
+            ));
+        }
+        let key = object
+            .remove("key")
+            .and_then(|key| key.as_str().map(str::to_owned))
+            .ok_or_else(|| serde::de::Error::custom("setting use requires key"))?;
+        let contract = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        Ok(Self { key, contract })
+    }
 }
 
 pub struct Registry {
@@ -146,8 +345,8 @@ impl Registry {
                         value_type: ValueType::Integer,
                         unit: Some("ms".into()),
                         limits: Limits {
-                            min: Some(min),
-                            max: Some(max),
+                            min: Some(Number::from(min)),
+                            max: Some(Number::from(max)),
                             allowed: None,
                         },
                     },
@@ -186,17 +385,8 @@ impl Registry {
             {
                 bail!("extension {id}: invalid definition namespace or owner for {key}");
             }
-            if definition
-                .contract
-                .limits
-                .min
-                .zip(definition.contract.limits.max)
-                .is_some_and(|(min, max)| min > max)
-                || (definition.contract.value_type != ValueType::Integer
-                    && (definition.contract.limits.min.is_some()
-                        || definition.contract.limits.max.is_some()))
-            {
-                bail!("extension {id}: invalid limits for {key}");
+            if definition.contract.validate_contract().is_err() {
+                bail!("extension {id}: invalid constraints for {key}");
             }
             if definition.contract.validate(&definition.default).is_err() {
                 bail!("extension {id}: invalid default for {key}");
@@ -219,6 +409,36 @@ impl Registry {
         self.definitions = pending;
         self.uses.insert(id.into(), uses);
         Ok(())
+    }
+
+    pub fn restore_shared(&mut self, definitions: &[Definition]) -> Result<()> {
+        let mut pending = self.definitions.clone();
+        for definition in definitions {
+            if !definition.key.starts_with("shared.") {
+                bail!("invalid canonical definition namespace");
+            }
+            let mut check = Self::core();
+            check.register_extension(&definition.provider, vec![definition.clone()], vec![])?;
+            if let Some(existing) = pending.get(&definition.key) {
+                if existing.contract != definition.contract
+                    || existing.sensitive != definition.sensitive
+                {
+                    bail!("incompatible canonical definition");
+                }
+            } else {
+                pending.insert(definition.key.clone(), definition.clone());
+            }
+        }
+        self.definitions = pending;
+        Ok(())
+    }
+
+    pub fn shared_definitions(&self) -> Vec<Definition> {
+        self.definitions
+            .values()
+            .filter(|definition| definition.key.starts_with("shared."))
+            .cloned()
+            .collect()
     }
 
     pub fn resolve_uses(&self) -> BTreeMap<String, Vec<String>> {
@@ -269,7 +489,8 @@ impl Registry {
                 if key == "refresh.interval_ms"
                     && Instant::now()
                         .checked_add(Duration::from_millis(
-                            value.as_u64().expect("validated integer"),
+                            unsigned_integer(value)
+                                .ok_or_else(|| anyhow::anyhow!("invalid unsigned interval"))?,
                         ))
                         .is_none()
                 {
@@ -412,7 +633,7 @@ impl Resolved {
         &self.report
     }
     pub fn interval(&self, key: &str) -> Duration {
-        Duration::from_millis(self.values[key].as_u64().expect("validated core interval"))
+        Duration::from_millis(unsigned_integer(&self.values[key]).expect("validated core interval"))
     }
 }
 

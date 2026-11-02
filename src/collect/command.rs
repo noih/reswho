@@ -148,40 +148,7 @@ fn parse(buffer: &[u8], pointer_width: usize) -> Result<Vec<String>, Diagnostic>
     Ok(args)
 }
 
-const SENSITIVE_NAMES: &[&str] = &[
-    "password",
-    "passwd",
-    "pwd",
-    "passphrase",
-    "passkey",
-    "token",
-    "secret",
-    "credential",
-    "authorization",
-    "apikey",
-    "accesskey",
-    "privatekey",
-    "cookie",
-    "header",
-    "session",
-    "auth",
-    "bearer",
-];
-
-fn normalized_option(value: &str) -> String {
-    value
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .flat_map(char::to_lowercase)
-        .collect()
-}
-
-fn sensitive_option(value: &str) -> bool {
-    let normalized = normalized_option(value);
-    SENSITIVE_NAMES.iter().any(|key| normalized.contains(key))
-        || matches!(normalized.as_str(), "key" | "pass" | "user" | "env")
-        || matches!(value, "-p" | "-u" | "-H" | "-a" | "-E")
-}
+use crate::redaction::{SENSITIVE_NAMES, normalized_option, sensitive_option};
 
 fn named_option(value: &str) -> bool {
     let normalized = normalized_option(value);

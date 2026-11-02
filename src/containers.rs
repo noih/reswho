@@ -2,7 +2,7 @@ use crate::model::{Attribution, AttributionSource};
 #[cfg(target_os = "macos")]
 mod apple;
 mod attribution;
-mod command;
+pub(crate) mod command;
 mod docker;
 mod http;
 #[cfg(test)]
@@ -58,6 +58,17 @@ pub(crate) fn collect_with_context(context: &crate::extensions::Context<'_>) -> 
         .map(|extension| extension as &dyn crate::extensions::Extension)
         .collect();
     crate::extensions::collect(&providers, context)
+}
+
+pub(crate) fn apple_available() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        command::find_program("container").is_some()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 pub(crate) fn collect_docker(

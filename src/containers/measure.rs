@@ -163,6 +163,7 @@ fn measure_full_snapshot() {
         let snapshot = crate::snapshot::capture(
             &crate::snapshot::Options {
                 settings: std::sync::Arc::new(crate::extensions::default_settings().unwrap()),
+                extensions: std::sync::Arc::new(crate::extensions::state::State::default()),
                 containers: true,
                 command_pid: None,
             },

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use std::{
-    io::{ErrorKind, Read},
+    io::{ErrorKind, Read, Write},
     os::{fd::AsRawFd, unix::process::CommandExt},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -19,7 +19,7 @@ pub(super) fn find_program(name: &str) -> Option<std::path::PathBuf> {
 
 const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 
-pub(super) struct Output {
+pub(crate) struct Output {
     pub stdout: Vec<u8>,
     pub issue: Option<String>,
 }
@@ -46,15 +46,46 @@ pub(super) struct RuntimeCommand {
 
 struct OwnedChild {
     process: Child,
-    reaped: bool,
+    group_cleaned: bool,
+}
+
+impl OwnedChild {
+    fn exited(&self) -> Result<bool> {
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                self.process.id() as libc::id_t,
+                info.as_mut_ptr(),
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == ErrorKind::Interrupted {
+                return Ok(false);
+            }
+            return Err(error.into());
+        }
+        let info = unsafe { info.assume_init() };
+        #[cfg(target_os = "linux")]
+        let pid = unsafe { info.si_pid() };
+        #[cfg(not(target_os = "linux"))]
+        let pid = info.si_pid;
+        Ok(pid != 0)
+    }
+    fn clean_group(&mut self) {
+        if !self.group_cleaned {
+            unsafe { libc::kill(-(self.process.id() as i32), libc::SIGKILL) };
+            self.group_cleaned = true;
+        }
+    }
 }
 
 impl Drop for OwnedChild {
     fn drop(&mut self) {
-        if !self.reaped {
-            unsafe { libc::kill(-(self.process.id() as i32), libc::SIGKILL) };
-            let _ = self.process.wait();
-        }
+        self.clean_group();
+        let _ = self.process.wait();
     }
 }
 
@@ -107,78 +138,110 @@ impl Runner for RuntimeCommand {
     }
 
     fn run(&mut self, args: &[String]) -> Result<Output> {
-        self.cancel.check()?;
-        if Instant::now() >= self.deadline {
-            bail!("container CLI collection deadline exceeded");
+        run_bounded(&self.program, args, None, &self.cancel, self.deadline)
+    }
+}
+
+pub(crate) fn run_bounded(
+    program: &std::path::Path,
+    args: &[String],
+    input: Option<&[u8]>,
+    cancel: &crate::snapshot::Cancellation,
+    deadline: Instant,
+) -> Result<Output> {
+    if input.is_some_and(|input| input.len() > MAX_OUTPUT_BYTES) {
+        bail!("provider request exceeds 8 MiB limit");
+    }
+    cancel.check()?;
+    if Instant::now() >= deadline {
+        bail!("container CLI collection deadline exceeded");
+    }
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("SSH_ASKPASS_REQUIRE", "never")
+        .env("SSH_ASKPASS", "/usr/bin/false");
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = OwnedChild {
+        process: command.spawn().map_err(|error| match error.kind() {
+            ErrorKind::NotFound => anyhow::anyhow!("container CLI not found on PATH"),
+            _ => anyhow::anyhow!("cannot start container CLI ({})", error.kind()),
+        })?,
+        group_cleaned: false,
+    };
+    let mut stdin = child.process.stdin.take();
+    if let Some(pipe) = &stdin {
+        nonblocking(pipe)?;
+    }
+    let input = input.unwrap_or(&[]);
+    let mut sent = 0;
+    let mut stdout = child
+        .process
+        .stdout
+        .take()
+        .context("container CLI stdout unavailable")?;
+    let mut stderr = child
+        .process
+        .stderr
+        .take()
+        .context("container CLI stderr unavailable")?;
+    nonblocking(&stdout)?;
+    nonblocking(&stderr)?;
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    loop {
+        cancel.check()?;
+        if let Some(pipe) = &mut stdin {
+            match pipe.write(&input[sent..input.len().min(sent + 65536)]) {
+                Ok(length) => sent += length,
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
+                Err(_) => bail!("cannot write provider request"),
+            }
+            if sent == input.len() {
+                stdin.take();
+            }
         }
-        let mut command = Command::new(&self.program);
-        command
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env("SSH_ASKPASS_REQUIRE", "never")
-            .env("SSH_ASKPASS", "/usr/bin/false");
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
+        let out_done = drain(&mut stdout, &mut output)?;
+        let err_done = drain(&mut stderr, &mut errors)?;
+        if out_done && err_done && child.exited()? {
+            child.clean_group();
+            let status = child.process.wait()?;
+            let issue = if !status.success() {
+                Some(format!(
+                    "container CLI command failed ({status}); stderr withheld"
+                ))
+            } else if !errors.is_empty() {
+                Some("container CLI command reported diagnostics; stderr withheld".into())
+            } else {
+                None
+            };
+            return Ok(Output {
+                stdout: output,
+                issue,
             });
         }
-        let mut child = OwnedChild {
-            process: command.spawn().map_err(|error| match error.kind() {
-                ErrorKind::NotFound => anyhow::anyhow!("container CLI not found on PATH"),
-                _ => anyhow::anyhow!("cannot start container CLI ({})", error.kind()),
-            })?,
-            reaped: false,
-        };
-        let mut stdout = child
-            .process
-            .stdout
-            .take()
-            .context("container CLI stdout unavailable")?;
-        let mut stderr = child
-            .process
-            .stderr
-            .take()
-            .context("container CLI stderr unavailable")?;
-        nonblocking(&stdout)?;
-        nonblocking(&stderr)?;
-        let mut output = Vec::new();
-        let mut errors = Vec::new();
-        loop {
-            self.cancel.check()?;
-            let out_done = drain(&mut stdout, &mut output)?;
-            let err_done = drain(&mut stderr, &mut errors)?;
-            if out_done
-                && err_done
-                && let Some(status) = child.process.try_wait()?
-            {
-                child.reaped = true;
-                let issue = if !status.success() {
-                    Some(format!(
-                        "container CLI command failed ({status}); stderr withheld"
-                    ))
-                } else if !errors.is_empty() {
-                    Some("container CLI command reported diagnostics; stderr withheld".into())
-                } else {
-                    None
-                };
-                return Ok(Output {
-                    stdout: output,
-                    issue,
-                });
-            }
-            if Instant::now() >= self.deadline {
-                return Ok(Output {
-                    stdout: output,
-                    issue: Some("container CLI collection deadline exceeded".into()),
-                });
-            }
-            std::thread::sleep(Duration::from_millis(10));
+        if Instant::now() >= deadline {
+            return Ok(Output {
+                stdout: output,
+                issue: Some("container CLI collection deadline exceeded".into()),
+            });
         }
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -276,5 +339,31 @@ mod tests {
         assert!(issue.contains('7'));
         assert!(!issue.contains("private-credential"));
         assert!(result.stdout.is_empty());
+    }
+    #[test]
+    fn normal_and_nonzero_exit_clean_descendants_after_closed_pipes() {
+        for code in [0, 7] {
+            let result = run_bounded(std::path::Path::new("/bin/sh"), &[
+                "-c".into(), "/bin/sleep 30 </dev/null >/dev/null 2>&1 & descendant=$!; printf '{\"child\":%s,\"parent\":%s}\\n' \"$descendant\" \"$$\"; exit \"$1\"".into(), "fixture".into(), code.to_string()
+            ], Some(b"{}"), &crate::snapshot::Cancellation::default(), Instant::now()+Duration::from_secs(3)).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+            let parent = value["parent"].as_i64().unwrap() as i32;
+            let descendant = value["child"].as_i64().unwrap() as i32;
+            assert_eq!(unsafe { libc::kill(parent, 0) }, -1);
+            let start = Instant::now();
+            while unsafe { libc::kill(descendant, 0) } == 0
+                && start.elapsed() < Duration::from_secs(2)
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let gone = unsafe { libc::kill(descendant, 0) } == -1;
+            if !gone && unsafe { libc::getpgid(descendant) } == parent {
+                unsafe {
+                    libc::kill(-parent, libc::SIGKILL);
+                }
+            }
+            assert!(gone, "owned descendant {descendant} survived provider exit");
+            assert_eq!(result.issue.is_none(), code == 0);
+        }
     }
 }
