@@ -7,7 +7,11 @@ mod worker;
 use crate::snapshot::Options;
 use crate::sort::Sort;
 use anyhow::{Context, Result, bail};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::{
+    SynchronizedUpdate,
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    terminal::EndSynchronizedUpdate,
+};
 use ratatui::widgets::TableState;
 use state::App;
 use std::{
@@ -47,6 +51,7 @@ impl Drop for TerminalRestore {
     fn drop(&mut self) {
         if self.0 {
             let _ = ratatui::try_restore();
+            let _ = crossterm::execute!(io::stdout(), EndSynchronizedUpdate);
         }
     }
 }
@@ -57,10 +62,18 @@ pub fn run(options: Options, scope: String, depth: usize, sort: Sort) -> Result<
     }
     let worker = Worker::start(options);
     let mut restore = TerminalRestore(true);
-    let mut terminal = ratatui::try_init().context("initialize terminal")?;
     let mut app = App::new(scope, depth);
     app.sort = sort;
-    let result = event_loop(&mut terminal, &worker, app);
+    app.collecting = worker.request();
+    let mut table = TableState::default();
+    let mut terminal = io::stdout()
+        .sync_update(|_| -> Result<_> {
+            let mut terminal = ratatui::try_init().context("initialize terminal")?;
+            terminal.draw(|frame| view::draw(frame, &app, &mut table))?;
+            Ok(terminal)
+        })
+        .context("present initial frame")??;
+    let result = event_loop(&mut terminal, &worker, app, table);
     drop(terminal);
     let restored = ratatui::try_restore().context("restore terminal");
     restore.0 = restored.is_err();
@@ -73,11 +86,10 @@ fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     worker: &Worker,
     mut app: App,
+    mut table: TableState,
 ) -> Result<()> {
-    let mut table = TableState::default();
     let mut next_refresh = Instant::now();
-    let mut dirty = true;
-    let mut displayed_age = None;
+    let mut dirty = false;
     let animation_start = Instant::now();
     loop {
         match worker.results.try_recv() {
@@ -95,9 +107,8 @@ fn event_loop(
         }
         if !app.collecting && !app.paused && Instant::now() >= next_refresh {
             app.collecting = worker.request();
-            dirty = true;
+            dirty |= app.snapshot.is_none();
         }
-        let age = app.updated.map(|time| time.elapsed().as_secs());
         let loading_frame = if app.snapshot.is_none() && app.collecting {
             (animation_start.elapsed().as_millis() / 250 % 4) as usize
         } else {
@@ -107,9 +118,8 @@ fn event_loop(
             app.loading_frame = loading_frame;
             dirty = true;
         }
-        if dirty || displayed_age != age {
+        if dirty {
             terminal.draw(|frame| view::draw(frame, &app, &mut table))?;
-            displayed_age = age;
             dirty = false;
         }
         if event::poll(Duration::from_millis(100))? {

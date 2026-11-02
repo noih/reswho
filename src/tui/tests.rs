@@ -467,7 +467,7 @@ fn sorting_refresh_and_layout_keep_selected_screen_row_without_pinning_navigatio
         .unwrap();
     assert_eq!(app.rows[app.selected].key, selected_key);
     assert!(app.selected >= table.offset());
-    assert!(app.selected - table.offset() < 5);
+    assert!(app.selected - table.offset() < 6);
 
     let anchor = SelectionAnchor::capture(&app, &table).unwrap();
     handle_key(&mut app, KeyEvent::from(KeyCode::Home));
@@ -510,7 +510,7 @@ fn layouts_and_untrusted_strings_render_without_terminal_controls() {
             .map(|cell| cell.symbol())
             .collect();
         assert!(!text.contains(['\u{1b}', '\u{202e}']));
-        assert!(text.contains("reswho"));
+        assert!(text.contains(if width >= 36 { "Host CPU" } else { "reswho" }));
         if width >= 80 {
             assert!(!text.contains("Details"));
             assert!(text.contains("Path —"));
@@ -606,8 +606,29 @@ fn first_snapshot_wait_shows_loading_then_data_or_error() {
     assert!(!error.contains("Loading resources..."));
     app.update(Ok(snapshot()));
     let loaded = render(&app, &mut terminal, &mut table);
+    let header: String = terminal.backend().buffer().content[..80]
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    let toolbar: String = terminal.backend().buffer().content[80..160]
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(header.starts_with("Host CPU"));
+    assert!(header.contains("processes"));
+    assert!(toolbar.starts_with("Sort RAM"));
     assert!(loaded.contains("Resources"));
     assert!(!loaded.contains("Loading resources..."));
+    assert!(!loaded.contains("s ago"));
+    assert!(!loaded.contains("| live"));
+    app.collecting = true;
+    assert_eq!(render(&app, &mut terminal, &mut table), loaded);
+    app.paused = true;
+    assert!(render(&app, &mut terminal, &mut table).contains("| paused"));
+    app.update(Err("refresh failed".into()));
+    let failed = render(&app, &mut terminal, &mut table);
+    assert!(failed.contains("| error"));
+    assert!(failed.contains("refresh failed"));
 }
 
 #[test]

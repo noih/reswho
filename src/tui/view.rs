@@ -4,7 +4,7 @@ use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::Line,
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
 };
 
@@ -197,33 +197,31 @@ pub(super) fn draw(frame: &mut Frame, app: &App, table: &mut TableState) {
         return;
     }
     let [header, toolbar, tree_area, path_area, footer] = Layout::vertical([
-        Constraint::Length(2),
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(3),
         Constraint::Length(1),
         Constraint::Length(2),
     ])
     .areas(area);
-    let status = if app.collecting {
-        "collecting"
+    let status = if app.error.is_some() {
+        " | error"
     } else if app.paused {
-        "paused"
-    } else if app.error.is_some() {
-        "error"
+        " | paused"
     } else {
-        "live"
+        ""
     };
-    let age = app
-        .updated
-        .map_or("waiting for first snapshot".into(), |time| {
-            format!("{}s ago", time.elapsed().as_secs())
-        });
     let summary =
         app.snapshot
             .as_ref()
             .map_or("Host CPU —  RAM —  swap —".into(), |snapshot| {
+                let processes = if snapshot.scope == "group:all" {
+                    format!("  |  {} processes", snapshot.root.totals.processes)
+                } else {
+                    String::new()
+                };
                 format!(
-                    "Host CPU {}  RAM {}/{}  swap {}  |  sample {}ms  collection {}ms",
+                    "Host CPU {}  RAM {}/{}  swap {}{processes}  |  sample {}ms  collection {}ms",
                     output::percent(snapshot.system.cpu_percent),
                     output::memory(snapshot.system.memory_used_bytes),
                     output::memory(snapshot.system.memory_total_bytes),
@@ -232,30 +230,7 @@ pub(super) fn draw(frame: &mut Frame, app: &App, table: &mut TableState) {
                     snapshot.collection_ms
                 )
             });
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled(
-                    "reswho ",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(format!(
-                    "read-only | {status} | {age}{}",
-                    app.snapshot
-                        .as_ref()
-                        .filter(|snapshot| snapshot.scope == "group:all")
-                        .map_or(String::new(), |snapshot| format!(
-                            " | {} processes",
-                            snapshot.root.totals.processes
-                        ))
-                )),
-            ]),
-            Line::raw(summary),
-        ]),
-        header,
-    );
+    frame.render_widget(Paragraph::new(summary), header);
     let filter = if app.active_only {
         "active (+ unknown)"
     } else {
@@ -270,7 +245,7 @@ pub(super) fn draw(frame: &mut Frame, app: &App, table: &mut TableState) {
     };
     frame.render_widget(
         Paragraph::new(format!(
-            "Sort {} | Containers {filter} | {search}",
+            "Sort {}{status} | Containers {filter} | {search}",
             app.sort.label()
         ))
         .style(Style::default().fg(Color::Yellow)),

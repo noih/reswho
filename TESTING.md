@@ -60,7 +60,7 @@ cargo build
 python3 tests/pty_smoke.py
 ```
 
-This creates owned PTYs and reswho processes with `--no-containers`. It checks automatic TUI selection, keyboard controls, resize, missing scope errors, q/Ctrl-C exits, and spinner updates plus terminal restoration while a five-second sample is pending. All child processes and PTY descriptors are reclaimed in `finally`.
+This creates owned PTYs and reswho processes with `--no-containers`. It checks automatic TUI selection, keyboard controls, resize, missing scope errors, q/Ctrl-C exits, and spinner updates plus terminal restoration while a five-second sample is pending. It verifies synchronized-update begin precedes alternate-screen entry, the complete loading layout precedes synchronized-update end, and no synchronization remains open after exit. Raw terminal output may use cursor movement between words; labels are checked separately. These protocol checks do not prove flicker-free rendering in every terminal emulator or inject initialization I/O failures. All child processes and PTY descriptors are reclaimed in `finally`.
 
 JSON contract tests use the dev-only `jsonschema` validator with remote resolution disabled. They validate `schemas/reswho-8.schema.json` against synthetic examples and serialized trees, reject invalid types/node variants, and check the offline `--json-schema` CLI. Classification fixtures own temporary marker directories and remove them after use; no real containers are queried. The explicit process live test also validates the emitted JSON.
 

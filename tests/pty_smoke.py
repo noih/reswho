@@ -36,10 +36,18 @@ def verify(arguments, exit_key, marker):
             start_new_session=True,
         )
         deadline = time.monotonic() + 10
-        while marker not in transcript and time.monotonic() < deadline:
+        while (marker not in transcript or b"\x1b[?2026l" not in transcript) and time.monotonic() < deadline:
             drain(0.1)
             assert process.poll() is None, transcript.decode(errors="replace")
         assert marker in transcript, "TUI did not render"
+        sync_start = transcript.index(b"\x1b[?2026h")
+        alternate = transcript.index(b"\x1b[?1049h")
+        sync_end = transcript.index(b"\x1b[?2026l")
+        loading = transcript.index(b"Loading resources...")
+        assert sync_start < alternate < loading < sync_end, "initial frame must include screen entry and loading in one synchronized update"
+        first_frame = transcript[alternate:sync_end]
+        for label in [b"Host", b"CPU", b"Memory", b"Path"]:
+            assert label in first_frame, f"initial synchronized frame missing {label!r}"
         if marker == b"Loading resources...":
             assert b"Resource" in transcript and b"Memory" in transcript, "loading must keep the table layout"
             previous = len(transcript)
@@ -64,6 +72,7 @@ def verify(arguments, exit_key, marker):
         assert termios.tcgetattr(slave) == before, "terminal mode not restored"
         assert b"\x1b[?1049h" in transcript and b"\x1b[?1049l" in transcript
         assert b"panicked" not in transcript
+        assert transcript.count(b"\x1b[?2026h") == transcript.count(b"\x1b[?2026l"), "synchronized update left open"
         print(f"PASS {arguments or ['auto TTY']} exit={exit_key!r} restored")
     finally:
         if process is not None:

@@ -3,10 +3,7 @@ use crate::{
     sort::Sort,
     tree,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    time::Instant,
-};
+use std::collections::{HashMap, HashSet};
 
 pub(super) struct Row {
     pub path: Vec<usize>,
@@ -28,7 +25,6 @@ pub(super) struct App {
     pub path_scroll: u16,
     pub help: bool,
     pub error: Option<String>,
-    pub updated: Option<Instant>,
     pub collecting: bool,
     pub loading_frame: usize,
     pub paused: bool,
@@ -93,7 +89,6 @@ impl App {
             path_scroll: 0,
             help: false,
             error: None,
-            updated: None,
             collecting: false,
             loading_frame: 0,
             paused: false,
@@ -164,7 +159,6 @@ impl App {
         self.snapshot = Some(snapshot);
         self.generation = next_generation;
         self.error = None;
-        self.updated = Some(Instant::now());
         let mut current = HashSet::new();
         if let Some(snapshot) = &self.snapshot {
             let mut pending = vec![&snapshot.root];
