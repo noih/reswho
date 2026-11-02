@@ -75,6 +75,7 @@ fn installed_example_contributes_custom_classification_details_and_shared_settin
     assert_eq!(root.totals.processes, 1);
     let full = Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: vec![],
         captured_unix_ms: 0,
         sample_ms: 450,
         collection_ms: 450,
@@ -127,6 +128,7 @@ fn installed_example_contributes_custom_classification_details_and_shared_settin
     assert_eq!(attribution.extension.as_ref().unwrap().provider, "example");
     let snapshot = Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: vec![],
         captured_unix_ms: 0,
         sample_ms: 450,
         collection_ms: 450,
@@ -337,6 +339,7 @@ fn external_collect_uses_runtime_dtos_and_failure_snapshots_match_schema9() {
         .push(collect(&[&bad, &good], &context).unwrap());
     let snapshot = Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: vec![],
         captured_unix_ms: 0,
         sample_ms: 250,
         collection_ms: 250,

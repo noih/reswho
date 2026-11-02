@@ -1,5 +1,7 @@
+mod discovery;
 pub mod external;
 mod native;
+pub mod report;
 pub mod state;
 use crate::{
     containers::{self, Container, Runtime},
@@ -14,7 +16,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
-    sync::{Mutex, Once},
+    sync::{Arc, Mutex, Once},
     time::{Duration, Instant},
 };
 
@@ -43,6 +45,7 @@ pub struct Context<'a> {
     pub cancel: &'a Cancellation,
     pub deadline: Instant,
     failed: Mutex<HashSet<String>>,
+    pub report: Arc<Mutex<Vec<report::Record>>>,
 }
 
 impl<'a> Context<'a> {
@@ -52,6 +55,60 @@ impl<'a> Context<'a> {
             cancel,
             deadline: Instant::now() + Duration::from_secs(10),
             failed: Mutex::new(HashSet::new()),
+            report: Arc::default(),
+        }
+    }
+    fn finish_phase<T>(
+        &self,
+        provider: Option<&str>,
+        phase: &str,
+        validation: Duration,
+        result: Result<T>,
+    ) -> Result<T> {
+        if let Some(record) = self
+            .report
+            .lock()
+            .expect("report lock")
+            .iter_mut()
+            .rev()
+            .find(|record| Some(record.provider.as_str()) == provider && record.phase == phase)
+        {
+            if let Some(duration) = &mut record.duration_ms {
+                *duration += validation.as_secs_f64() * 1000.0;
+            }
+            if result.is_err() && record.result == "success" {
+                record.result = "failed".into();
+                record.reason = Some("invalid_data".into());
+            }
+        }
+        self.finish(provider, result)
+    }
+    pub(crate) fn reject_details_identity(&self, process: &Process, validation: Duration) {
+        for details in &process.extension_details {
+            let rejected = {
+                let mut records = self.report.lock().expect("report lock");
+                if let Some(record) = records.iter_mut().rev().find(|record| {
+                    record.provider == details.provider
+                        && record.version.as_deref() == Some(details.version.as_str())
+                        && record.phase == "details"
+                }) && record.result == "success"
+                {
+                    record.result = "failed".into();
+                    record.reason = Some("identity_changed".into());
+                    if let Some(duration) = &mut record.duration_ms {
+                        *duration += validation.as_secs_f64() * 1000.0;
+                    }
+                    true
+                } else {
+                    false
+                }
+            };
+            if rejected {
+                let _ = self.finish::<()>(
+                    Some(&details.provider),
+                    Err(anyhow::anyhow!("details identity changed")),
+                );
+            }
         }
     }
     fn finish<T>(&self, provider: Option<&str>, result: Result<T>) -> Result<T> {
@@ -217,10 +274,15 @@ fn dispatch_labeled(
     request: Request<'_>,
 ) -> (Option<String>, Result<Response>) {
     let mut provider = None;
+    let mut version = None;
+    let mut invoked = false;
+    let started = Instant::now();
+    let phase = format!("{:?}", request.capability()).to_lowercase();
     let result = boundary(|| {
-        context.check()?;
         let descriptor = extension.descriptor();
         provider = Some(descriptor.id.clone());
+        version = Some(descriptor.version.clone());
+        context.check()?;
         if context
             .failed
             .lock()
@@ -240,6 +302,7 @@ fn dispatch_labeled(
         {
             bail!("extension capability is disabled or unsupported");
         }
+        invoked = true;
         let contribution = extension
             .execute(context, request)
             .map_err(|_| anyhow::anyhow!("extension failed"))?;
@@ -254,6 +317,39 @@ fn dispatch_labeled(
         })
     });
     let result = context.finish(provider.as_deref(), result);
+    let reason = if context.cancel.check().is_err() {
+        "canceled"
+    } else if Instant::now() >= context.deadline {
+        "deadline"
+    } else if provider.is_none() {
+        "metadata_failed"
+    } else if invoked {
+        "provider_failed"
+    } else {
+        "not_enabled_or_prior_failure"
+    };
+    let record = report::Record::new(
+        provider.as_deref().unwrap_or("unidentified"),
+        version.as_deref(),
+        &phase,
+        if result.is_ok() {
+            "success"
+        } else if invoked || provider.is_none() {
+            "failed"
+        } else {
+            "skipped"
+        },
+        result.as_ref().err().map(|_| reason),
+        (invoked || provider.is_none()).then_some(started),
+    );
+    let mut records = context.report.lock().expect("report lock");
+    if let Some(index) = records.iter().position(|old| {
+        old.provider == record.provider && old.phase == phase && old.started.is_none()
+    }) {
+        records[index] = record;
+    } else if records.len() < 2048 {
+        records.push(record);
+    }
     (provider, result)
 }
 
@@ -423,6 +519,7 @@ pub fn classify(
         .into_iter()
         .enumerate()
     {
+        let validation_started = Instant::now();
         let label = id
             .clone()
             .unwrap_or_else(|| format!("unidentified-{index}"));
@@ -464,14 +561,22 @@ pub fn classify(
                             ));
                         }
                         _ => {
-                            let _ = context.finish::<()>(
+                            let _ = context.finish_phase::<()>(
                                 Some(&provider),
+                                "classify",
+                                Duration::ZERO,
                                 Err(anyhow::anyhow!("invalid classification")),
                             );
                             diagnostics.push(invalid(&provider, "classify"));
                         }
                     }
                 }
+                let _ = context.finish_phase(
+                    Some(&provider),
+                    "classify",
+                    validation_started.elapsed(),
+                    Ok(()),
+                );
             }
             _ => diagnostics.push(invalid(&label, "classify")),
         }
@@ -512,21 +617,17 @@ pub fn details(
         },
     )?;
     let id = response.provider.clone();
-    context.finish(
-        Some(&id),
-        boundary(|| {
-            let Contribution::Details { proposal } = response.contribution else {
-                bail!("invalid detail contribution");
-            };
-            if ProcessIdentity::observed(process) != Some(proposal.identity) {
-                bail!("detail identity mismatch");
-            }
-            crate::collect::validate_extension_command(
-                proposal.command,
-                process.executable.as_deref(),
-            )
-        }),
-    )
+    let validation_started = Instant::now();
+    let result = boundary(|| {
+        let Contribution::Details { proposal } = response.contribution else {
+            bail!("invalid detail contribution");
+        };
+        if ProcessIdentity::observed(process) != Some(proposal.identity) {
+            bail!("detail identity mismatch");
+        }
+        crate::collect::validate_extension_command(proposal.command, process.executable.as_deref())
+    });
+    context.finish_phase(Some(&id), "details", validation_started.elapsed(), result)
 }
 
 fn dispatch_many(
@@ -566,14 +667,18 @@ pub fn collect(providers: &[&dyn Extension], context: &Context<'_>) -> Result<cr
                 let label = id
                     .clone()
                     .unwrap_or_else(|| format!("unidentified-{index}"));
-                let result = context.finish(
+                let validation_started = Instant::now();
+                let result = result.and_then(|response| {
+                    if let Contribution::Collect { containers, .. } = &response.contribution {
+                        containers::validate_containers(containers)?;
+                    }
+                    Ok(response)
+                });
+                let result = context.finish_phase(
                     id.as_deref(),
-                    result.and_then(|response| {
-                        if let Contribution::Collect { containers, .. } = &response.contribution {
-                            containers::validate_containers(containers)?;
-                        }
-                        Ok(response)
-                    }),
+                    "collect",
+                    validation_started.elapsed(),
+                    result,
                 );
                 match result {
                     Ok(Response {
@@ -604,6 +709,7 @@ pub fn collect(providers: &[&dyn Extension], context: &Context<'_>) -> Result<cr
     let mut memory = 0u64;
     let mut cpu = 0.0;
     for (provider, runtime, containers) in &mut sources {
+        let validation_started = Instant::now();
         let next_memory = containers
             .iter()
             .filter(|container| !container.is_inactive())
@@ -621,12 +727,23 @@ pub fn collect(providers: &[&dyn Extension], context: &Context<'_>) -> Result<cr
             memory = next_memory;
             cpu = next_cpu;
         } else {
-            let _ = context.finish::<()>(Some(provider), Err(anyhow::anyhow!("invalid aggregate")));
+            let _ = context.finish_phase::<()>(
+                Some(provider),
+                "collect",
+                Duration::ZERO,
+                Err(anyhow::anyhow!("invalid aggregate")),
+            );
             runtime.inventory_complete = false;
             runtime.status = "unavailable".into();
             runtime.unavailable.push(invalid(provider, "collect"));
             containers.clear();
         }
+        let _ = context.finish_phase(
+            Some(provider),
+            "collect",
+            validation_started.elapsed(),
+            Ok(()),
+        );
     }
     context.cancel.check()?;
     containers::build_all(

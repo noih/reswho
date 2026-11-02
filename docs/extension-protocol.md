@@ -121,3 +121,31 @@ reswho --config "$task_dir/config.json" extensions --json
 ```
 
 在該目錄啟動自己管理的程序，再用 `--no-containers --from pid:PID --json` 或 TUI 詳情查看。完整自動化與清理見 Rust external fixtures 及 PTY runner：只有 isolated temp state/config、owned shell／provider children，不修改真正使用者 config。使用完先回收自己啟動的程序，再刪除 task_dir。Provider 具執行使用者權限，這不是 OS 沙箱；Rust unwind boundary 不攔截 panic=abort／native fault，外部程序退出則由 runner 隔離。
+
+## Drop-in discovery（rw-31）
+
+啟動時掃描 selected config root 的 `extensions/<id>/manifest.json`。預設 root 是 `$XDG_CONFIG_HOME/reswho`，未設 XDG 時是 `$HOME/.config/reswho`；`--config PATH` 改用 PATH 的 parent。同一次啟動不 hot reload，`--json-schema`／help 不掃描。沒有 downloader 或 runtime installer；開發者可自行提供安裝 shell script，下載目標 native binary＋manifest 後放到固定 layout。
+
+例如安裝範例的 package 結構：
+
+```text
+<config-root>/extensions/example/
+  manifest.json
+  provider
+```
+
+`provider` 是編譯的 Rust example binary，manifest 使用現有 example.json 的 metadata，但 executable 改為 `provider`。資料夾名稱必須等於 manifest id；package／manifest 不接受目錄或 manifest symlink 別名，canonical executable 須在 package 內，可為 package 內 symlink。所有 executable 仍須通過 native-only 驗證。檔案與目錄上限各有界：root 最多128 entries（超限則本次不採用 drop-ins）、manifest／state 各1MiB、id／version 各64 chars；非 regular file 以 nonblocking open＋FD metadata 拒絕。Malformed／不相容／同名／builtin 名稱／缺少入口只隔離該候選，不執行它，也不阻斷健康 explicit 來源。
+
+新批次依 id 排序追加原安裝序；更新、停用、重啟不重排。Discovery 可在 metadata 有變更時寫入 extensions.json（既有 flock＋atomic rename），不改 config.json；無變更不重寫。保存失敗或與並行 mutation 衝突時，新／變更候選 effective disabled，reason=persistence_failed；未變更且安全的既有來源可用。共用 canonical definitions 持續保留，不因資料夾消失、來源停用／移除或候選預設值改變而轉移。
+
+State 的 origin 分為 legacy、explicit（保存 manifest path）、drop_in（保存固定 manifest path）。舊 state 缺 origin 視為 legacy explicit ownership；不自動被同名 drop-in 接管。使用者明確 install 可為 legacy 補上來源；不同 active source path 拒絕，不悄悄覆寫。相同 drop-in manifest 的 explicit install 仍保留 drop-in ownership；remove 後可明確 install 新來源。Builtins 不可 remove 或 overwrite。
+
+Drop-in 資料夾刪除、manifest／binary 失效或壞更新時，原登記與設定保留，但本次不執行舊 metadata。有效 package 回來後沿用原序號與 enabled 狀態；明確 remove 留 tombstone，即使檔案仍在／改版也不復活，須明確 install 才恢復。Explicit／legacy 入口由其登記路徑管理，不因同名 drop-in 消失而被接管或移除。
+
+## 本次錯誤與 profiling（rw-32）
+
+TUI 用 `e` 開啟獨立 Extensions 頁，Esc／e 返回原頁，保留主樹選取與 scroll；開頁不要求採集。主頁有錯誤時顯示精簡 issue count＋e 提示。頁面顯示本次 provider／version／phase／result／reason／duration_ms；不將完整 diagnostic 重複塞進主樹。Markdown 一般輸出顯示每來源的精簡錯誤；`reswho --md --profile` 加計時表。JSON snapshot 升為 `reswho/10`，新增 extensions report，保留 Schema8／9。`extensions --json` 保留 metadata array，新增各 entry 的 report（drop-in read／validate／register，以及能力 never_invoked／skipped）；全 registry read scope 同時保留在 snapshot report。離線清單不呼叫 collect／classify／details、不探測服務。
+
+每輪重新建立 report，startup read／validate／register 資料與本輪實際能力分開 phase。只用 Instant 量測實際執行，duration_ms 為可含小數的非負數；skipped／never_invoked 為 null，0 不代表未呼叫。失敗嘗試也保留 duration；核心拒絕 contribution 時標記失敗，不能只以 provider return 當成功。Native command details 及 external details 都只沿用真實按需查詢，不為 profiling 多跑一次。collection_ms 是整輪 wall time；startup、共享批次驗證及平行 provider durations 有重疊，不可加總當總耗時。Worker 失敗時 TUI 保留本次 report，舊 snapshot 僅作 stale 資源畫面。
+
+Report 最多2048 records，provider／version 最多64 chars，reason 最多128 chars，使用固定安全 reason code，不回顯 provider Err／stderr／panic payload、原始 manifest 或設定值。只保留本次結果；不寫 logfile、歷史資料或跨輪 resource cache，也不建立 daemon。

@@ -64,6 +64,7 @@ fn container_scope_counts_once_and_remains_queryable_after_collapse() {
     assert_eq!(selected.omitted_children, 1);
     let snapshot = Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: vec![],
         captured_unix_ms: 0,
         sample_ms: 250,
         collection_ms: 300,
@@ -174,6 +175,7 @@ fn partial_inventory_and_container_markdown_preserve_semantics() {
     let reference = branch.children[0].children[0].children[0].reference.clone();
     let mut snapshot = Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: vec![],
         captured_unix_ms: 0,
         sample_ms: 250,
         collection_ms: 300,
@@ -253,6 +255,7 @@ fn inactive_containers_do_not_make_active_metrics_unknown() {
     assert_eq!(totals.uptime_unknown, 0);
     let mut snapshot = Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: vec![],
         captured_unix_ms: 0,
         sample_ms: 250,
         collection_ms: 300,
@@ -285,6 +288,7 @@ fn compose_group_notes_use_one_line_without_losing_pathless_evidence() {
     });
     let mut snapshot = Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: vec![],
         captured_unix_ms: 0,
         sample_ms: 250,
         collection_ms: 300,
@@ -344,6 +348,7 @@ fn unknown_and_transitional_activity_remains_distinct_from_inactive() {
     tree::limit_depth(&mut root, 0);
     let snapshot = Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: vec![],
         captured_unix_ms: 0,
         sample_ms: 250,
         collection_ms: 300,
@@ -385,6 +390,7 @@ fn json_contract_preserves_container_attribution_and_scopes() {
             tree::limit_depth(&mut selected, depth);
             let snapshot = Snapshot {
                 schema: crate::model::JSON_SCHEMA_VERSION,
+                extensions: vec![],
                 captured_unix_ms: 0,
                 sample_ms: 250,
                 collection_ms: 300,

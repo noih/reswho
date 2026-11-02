@@ -353,3 +353,64 @@ fn fifo_entrypoints_and_manifests_never_block_offline_lifecycle() {
     );
     dir.close().unwrap();
 }
+
+#[test]
+fn dropin_default_root_discovers_without_executing_and_does_not_rewrite_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let package = dir.path().join("reswho/extensions/drop");
+    std::fs::create_dir_all(&package).unwrap();
+    let marker = dir.path().join("executed");
+    let source = dir.path().join("provider.c");
+    std::fs::write(
+        &source,
+        format!(
+            "#include <stdio.h>\nint main(void){{FILE *f=fopen({:?},\"w\");fclose(f);return 1;}}",
+            marker
+        ),
+    )
+    .unwrap();
+    assert!(
+        Command::new("cc")
+            .arg(&source)
+            .arg("-o")
+            .arg(package.join("provider"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(package.join("manifest.json"),serde_json::json!({"id":"drop","version":"1.0.0","engines":{"reswho":"*"},"protocol_version":1,"platforms":["macos"],"capabilities":["classify"],"executable":"provider"}).to_string()).unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_reswho"))
+            .env("XDG_CONFIG_HOME", dir.path())
+            .env("PATH", "")
+            .args(["extensions", "--json"])
+            .output()
+            .unwrap()
+    };
+    let output = run();
+    assert!(output.status.success());
+    let rows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "drop")
+        .unwrap();
+    assert_eq!(row["enabled"], true);
+    assert!(
+        row["report"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| record["phase"] == "classify"
+                && record["result"] == "never_invoked"
+                && record["duration_ms"].is_null())
+    );
+    let state = dir.path().join("reswho/extensions.json");
+    let before = std::fs::read(&state).unwrap();
+    assert!(run().status.success());
+    assert_eq!(before, std::fs::read(state).unwrap());
+    assert!(!dir.path().join("reswho/config.json").exists());
+    assert!(!marker.exists());
+    dir.close().unwrap();
+}

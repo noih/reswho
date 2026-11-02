@@ -6,6 +6,8 @@ import re
 import tempfile
 import select
 import struct
+import sys
+import shutil
 import subprocess
 import termios
 import time
@@ -75,6 +77,16 @@ def verify(arguments, exit_key, marker, details=False, external=False):
             if external:
                 assert b"Shared" in transcript and b"Example" in transcript, "external parsed details missing"
                 assert b"fixture-secret-value" not in transcript, "external details exposed sensitive field"
+                counter = Path(arguments[arguments.index("--config") + 1]).parent / "calls"
+                calls_before = counter.read_text()
+                opened_status = len(transcript)
+                os.write(master, b"e")
+                drain(0.3)
+                assert b"Extensions - current status" in transcript[opened_status:], "extension status page missing"
+                assert counter.read_text() == calls_before, "opening status executed provider"
+                os.write(master, b"j\x1b")
+                drain(0.3)
+                assert counter.read_text() == calls_before, "returning from status executed provider"
             manual = len(transcript)
             os.write(master, b"r")
             deadline = time.monotonic() + 2
@@ -200,41 +212,65 @@ def verify_schedule(mode):
         config.unlink(missing_ok=True)
 
 try:
-    verify(["--sort", "name"], b"q", b"sample")
-    verify(["--tui", "--sample-ms", "5000"], b"\x03", b"Loading resources...")
-    verify(["--tui", "--from", "pid:4294967295"], b"q", b"Unable to load resources")
+    if "--extensions-only" not in sys.argv:
+        verify(["--sort", "name"], b"q", b"sample")
+        verify(["--tui", "--sample-ms", "5000"], b"\x03", b"Loading resources...")
+        verify(["--tui", "--from", "pid:4294967295"], b"q", b"Unable to load resources")
 
-    fixture = subprocess.Popen(
-        ["/bin/sh", "-c", "read -r owned_fixture_input", "fixture", "--token", "fixture-private-value"],
-        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    try:
-        verify(["--tui", "--from", f"pid:{fixture.pid}", "--sample-ms", "1000"], b"q", b"sample", details=True)
-    finally:
-        fixture.terminate()
-        fixture.wait()
-        fixture.stdin.close()
+        fixture = subprocess.Popen(
+            ["/bin/sh", "-c", "read -r owned_fixture_input", "fixture", "--token", "fixture-private-value"],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            verify(["--tui", "--from", f"pid:{fixture.pid}", "--sample-ms", "1000"], b"q", b"sample", details=True)
+        finally:
+            fixture.terminate()
+            fixture.wait()
+            fixture.stdin.close()
     example_root = config_root / "example"
     example_root.mkdir()
     (example_root / ".reswho-example").write_text("")
     config = example_root / "config.json"
     config.write_text(json.dumps({"version":1,"settings":{"sampling.interval_ms":400}}))
-    subprocess.run([str(ROOT / "target/debug/reswho"), "--config", str(config), "extensions", "install", str(ROOT / "examples/extensions/example.json")], check=True, capture_output=True)
+    package = example_root / "extensions" / "example"
+    package.mkdir(parents=True)
+    payload = package / "example-native"
+    shutil.copy2(ROOT / "target/debug/examples/extension_example", payload)
+    counter = example_root / "calls"
+    source = example_root / "entry.c"
+    source.write_text('#include <stdio.h>\n#include <unistd.h>\nint main(void){FILE *f=fopen(' + json.dumps(str(counter)) + ',"a");fputs("called\\n",f);fclose(f);execl(' + json.dumps(str(payload)) + ',"example-native",(char*)0);return 127;}')
+    subprocess.run(["cc", str(source), "-o", str(package / "provider")], check=True, timeout=10)
+    manifest = json.loads((ROOT / "examples/extensions/example.json").read_text())
+    manifest["executable"] = "provider"
+    (package / "manifest.json").write_text(json.dumps(manifest))
+    broken = example_root / "extensions" / "broken"
+    broken.mkdir()
+    (broken / "manifest.json").write_text("{bad fixture")
+    subprocess.run([str(ROOT / "target/debug/reswho"), "--config", str(config), "extensions", "--json"], check=True, capture_output=True)
+    assert not counter.exists(), "offline discovery executed native provider"
     external_fixture = subprocess.Popen(["/bin/sh", "-c", "read -r owned_external_input", "fixture", "--token", "fixture-private-value"], cwd=example_root, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         result = subprocess.run([str(ROOT / "target/debug/reswho"), "--config", str(config), "--no-containers", "--json", "--from", f"pid:{external_fixture.pid}"], check=True, capture_output=True, timeout=10)
         snapshot = json.loads(result.stdout)
-        assert snapshot["schema"] == "reswho/9"
+        assert snapshot["schema"] == "reswho/10"
         assert snapshot["root"]["attribution"]["extension"]["provider"] == "example"
         assert snapshot["root"]["process"]["extension_details"][0]["fields"][0]["value"] == 400
         assert b"fixture-secret-value" not in result.stdout
+        calls = [record for record in snapshot["extensions"] if record["provider"] == "example" and record["phase"] in ["classify", "details"]]
+        assert len(calls) == 2 and all(record["result"] == "success" and record["duration_ms"] is not None for record in calls)
+        assert len(counter.read_text().splitlines()) == 2, "JSON profiling executed extra providers"
+        markdown = subprocess.run([str(ROOT / "target/debug/reswho"), "--config", str(config), "--no-containers", "--md", "--profile", "--from", f"pid:{external_fixture.pid}"], check=True, capture_output=True, timeout=10)
+        assert b"Extension timings" in markdown.stdout and b"Duration ms" in markdown.stdout
+        assert b"Extension broken / read" in markdown.stdout
+        assert len(counter.read_text().splitlines()) == 4, "Markdown profiling executed extra providers"
         verify(["--tui", "--config", str(config), "--from", f"pid:{external_fixture.pid}", "--sample-ms", "1000"], b"q", b"sample", details=True, external=True)
     finally:
         external_fixture.terminate()
         external_fixture.wait()
         external_fixture.stdin.close()
-    for mode in ["auto", "wait", "pause"]:
-        verify_schedule(mode)
+    if "--extensions-only" not in sys.argv:
+        for mode in ["auto", "wait", "pause"]:
+            verify_schedule(mode)
 finally:
     config_owner.cleanup()
     assert not config_root.exists(), "owned PTY config temp was not removed"

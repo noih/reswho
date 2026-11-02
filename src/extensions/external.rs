@@ -17,6 +17,7 @@ pub fn installed(state: &State, settings: &Resolved) -> Vec<External> {
         .iter()
         .filter(|entry| {
             !entry.removed
+                && entry.problem.is_none()
                 && entry.enabled
                 && entry.manifest.incompatibility().is_none()
                 && !settings
@@ -277,6 +278,7 @@ pub fn attach_details(
     .into_iter()
     .enumerate()
     {
+        let validation_started = Instant::now();
         let result = result.and_then(|response| {
             let Contribution::ParsedDetails {
                 identity,
@@ -295,7 +297,12 @@ pub fn attach_details(
                 fields,
             })
         });
-        match context.finish(id.as_deref(), result) {
+        match context.finish_phase(
+            id.as_deref(),
+            "details",
+            validation_started.elapsed(),
+            result,
+        ) {
             Ok(details) => process.extension_details.push(details),
             Err(_) => diagnostics.push(super::invalid(
                 id.as_deref().unwrap_or(&format!("unidentified-{index}")),

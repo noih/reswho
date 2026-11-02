@@ -88,6 +88,7 @@ fn fresh_identity_metrics_attribution_ports_and_output_contract() {
     assert_eq!(root.container_totals.as_ref().unwrap().cpu_unknown, 0);
     let snapshot = Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: vec![],
         captured_unix_ms: 0,
         sample_ms: 250,
         collection_ms: 300,

@@ -34,6 +34,7 @@ fn fixture_snapshot() -> Snapshot {
     };
     Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: vec![],
         captured_unix_ms: 1000,
         sample_ms: 250,
         collection_ms: 300,

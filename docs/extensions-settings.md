@@ -2,7 +2,7 @@
 
 Tenqo：rw-27。
 
-狀態：階段1／2／3已驗收。階段4的 rw-34 native-binary-only 與 rw-33 host-death lifecycle protection 已完成開發驗證，待獨立 review。rw-31 discovery／in-app diagnostics 與 rw-32 profiling 留待下一階段。
+狀態：階段1／2／3／4已驗收（階段4含 b50f457 FIFO review 修復）。階段5的 rw-31 discovery／in-app diagnostics 與 rw-32 profiling 已完成開發驗證，待獨立 review。
 
 ## Extension 邊界
 
@@ -77,7 +77,7 @@ Refresh 與 sampling 是不同用途。保持目前同時最多一輪採集、�
 
 每階段由開發 owner 執行針對性測試，整合後依 TESTING.md 完成 fmt／Clippy／一般 Rust 測試；CLI／排程改動補受影響的 PTY 範圍。每階段一次獨立 review，修復只重驗受影響範圍。一般測試不得啟動真實容器服務，外部協定使用自有假程序／fixture；既有 native container probes 的未改動證據可沿用。
 
-目前：階段4由單一開發 owner 實作，不派子代理、不寫 Tenqo，本地提交後停在 leader 指派的獨立 review 邊界。使用明確 manifest install 與既有 config root；未實作自動 drop-in discovery、marketplace、設定 editor 或 multiselect。target 保留開發 cache；測試僅用 isolated state/config，沒有修改真正使用者設定或啟動服務。
+目前：階段5由同一單一開發 owner 實作，不派子代理、不寫 Tenqo，本地提交後停在 leader 指派的獨立 review 邊界。支援固定 config root 的 drop-in discovery 與明確 manifest install；沒有 marketplace、設定 editor 或 multiselect。target 保留開發 cache；測試僅用 isolated state/config，沒有修改真正使用者設定或啟動服務。
 
 ## 階段1可用介面
 
@@ -185,3 +185,25 @@ Focused 證據：23個 extension tests、7個 command tests 通過，包括原�
 Disposable Rust tempfile roots（native source／binary、isolated state/config、PID markers）均顯式 close；PTY runner 回報 children／descriptors 關閉與 config temp 移除。/tmp/reswho-convert-phase4.py、/tmp/reswho-phase4-guard-debug 已移除並確認不存在；早期失敗原型記錄的 PID 50015／51193／51472／51473／51474 及 PTY fixture PID 55176／55252 均確認 ESRCH，未清理其他程序。target 約6.9GiB，開發 owner 刻意保留給同專案下一階段，下一階段邊界再檢視。無 runtime／service 安裝、無真正 user config mutation、無 push／Tenqo writes。已完成本地 coherent 提交準備，獨立 reviewer 由 leader 指派。
 
 階段4 review P2 修復：native validator 與直接共用 manifest/state reader 改為 O_NONBLOCK 開檔，再以該 FD 的 metadata 拒絕非 regular file，保留既有 symlink 語意。真實 CLI FIFO regression 先重現1秒超時；修復後 install FIFO executable／FIFO manifest 均立即拒絕，已安裝 binary 被換成 FIFO 時 list effective-disabled 且健康項目保留。23個 extension tests、9個 CLI tests、fmt／Clippy 通過；依裁決不重跑 full suite／PTY／lifecycle。Regression 的 CLI child 在超時失敗時也 kill＋wait，temp roots 均回收。
+
+## 階段5 Current（2026-11-03）
+
+rw-31＋rw-32 由同一 dev owner 實作，Phase4 FIFO 修復 b50f457 指定 scoped tests 通過後開始。固定 config-root/extensions/id/manifest.json discovery、origin ownership、batch 排序持久化、失效更新停用／tombstone、防 builtin 覆寫及 persistence-failure 隔離已接入。Native-only／guard runner 不變，沿用 Phase4 lifecycle 證據。Metadata/state 只在新 discovery／更新有變更時寫入；core config 不變。Legacy origin 採保守 explicit ownership，不接受同名 drop-in 自動接管。
+
+Current report 含 read／validate／register／collect／classify／details、provider／version／result／安全 reason code／duration_ms；未呼叫／skipped=null，真實呼叫只記一次，post-validation 可將結果改為失敗。Startup 與本輪能力 phase 分開，每輪替換，不留歷史。TUI e 獨立頁保留返回位置，主頁有 issue count；MD 一般精簡錯誤、--profile 計時表；snapshot reswho/10＋Schema，保留8／9，離線 extension metadata array 沿用並加 report。完整使用與 lifecycle 語意見 extension-protocol.md。
+
+Focused discovery／timing／TUI 測試已通過：排序、restart／不重寫、update／disabled、folder deletion、壞更新不執行舊 manifest、tombstone／明確 reinstall、legacy conflict／builtin／FIFO、persistence failure 保留健康來源、offline default-root 零執行、post-validation failure／取消／skip／平行結果及 e 返回 selection／scroll／failed report。使用 owned temp roots／native fixtures，顯式 close；無 user config mutation、服務或 runtime 安裝。target cache 延用，不新增隔離 target。
+
+整合證據：fmt 通過。Clippy 首輪發現 output helper 放在 test module 後，移至 module 前後 `cargo clippy --all-targets -- -D warnings` 通過。`cargo test` 首輪149 library passed／1 failed／3 ignored，發現未識別 provider 的 fallback 顯示名稱被錯誤當真實 id，會污染 failure suppression；修為 Option id 後原 regression 與全部27個 extension tests 通過。其餘首輪已通過的 library tests 未重跑；另2個 parser、10個 CLI、6個 JSON contract tests 通過。沒有第二次 blanket suite。Schema10 範例及8／9向後驗證均通過。
+
+`cargo build --bins --examples` 與完整 PTY 通過，含 native drop-in／壞 sibling、JSON report、TUI e 狀態頁及返回時 counter 不增加。補上 MD `--profile` CLI assertion 後，只重跑 `python3 tests/pty_smoke.py --extensions-only`，確認一次 JSON 與一次 MD 分別只各執行 classify＋details，timing／status 不額外執行 provider。所有 owned PTYs／children／config roots 已由 runner 清理並確認；前次 fixture PID 67514／67537 亦確認 ESRCH。最終 target 約7.2GiB，由本專案 dev owner 保留供 review／後續修復，下一交接邊界再檢視。無 push、Tenqo writes、nested agents、live runtime 或額外 measurement campaign。提交 coherent 本地 main 後停在獨立 review 邊界。
+
+### 階段5 review 修復（84846be 後）
+
+三項 required findings 已修復：
+
+- Discovery persistence conflict／failure 原先用啟動時舊 snapshot 判斷 unchanged，會在另一 transaction 保存 disabled／removed 後仍以舊 enabled 執行。現在失敗後重讀最新 state，再依最新 ownership／tombstone／canonical definitions 重新 discovery；只允許與最新 persisted entry 相同的候選，未保存的新／更新項目維持 persistence_failed。真實 flock＋State::mutate fixture 固定 stale snapshot／writer transaction 的順序，分別覆蓋 concurrent disable 與 remove，確認只有健康未變更來源可用、新候選不啟用、canonical definitions 與最新磁碟一致。
+- finish_phase 原先在 dispatch_many 等完所有 sibling／後批次後重新 started.elapsed，將別人的等待算給 fast provider。Regression 先重現1ms fast 被報約459ms。現在保留 dispatch 實際測量值，只加該 provider 的獨立核心驗證區間；collect／classify／details 及 aggregate validation 都使用自己的 marker。1／150／300ms synthetic providers 跨兩批的 oracle 以寬鬆比例確認 fast／slow／後批次可區分，不依賴精確毫秒；failed attempts 與 skipped=null 保留。
+- Selected PID 最終 verify_identity 拒絕原先只清掉 external detail payload，report 仍是 success。現在同一最終核心邊界會將實際 contributing details 的成功報告改為 failed／identity_changed，保留耗時並加入本輪 failure bookkeeping，再清除 payload。Deterministic validator fixture 經真 attach_details 與最終 validation helper，確認失敗／never_invoked／健康 classify 報告不變、敏感 Err 不出現，且同輪重試被跳過；輸出符合 Schema10。
+
+本輪限定驗證：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、29個 extension／discovery tests、1個 snapshot final-boundary test、6個 JSON contract tests 均通過。沒有 full suite／PTY／live／measurement 重跑；UI 與 Phase4 runner 未改，原證據保留。所有新增 fixture threads 已 join、temp roots 已 close；原生協定 fixtures 由既有 bounded runner reap。target 約7.3GiB，保留給同專案 scoped review，未新增隔離 cache。提交本地 coherent repair commit 後停止修改，供這三項 finding 的一次 scoped recheck；無 nested agents／Tenqo writes／push。

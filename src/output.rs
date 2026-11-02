@@ -6,7 +6,7 @@ pub(crate) mod containers;
 #[cfg(test)]
 mod markdown_tests;
 
-pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-9.schema.json");
+pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-10.schema.json");
 
 pub const FORMAT_HELP: &str = "reswho-md/18 (collection prototype)\n\n\
 | Row | Fields, in order |\n\
@@ -102,7 +102,7 @@ Group refs are deterministic, not display positions. PID refs query the current 
 JSON retains the original root and System services nodes; depth counts original tree edges.\n\
 JSON system.cpu_percent is whole-host 0-100%; process.cpu_percent and totals.known_cpu_percent use one-core 100%.\n\
 JSON totals are subtree aggregates, not extra usage; do not add parent totals to children.\n\
-JSON schema reswho/9 includes structured attribution and diagnostics, raw byte counts, unknown counts and sample timing.\n\
+JSON schema reswho/10 includes structured attribution and diagnostics, raw byte counts, unknown counts and sample timing.\n\
 Use --json-schema for the offline JSON Schema; see docs/json-format.md for version and identity rules.\n\
 Command arguments, environment, container-internal processes and review rules are not collected.\n";
 
@@ -167,6 +167,20 @@ fn render_markdown(snapshot: &Snapshot) -> String {
             String::new()
         }
     );
+    let mut reported = std::collections::BTreeSet::new();
+    for record in snapshot
+        .extensions
+        .iter()
+        .filter(|record| record.issue() && reported.insert(&record.provider))
+    {
+        let _ = writeln!(
+            text,
+            "> ! Extension {} / {}: {}",
+            escaped(&record.provider),
+            escaped(&record.phase),
+            escaped(record.reason.as_deref().unwrap_or("provider_failed"))
+        );
+    }
     let warnings = snapshot
         .warnings
         .iter()
@@ -618,6 +632,25 @@ fn escaped(value: &str) -> String {
         }
     }
     output
+}
+
+pub fn extension_profile(records: &[crate::extensions::report::Record]) -> String {
+    let mut text = "\n## Extension timings\n\nProvider | Version | Phase | Result | Duration ms | Reason\n--- | --- | --- | --- | ---: | ---\n".to_string();
+    for record in records {
+        let _ = writeln!(
+            text,
+            "{} | {} | {} | {} | {} | {}",
+            escaped(&record.provider),
+            escaped(record.version.as_deref().unwrap_or("unknown")),
+            escaped(&record.phase),
+            record.result,
+            record
+                .duration_ms
+                .map_or("-".into(), |ms| format!("{ms:.3}")),
+            escaped(record.reason.as_deref().unwrap_or("-"))
+        );
+    }
+    text
 }
 
 #[cfg(test)]

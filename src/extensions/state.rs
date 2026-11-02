@@ -49,6 +49,8 @@ impl Manifest {
     }
     pub fn validate(&mut self) -> Result<()> {
         if self.id.is_empty()
+            || self.id.len() > 64
+            || self.version.len() > 64
             || !self
                 .id
                 .chars()
@@ -92,7 +94,7 @@ impl Manifest {
         check.register_extension(&self.id, self.definitions.clone(), self.uses.clone())?;
         Ok(())
     }
-    fn validate_entrypoint(&self) -> Result<()> {
+    pub(super) fn validate_entrypoint(&self) -> Result<()> {
         if !self.args.is_empty() {
             bail!("extension args are unsupported; install a native binary entry point");
         }
@@ -122,12 +124,29 @@ impl Manifest {
     }
 }
 
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Origin {
+    #[default]
+    Legacy,
+    Explicit {
+        manifest: PathBuf,
+    },
+    DropIn {
+        manifest: PathBuf,
+    },
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Installed {
     pub manifest: Manifest,
     pub enabled: bool,
     pub removed: bool,
+    #[serde(default)]
+    pub origin: Origin,
+    #[serde(skip)]
+    pub problem: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -136,6 +155,8 @@ pub struct State {
     pub version: u32,
     pub installed: Vec<Installed>,
     pub shared_definitions: Vec<Definition>,
+    #[serde(skip)]
+    pub report: Vec<super::report::Record>,
 }
 
 impl Default for State {
@@ -144,6 +165,7 @@ impl Default for State {
             version: 1,
             installed: vec![],
             shared_definitions: vec![],
+            report: vec![],
         }
     }
 }
@@ -160,16 +182,43 @@ impl State {
             .join("extensions.json"))
     }
     pub fn load(path: &Path) -> Result<Self> {
+        let started = std::time::Instant::now();
         if !path.try_exists()? {
-            return Ok(Self::default());
+            let mut state = Self::default();
+            state.report.push(super::report::Record::new(
+                "registry",
+                None,
+                "read",
+                "success",
+                Some("state_absent"),
+                Some(started),
+            ));
+            return Ok(state);
         }
         let mut state: Self = parse_file(path)?;
+        state.report.push(super::report::Record::new(
+            "registry",
+            None,
+            "read",
+            "success",
+            None,
+            Some(started),
+        ));
         if state.version != 1 || state.installed.len() > 128 {
             bail!("unsupported or invalid extension state");
         }
         let mut seen = HashSet::new();
         for entry in &mut state.installed {
+            let started = std::time::Instant::now();
             entry.manifest.validate()?;
+            state.report.push(super::report::Record::new(
+                &entry.manifest.id,
+                Some(&entry.manifest.version),
+                "validate",
+                "success",
+                None,
+                Some(started),
+            ));
             if !seen.insert(&entry.manifest.id) {
                 bail!("duplicate installed extension id");
             }
@@ -181,7 +230,11 @@ impl State {
         let mut registry = super::settings_registry()?;
         registry.restore_shared(&self.shared_definitions)?;
         for entry in &self.installed {
-            if !entry.removed && entry.enabled && entry.manifest.incompatibility().is_none() {
+            if !entry.removed
+                && entry.enabled
+                && entry.problem.is_none()
+                && entry.manifest.incompatibility().is_none()
+            {
                 registry.register_extension(
                     &entry.manifest.id,
                     entry.manifest.definitions.clone(),
@@ -263,10 +316,13 @@ impl State {
             .find(|entry| entry.manifest.id == manifest.id)
         {
             let enabled = entry.removed || entry.enabled;
+            let origin = entry.origin.clone();
             *entry = Installed {
                 manifest,
                 enabled,
                 removed: false,
+                origin,
+                problem: None,
             };
         } else {
             if self.installed.len() >= 128 {
@@ -276,6 +332,8 @@ impl State {
                 manifest,
                 enabled: true,
                 removed: false,
+                origin: Origin::Legacy,
+                problem: None,
             });
         }
         Ok(())
@@ -299,17 +357,22 @@ impl State {
                 requires: format!("={HOST_VERSION}"),
                 reason: None,
                 descriptor,
+                report: vec![],
             })
             .collect();
         for entry in self.installed.iter().filter(|entry| !entry.removed) {
             let manifest = &entry.manifest;
-            let mut reason = manifest.incompatibility().or_else(|| {
-                settings
-                    .report()
-                    .disabled_extensions
-                    .get(&manifest.id)
-                    .map(|reasons| reasons.join("; "))
-            });
+            let mut reason = entry
+                .problem
+                .clone()
+                .or_else(|| manifest.incompatibility())
+                .or_else(|| {
+                    settings
+                        .report()
+                        .disabled_extensions
+                        .get(&manifest.id)
+                        .map(|reasons| reasons.join("; "))
+                });
             if reason.is_none()
                 && !containers
                 && manifest
@@ -335,7 +398,59 @@ impl State {
                 compatible: manifest.incompatibility().is_none(),
                 requires: manifest.engines["reswho"].clone(),
                 reason,
+                report: vec![],
             });
+        }
+        for record in &self.report {
+            if record.issue()
+                && !list
+                    .iter()
+                    .any(|entry| entry.descriptor.id == record.provider)
+            {
+                list.push(Listing {
+                    descriptor: Descriptor {
+                        id: record.provider.clone(),
+                        version: record.version.clone().unwrap_or("unknown".into()),
+                        protocol_version: PROTOCOL_VERSION,
+                        source: "drop_in",
+                        platforms: vec![],
+                        capabilities: vec![],
+                        enabled: false,
+                        availability: "unknown",
+                    },
+                    explicit_enabled: false,
+                    compatible: false,
+                    requires: "unknown".into(),
+                    reason: record.reason.clone(),
+                    report: vec![],
+                });
+            }
+        }
+        for entry in &mut list {
+            entry.report = self
+                .report
+                .iter()
+                .filter(|record| record.provider == entry.descriptor.id)
+                .cloned()
+                .collect();
+            for capability in &entry.descriptor.capabilities {
+                entry.report.push(super::report::Record::new(
+                    &entry.descriptor.id,
+                    Some(&entry.descriptor.version),
+                    &format!("{capability:?}").to_lowercase(),
+                    if entry.descriptor.enabled {
+                        "never_invoked"
+                    } else {
+                        "skipped"
+                    },
+                    Some(if entry.descriptor.enabled {
+                        "not_requested"
+                    } else {
+                        "not_enabled"
+                    }),
+                    None,
+                ));
+            }
         }
         list
     }
@@ -349,9 +464,10 @@ pub struct Listing {
     pub compatible: bool,
     pub requires: String,
     pub reason: Option<String>,
+    pub report: Vec<super::report::Record>,
 }
 
-fn parse_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
+pub(super) fn parse_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let mut bytes = Vec::new();
     super::native::open_regular(path)?
         .take(1_048_577)

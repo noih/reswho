@@ -252,6 +252,7 @@ fn real_classifier_and_validated_details_preserve_schema_and_markdown_redaction(
             .unwrap();
     let snapshot = Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: vec![],
         captured_unix_ms: 0,
         sample_ms: 250,
         collection_ms: 250,
@@ -472,6 +473,7 @@ fn argv_and_unavailable_cannot_reach_a_snapshot_together() {
     let root = crate::tree::build(vec![process]).unwrap();
     let snapshot = Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: vec![],
         captured_unix_ms: 0,
         sample_ms: 250,
         collection_ms: 250,
@@ -546,6 +548,7 @@ fn every_capability_rejects_expired_admission_and_late_results() {
         };
         for expired in [true, false] {
             let context = Context {
+                report: std::sync::Arc::default(),
                 settings: &settings,
                 cancel: &cancel,
                 failed: Mutex::new(HashSet::new()),
@@ -619,6 +622,7 @@ fn failed_metadata_and_hyphenated_provider_operations_validate_as_full_snapshots
         assert!(dispatch(&healthy, &context, Request::Collect).is_ok());
         let snapshot = Snapshot {
             schema: crate::model::JSON_SCHEMA_VERSION,
+            extensions: vec![],
             captured_unix_ms: 0,
             sample_ms: 250,
             collection_ms: 250,
@@ -836,4 +840,142 @@ fn capability_validation_failures_skip_later_calls_only_in_the_current_round() {
             "{kind}"
         );
     }
+}
+
+#[test]
+fn current_phase_reports_acceptance_failures_skips_and_parallel_durations() {
+    let settings = default_settings().unwrap();
+    let cancel = Cancellation::default();
+    let context = Context::new(&settings, &cancel);
+    let process = process();
+    let invalid = Fixture::new(
+        "invalid",
+        Contribution::Classify {
+            proposals: vec![ClassificationProposal {
+                identity: ProcessIdentity::observed(&process).unwrap(),
+                evidence: ClassificationEvidence::AppBundle {
+                    path: "/Wrong.app".into(),
+                },
+            }],
+        },
+    );
+    let (_, _, errors) = classify(&[&invalid], &context, std::slice::from_ref(&process));
+    assert_eq!(errors.len(), 1);
+    let records = context.report.lock().unwrap().clone();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].result, "failed");
+    assert_eq!(records[0].reason.as_deref(), Some("invalid_data"));
+    assert!(records[0].duration_ms.is_some());
+    assert!(dispatch(&invalid, &context, Request::Classify(&[])).is_err());
+    let records = context.report.lock().unwrap().clone();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[1].result, "skipped");
+    assert!(records[1].duration_ms.is_none());
+    let barrier = Arc::new((Mutex::new(0), Condvar::new()));
+    let mut good = Fixture::new("one", Contribution::Classify { proposals: vec![] });
+    let mut bad = Fixture::new("two", Contribution::Classify { proposals: vec![] });
+    good.concurrent = Some(barrier.clone());
+    bad.concurrent = Some(barrier);
+    bad.fail = true;
+    let fresh = Context::new(&settings, &cancel);
+    let (_, _, errors) = classify(&[&good, &bad], &fresh, &[]);
+    assert_eq!(errors.len(), 1);
+    let records = fresh.report.lock().unwrap().clone();
+    assert_eq!(records.len(), 2);
+    assert!(
+        records
+            .iter()
+            .all(|record| record.duration_ms.is_some_and(|ms| ms >= 0.0))
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.result == "success")
+            .count(),
+        1
+    );
+    assert_eq!(good.seen.lock().unwrap().len(), 1);
+    assert_eq!(bad.seen.lock().unwrap().len(), 1);
+    assert!(!serde_json::to_string(&records).unwrap().contains("SECRET"));
+    let mut snapshot = Snapshot {
+        schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: records,
+        captured_unix_ms: 0,
+        sample_ms: 250,
+        collection_ms: 1,
+        system: SystemSummary::default(),
+        scope: "group:all".into(),
+        warnings: vec![],
+        root: crate::tree::build(vec![]).unwrap(),
+    };
+    let text = crate::output::markdown(&snapshot);
+    assert!(text.contains("Extension two / classify"));
+    assert!(!text.contains("Extension timings"));
+    assert!(crate::output::extension_profile(&snapshot.extensions).contains("Duration ms"));
+    let schema: serde_json::Value = serde_json::from_str(crate::output::JSON_SCHEMA).unwrap();
+    assert!(
+        jsonschema::validator_for(&schema)
+            .unwrap()
+            .is_valid(&serde_json::to_value(&snapshot).unwrap())
+    );
+    snapshot.extensions[0].duration_ms = Some(-1.0);
+    assert!(
+        !jsonschema::validator_for(&schema)
+            .unwrap()
+            .is_valid(&serde_json::to_value(&snapshot).unwrap())
+    );
+    struct Canceled;
+    impl Extension for Canceled {
+        fn descriptor(&self) -> Descriptor {
+            Fixture::new("cancel", Contribution::Classify { proposals: vec![] }).descriptor()
+        }
+        fn execute(&self, context: &Context<'_>, _: Request<'_>) -> Result<Contribution> {
+            context.cancel.cancel();
+            Ok(Contribution::Classify { proposals: vec![] })
+        }
+    }
+    let next = Context::new(&settings, &cancel);
+    assert!(dispatch(&Canceled, &next, Request::Classify(&[])).is_err());
+    let record = next.report.lock().unwrap()[0].clone();
+    assert_eq!(record.result, "failed");
+    assert_eq!(record.reason.as_deref(), Some("canceled"));
+    assert!(record.duration_ms.is_some());
+}
+
+#[test]
+fn provider_timings_exclude_siblings_and_later_batches() {
+    struct Delayed(&'static str, u64);
+    impl Extension for Delayed {
+        fn descriptor(&self) -> Descriptor {
+            Fixture::new(self.0, Contribution::Classify { proposals: vec![] }).descriptor()
+        }
+        fn execute(&self, _: &Context<'_>, _: Request<'_>) -> Result<Contribution> {
+            std::thread::sleep(Duration::from_millis(self.1));
+            Ok(Contribution::Classify { proposals: vec![] })
+        }
+    }
+    let settings = default_settings().unwrap();
+    let cancel = Cancellation::default();
+    let context = Context::new(&settings, &cancel);
+    let fast = Delayed("fast", 1);
+    let slow = Delayed("slow", 150);
+    let filler = Delayed("filler", 0);
+    let filler2 = Delayed("filler2", 0);
+    let later = Delayed("later", 300);
+    assert!(
+        classify(&[&fast, &slow, &filler, &filler2, &later], &context, &[])
+            .2
+            .is_empty()
+    );
+    let records = context.report.lock().unwrap();
+    let duration = |id| {
+        records
+            .iter()
+            .find(|record| record.provider == id)
+            .unwrap()
+            .duration_ms
+            .unwrap()
+    };
+    assert!(duration("fast") < duration("slow") * 0.5, "{records:?}");
+    assert!(duration("slow") < duration("later") * 0.75, "{records:?}");
 }

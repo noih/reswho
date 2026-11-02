@@ -55,6 +55,7 @@ fn command_extension_preserves_argument_boundaries_and_validates_types() {
 fn snapshot(root: Node) -> Snapshot {
     Snapshot {
         schema: JSON_SCHEMA_VERSION,
+        extensions: vec![],
         captured_unix_ms: 1_700_000_000_000,
         sample_ms: 250,
         collection_ms: 300,
@@ -287,15 +288,19 @@ fn schema_cli_is_offline_and_never_collects_resources() {
 }
 
 #[test]
-fn schema8_remains_available_for_old_snapshots_while_current_output_is_schema9() {
+fn schema8_and9_remain_available_while_current_output_is_schema10() {
     let legacy_schema: Value =
         serde_json::from_str(include_str!("../schemas/reswho-8.schema.json")).unwrap();
     let legacy = jsonschema::validator_for(&legacy_schema).unwrap();
     let mut example: Value =
         serde_json::from_str(include_str!("../docs/examples/host.json")).unwrap();
-    assert_eq!(example["schema"], "reswho/9");
+    assert_eq!(example["schema"], "reswho/10");
     assert!(validator().is_valid(&example));
     assert!(!legacy.is_valid(&example));
+    example["schema"] = json!("reswho/9");
+    let nine: Value =
+        serde_json::from_str(include_str!("../schemas/reswho-9.schema.json")).unwrap();
+    assert!(jsonschema::validator_for(&nine).unwrap().is_valid(&example));
     example["schema"] = json!("reswho/8");
     assert!(legacy.is_valid(&example));
     assert!(!validator().is_valid(&example));

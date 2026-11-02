@@ -70,6 +70,7 @@ pub fn run(
     let worker = Worker::start(options);
     let mut restore = TerminalRestore(true);
     let mut app = App::new(scope, depth);
+    app.extensions = worker.report.lock().expect("report lock").clone();
     app.sort = sort;
     request_snapshot(&worker, &mut app);
     let mut table = TableState::default();
@@ -102,6 +103,7 @@ fn event_loop(
     loop {
         match worker.results.try_recv() {
             Ok(result) => {
+                app.extensions = worker.report.lock().expect("report lock").clone();
                 let anchor = SelectionAnchor::capture(&app, &table);
                 app.update(result);
                 if let Some(anchor) = anchor {
@@ -174,6 +176,27 @@ fn request_snapshot(worker: &Worker, app: &mut App) {
 fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         return true;
+    }
+    if !app.editing && !app.help && key.code == KeyCode::Char('e') {
+        app.extensions_page = !app.extensions_page;
+        return false;
+    }
+    if app.extensions_page {
+        match key.code {
+            KeyCode::Esc => app.extensions_page = false,
+            KeyCode::Char('q') => return true,
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.extensions_scroll = app.extensions_scroll.saturating_add(1)
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.extensions_scroll = app.extensions_scroll.saturating_sub(1)
+            }
+            KeyCode::PageDown => app.extensions_scroll = app.extensions_scroll.saturating_add(10),
+            KeyCode::PageUp => app.extensions_scroll = app.extensions_scroll.saturating_sub(10),
+            KeyCode::Home => app.extensions_scroll = 0,
+            _ => {}
+        }
+        return false;
     }
     if let Some(details) = &mut app.details {
         match key.code {

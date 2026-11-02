@@ -243,6 +243,7 @@ mod tests {
         Sort::Name.apply(&mut root);
         let snapshot = crate::model::Snapshot {
             schema: crate::model::JSON_SCHEMA_VERSION,
+            extensions: vec![],
             captured_unix_ms: 0,
             sample_ms: 250,
             collection_ms: 300,

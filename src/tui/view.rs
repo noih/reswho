@@ -198,6 +198,34 @@ pub(super) fn draw(frame: &mut Frame, app: &App, table: &mut TableState) {
         );
         return;
     }
+    if app.extensions_page {
+        let [title, body, footer] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+        frame.render_widget(
+            Paragraph::new("Extensions - current status / duration ms"),
+            title,
+        );
+        let lines: Vec<Line> = app
+            .extensions
+            .iter()
+            .map(|record| Line::raw(safe(&record.line())))
+            .collect();
+        frame.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .scroll((app.extensions_scroll, 0)),
+            body,
+        );
+        frame.render_widget(
+            Paragraph::new("j/k scroll  Esc back  e back  q quit"),
+            footer,
+        );
+        return;
+    }
     let [header, toolbar, tree_area, path_area, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
@@ -414,12 +442,22 @@ pub(super) fn draw(frame: &mut Frame, app: &App, table: &mut TableState) {
                     )
             })
         });
+    let issues = app
+        .extensions
+        .iter()
+        .filter(|record| record.issue())
+        .count();
+    let diagnostic = if issues > 0 {
+        format!("Extension issues: {issues} (e)  {diagnostic}")
+    } else {
+        diagnostic
+    };
     let refresh = if app.refresh_hint().is_empty() {
         String::new()
     } else {
         format!("{}  ", app.refresh_hint())
     };
-    frame.render_widget(Paragraph::new(vec![Line::styled(diagnostic, Style::default().fg(Color::Yellow)), Line::raw(format!("j/k move  {refresh}enter toggle  d details  c/m/u/n sort  / search  a active  p pause  ? help  q quit"))]), footer);
+    frame.render_widget(Paragraph::new(vec![Line::styled(diagnostic, Style::default().fg(Color::Yellow)), Line::raw(format!("j/k move  {refresh}enter toggle  d details  e extensions  c/m/u/n sort  / search  a active  p pause  ? help  q quit"))]), footer);
     if app.help {
         help(frame, area, app);
     }

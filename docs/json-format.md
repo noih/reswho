@@ -1,6 +1,6 @@
 # JSON 資料契約
 
-目前版本：`reswho/9`。規格檔：[reswho-9.schema.json](../schemas/reswho-9.schema.json)，使用 JSON Schema Draft 2020-12。它是 reswho 的資料契約，並非跨監控工具共用的資料模型。
+目前版本：`reswho/10`。規格檔：[reswho-10.schema.json](../schemas/reswho-10.schema.json)，使用 JSON Schema Draft 2020-12。它是 reswho 的資料契約，並非跨監控工具共用的資料模型。
 
 ```sh
 reswho --json --depth all > snapshot.json
@@ -8,7 +8,7 @@ reswho --json --from pid:1234 --depth 0
 reswho --json-schema > reswho.schema.json
 ```
 
-`--json-schema` 不採集程序、不查詢 Docker、不連網。Schema 僅使用內部 `$ref`，可離線驗證。Schema 的 `$id` 是 `urn:reswho:snapshot:8`，不是下載網址。Schema 使用 [Draft 2020-12](https://json-schema.org/draft/2020-12)；測試以 [jsonschema](https://docs.rs/jsonschema/0.60.2/jsonschema/) 驗證。
+`--json-schema` 不採集程序、不查詢 Docker、不連網。Schema 僅使用內部 `$ref`，可離線驗證。Schema 的 `$id` 是 `urn:reswho:snapshot:10`，不是下載網址。Schema 使用 [Draft 2020-12](https://json-schema.org/draft/2020-12)；測試以 [jsonschema](https://docs.rs/jsonschema/0.60.2/jsonschema/) 驗證。
 
 ## 輸出與版本規則
 
@@ -290,3 +290,7 @@ Attribution source 的封閉 enum 新增 `extension`；其 `extension` 物件保
 [reswho-8.schema.json](../schemas/reswho-8.schema.json) 原樣保留供舊 snapshots 使用；它不接受新版本或新 attribution source。Current examples 與 `--json-schema` 使用9。消費端應先檢查 schema；不能把新資料宣稱為8或假設所有來源都屬既有 enum。Schema 驗證 current examples、custom attribution／details 及錯誤來源的完整 snapshot。
 
 `reswho extensions --json` 是獨立的 metadata 陣列，不套用 snapshot Schema，也不執行 provider 或探測來源服務。外部 manifest、host CLI engines、JSON wire、設定範圍及 runtime DTO 的使用方式見 [extension-protocol.md](extension-protocol.md)。
+
+## reswho/10：目前 extension report
+
+目前 snapshot schema 為 reswho/10（`schemas/reswho-10.schema.json`）；Schema8／9 保留供舊資料使用。新增頂層 `extensions` 陣列，最多2048筆，每筆有 provider、nullable version、phase（read／validate／register／collect／classify／details）、result（success／failed／skipped／never_invoked）、nullable safe reason code 與 nullable duration_ms。實際嘗試使用非負數毫秒（可含小數），skipped／never_invoked 固定 null。Result 包含核心驗證，非單純 child exit。collection_ms 仍為整輪 wall time；重疊／平行 phase 不可加總。Report 只含 startup 與本輪資料，不保留跨輪執行歷史；不包含 raw stderr／panic／設定值或未要求的 command 資料。

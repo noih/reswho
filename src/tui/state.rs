@@ -20,6 +20,9 @@ pub(super) enum ManualRefresh {
 
 pub(super) struct App {
     pub snapshot: Option<Snapshot>,
+    pub extensions: Vec<crate::extensions::report::Record>,
+    pub extensions_page: bool,
+    pub extensions_scroll: u16,
     pub rows: Vec<Row>,
     pub selected: usize,
     pub expanded: HashMap<String, bool>,
@@ -86,6 +89,9 @@ impl App {
     pub fn new(scope: String, initial_depth: usize) -> Self {
         Self {
             snapshot: None,
+            extensions: vec![],
+            extensions_page: false,
+            extensions_scroll: 0,
             rows: Vec::new(),
             selected: 0,
             expanded: HashMap::new(),
@@ -206,7 +212,10 @@ impl App {
             details.update(&result);
         }
         let mut snapshot = match result {
-            Ok(snapshot) => snapshot,
+            Ok(snapshot) => {
+                self.extensions = snapshot.extensions.clone();
+                snapshot
+            }
             Err(error) => {
                 self.error = Some(error);
                 return;

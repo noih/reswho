@@ -3,23 +3,36 @@ use crate::{
     snapshot::{self, Cancellation, Options},
 };
 use std::{
-    sync::mpsc::{self, Receiver, SyncSender},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, SyncSender},
+    },
     thread::{self, JoinHandle},
 };
 
 pub(super) struct Worker {
     requests: SyncSender<Option<u32>>,
     pub results: Receiver<Result<Snapshot, String>>,
+    pub report: Arc<Mutex<Vec<crate::extensions::report::Record>>>,
     cancel: Cancellation,
     handle: Option<JoinHandle<()>>,
 }
 
 impl Worker {
     pub fn start(mut options: Options) -> Self {
-        Self::with_collector(move |cancel, command_pid| {
+        let report = Arc::new(Mutex::new(
+            options
+                .extensions
+                .initial_report(&options.settings, options.containers),
+        ));
+        let current = Arc::clone(&report);
+        let mut worker = Self::with_collector(move |cancel, command_pid| {
             options.command_pid = command_pid;
-            snapshot::capture(&options, cancel).map_err(|error| format!("{error:#}"))
-        })
+            snapshot::capture_reported(&options, cancel, Arc::clone(&current))
+                .map_err(|_| "Collection failed; see current extension status".into())
+        });
+        worker.report = report;
+        worker
     }
 
     pub(super) fn with_collector(
@@ -46,6 +59,7 @@ impl Worker {
         Self {
             requests,
             results,
+            report: Arc::default(),
             cancel,
             handle: Some(handle),
         }

@@ -1,5 +1,5 @@
 {
-  "schema": "reswho/9",
+  "schema": "reswho/10",
   "captured_unix_ms": 1700000000000,
   "sample_ms": 250,
   "collection_ms": 300,
@@ -193,5 +193,6 @@
       }
     ],
     "omitted_children": 0
-  }
+  },
+  "extensions": []
 }

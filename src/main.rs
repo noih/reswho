@@ -26,6 +26,8 @@ struct Args {
     config: Option<PathBuf>,
     #[arg(long, help = "Emit a single Markdown snapshot")]
     md: bool,
+    #[arg(long, help = "Include current extension timings in Markdown output")]
+    profile: bool,
     #[arg(long, global = true, help = "Emit JSON (snapshot or offline settings)")]
     json: bool,
     #[arg(long, conflicts_with_all = ["md", "json", "tui", "help_format"], help = "Print the JSON Schema without collecting resources")]
@@ -136,9 +138,10 @@ fn run() -> Result<()> {
     }) = &args.command
     {
         let path = extensions::state::State::path(args.config.as_deref())?;
+        extensions::state::State::startup(&path)?;
         extensions::state::State::mutate(&path, |state| match action {
             ExtensionAction::Install { manifest } => {
-                state.install(extensions::state::Manifest::read(manifest)?)
+                state.install_explicit(extensions::state::Manifest::read(manifest)?, manifest)
             }
             ExtensionAction::Enable { id } => state.toggle(id, true, false),
             ExtensionAction::Disable { id } => state.toggle(id, false, false),
@@ -146,7 +149,7 @@ fn run() -> Result<()> {
         })?;
         "Extension registry updated\n".into()
     } else {
-        let state = extensions::state::State::load(&extensions::state::State::path(
+        let mut state = extensions::state::State::startup(&extensions::state::State::path(
             args.config.as_deref(),
         )?)?;
         let user = settings::Config::load(args.config.as_deref())?;
@@ -159,7 +162,7 @@ fn run() -> Result<()> {
                 overrides.insert(key.into(), value.into());
             }
         }
-        let resolved = state.registry()?.resolve(&user, &overrides)?;
+        let resolved = state.registry_reported()?.resolve(&user, &overrides)?;
         for key in &resolved.report().unknown_keys {
             eprintln!("reswho: unknown setting {key} (not applied)");
         }
@@ -250,7 +253,11 @@ fn run() -> Result<()> {
                 tree::limit_depth(&mut snapshot.root, args.depth);
                 format!("{}\n", serde_json::to_string_pretty(&snapshot)?)
             } else {
-                output::markdown_with_depth(&snapshot, args.depth)
+                let mut text = output::markdown_with_depth(&snapshot, args.depth);
+                if args.profile {
+                    text.push_str(&output::extension_profile(&snapshot.extensions));
+                }
+                text
             }
         }
     };

@@ -92,6 +92,7 @@ fn snapshot() -> Snapshot {
     root.children.push(containers);
     Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: vec![],
         captured_unix_ms: 1000,
         sample_ms: 250,
         collection_ms: 300,
@@ -1332,4 +1333,62 @@ fn installed_external_example_renders_parsed_details_without_command_payload() {
     assert!(!text.contains("fixture-secret-value"));
     assert!(!text.contains("Loading command"));
     dir.close().unwrap();
+}
+
+#[test]
+fn extension_page_preserves_navigation_never_requests_collection_and_keeps_failed_report() {
+    let mut app = app();
+    select(&mut app, "pid:11");
+    let selected = app.selected;
+    app.paused = true;
+    app.extensions = vec![crate::extensions::report::Record::new(
+        "broken",
+        Some("1.0.0"),
+        "read",
+        "failed",
+        Some("invalid_manifest"),
+        Some(Instant::now()),
+    )];
+    let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    let mut table = TableState::default();
+    table.select(Some(selected));
+    *table.offset_mut() = 1;
+    let offset = table.offset();
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut table))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("Extension issues: 1 (e)"));
+    handle_key(&mut app, KeyEvent::from(KeyCode::Char('e')));
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut table))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("Extensions - current status"));
+    assert!(text.contains("invalid_manifest"));
+    assert_eq!(table.offset(), offset);
+    handle_key(&mut app, KeyEvent::from(KeyCode::Char('j')));
+    handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.selected, selected);
+    assert_eq!(table.offset(), offset);
+    assert!(app.manual_refresh.is_none());
+    assert!(!app.collecting);
+    app.update(Err("synthetic worker failure".into()));
+    assert_eq!(app.extensions.len(), 1);
+    assert_eq!(
+        app.extensions[0].reason.as_deref(),
+        Some("invalid_manifest")
+    );
 }

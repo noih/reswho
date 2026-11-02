@@ -43,12 +43,25 @@ pub struct Options {
 }
 
 pub fn capture(options: &Options, cancel: &Cancellation) -> Result<Snapshot> {
+    capture_reported(options, cancel, Arc::default())
+}
+
+pub fn capture_reported(
+    options: &Options,
+    cancel: &Cancellation,
+    report: Arc<std::sync::Mutex<Vec<crate::extensions::report::Record>>>,
+) -> Result<Snapshot> {
     let start = Instant::now();
+    *report.lock().expect("report lock") = options
+        .extensions
+        .initial_report(&options.settings, options.containers);
     cancel.check()?;
-    let context = crate::extensions::Context::new(&options.settings, cancel);
+    let mut context = crate::extensions::Context::new(&options.settings, cancel);
+    context.report = Arc::clone(&report);
     let mut collection = collect::collect_with_context(&context, options.command_pid)?;
     cancel.check()?;
-    let context = crate::extensions::Context::new(&options.settings, cancel);
+    let mut context = crate::extensions::Context::new(&options.settings, cancel);
+    context.report = Arc::clone(&report);
     let external = crate::extensions::external::installed(&options.extensions, &options.settings);
     let classifiers: Vec<&dyn crate::extensions::Extension> = std::iter::once(
         &crate::extensions::Builtin::AppBundle as &dyn crate::extensions::Extension,
@@ -85,13 +98,8 @@ pub fn capture(options: &Options, cancel: &Cancellation) -> Result<Snapshot> {
             .collect();
         let diagnostics =
             crate::extensions::external::attach_details(&providers, &context, process);
-        if !providers.is_empty() && !crate::collect::verify_identity(process) {
-            process.extension_details.clear();
-            process.unavailable.push(crate::model::Diagnostic::new(
-                "identity_changed",
-                "extensions.details",
-                "Process identity changed during external details",
-            ));
+        if !providers.is_empty() {
+            validate_external_details(&context, process, crate::collect::verify_identity);
         }
         fn attach(node: &mut crate::model::Node, process: &crate::model::Process) {
             if node
@@ -145,6 +153,7 @@ pub fn capture(options: &Options, cancel: &Cancellation) -> Result<Snapshot> {
     tree::validate_references(&root)?;
     Ok(Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: report.lock().expect("report lock").clone(),
         captured_unix_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .context("system clock before Unix epoch")?
@@ -157,3 +166,23 @@ pub fn capture(options: &Options, cancel: &Cancellation) -> Result<Snapshot> {
         root,
     })
 }
+
+fn validate_external_details(
+    context: &crate::extensions::Context<'_>,
+    process: &mut crate::model::Process,
+    verify: impl FnOnce(&crate::model::Process) -> bool,
+) {
+    let validation_started = Instant::now();
+    if !verify(process) {
+        context.reject_details_identity(process, validation_started.elapsed());
+        process.extension_details.clear();
+        process.unavailable.push(crate::model::Diagnostic::new(
+            "identity_changed",
+            "extensions.details",
+            "Process identity changed during external details",
+        ));
+    }
+}
+
+#[cfg(test)]
+mod tests;

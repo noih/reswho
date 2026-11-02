@@ -6,7 +6,7 @@ mod diagnostic;
 pub use attribution::{Attribution, AttributionSource};
 pub use diagnostic::Diagnostic;
 
-pub const JSON_SCHEMA_VERSION: &str = "reswho/9";
+pub const JSON_SCHEMA_VERSION: &str = "reswho/10";
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Process {
@@ -224,6 +224,7 @@ pub struct SystemSummary {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Snapshot {
+    pub extensions: Vec<crate::extensions::report::Record>,
     pub schema: &'static str,
     pub captured_unix_ms: u64,
     pub sample_ms: u64,
