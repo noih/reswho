@@ -18,7 +18,7 @@ The process live test creates a temporary Git marker and one owned `sleep` proce
 
 Build artifacts in `target/` are the project's reusable development cache, owned by the current reswho task and retained for the next implementation phase. Review its size at phase boundaries; clean it only when no build or test is using it. No collector daemon or persistent observation database is created.
 
-Container smoke verification is read-only: `cargo run -- --md --from group:containers --depth all`. It queries the configured Docker endpoint without starting services or creating containers. Use `--no-containers` for host-only inspection; existing process/socket live tests use this flag to keep their scope isolated.
+Container smoke verification is read-only: `cargo run -- --md --from group:containers --depth all`. It queries the configured Docker endpoint and the local Apple Container service when its CLI is present, without starting services or creating containers. Use `--no-containers` for host-only inspection; existing process/socket live tests use this flag to keep their scope isolated.
 
 TUI state and TestBackend tests cover sorting, search ancestry, filtering without changing totals, stable selection, PID reuse, unreadable summaries, the selected-path status bar, loading within the table layout, resizing, control-character escaping, and worker cancellation. The command cancellation test starts and reaps its own shell/sleep fixture; it does not invoke Docker.
 
@@ -36,7 +36,7 @@ This ignored measurement runs three sequential rounds within a 40-second budget,
 
 On a supported Unix endpoint, `stats.api` includes version negotiation, both one-shot passes and the sampling wait. Its `output_bytes` is 0 because this harness does not count API response bytes. `non_command_ms` excludes that timed API stage as well as CLI commands. Historical CLI-only timings remain documented with their original revision.
 
-To measure the complete host + Docker capture with the production snapshot path, prebuild once and run the explicit three-round check within its 40-second measurement budget:
+To measure the complete host + configured container runtimes capture with the production snapshot path, prebuild once and run the explicit three-round check within its 40-second measurement budget:
 
 ```sh
 cargo test --locked --lib --no-run
@@ -77,3 +77,16 @@ cargo test --test live -- --ignored --test-threads=1 --skip live_tcp_udp_ipv4_ip
 TUI process-detail tests cover detail-page key routing and independent scrolling, preserved table offsets, queued on-demand command selection through the single worker, pause/manual refresh, close/reopen, late results for another PID, missing/unknown/reused identities, collection and command failures, small layouts and control-character escaping. Page rendering checks cover a single footer, retained host summary, compact attribution, non-repeated PID, label/value colors, complete Unicode paths with indented wrapping, and scrolling by visual lines. The PTY runner also owns one shell blocked in builtin `read`, opens its details, verifies loading, `[filtered]` output and manual-refresh feedback, resizes, closes/reopens and quits while command collection is pending. It reaps both the fixture and TUI process and closes stdin/PTY handles in `finally`; it never contacts Docker or starts services.
 
 Refresh controls remain visible whenever refresh is available, with feedback only for manual requests. TUI tests cover both pages, completion/failure, repeated requests during collection, unchanged pause state, command errors, unavailable identities and help/search key isolation.
+
+Apple Container tests use synthetic inventory/counters and the shared JSON Schema: active/stopped/unknown states, version gating, ports, bind attribution, secret omission, duplicate/malformed/limited inventory, restart/disappearance, partial stats, actual sample duration, four-request concurrency, cancellation and deadline cleanup. They do not contact the Apple service. The XPC bridge is compiled on macOS using the existing cc build toolchain; no runtime helper is installed.
+
+Explicit native callback/response lifetime checks (no service or container required):
+
+```sh
+apple_test_dir=$(mktemp -d /private/tmp/reswho-apple-native.XXXXXX)
+trap 'rm -rf "$apple_test_dir"' EXIT
+xcrun clang -Wall -Wextra -Werror -std=c11 -fblocks -fsanitize=address tests/apple_xpc_native.c -o "$apple_test_dir/check"
+"$apple_test_dir/check"
+```
+
+This owns only its temporary compiler output and synthetic XPC values. It checks payload types/size, error replies, pending polling, and late callback release racing with the caller. Real Apple service integration is a separately authorized fixture run; results and scope are recorded in [runtime-probes.md](docs/runtime-probes.md). Ordinary tests never start runtimes. Apple 1.6.1 is the only enabled XPC wire version; other versions keep inventory with an unsupported-stats diagnostic.

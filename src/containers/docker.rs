@@ -405,7 +405,16 @@ fn apply(
     container.ports = ports(&inspect);
     container.mounts = inspect.mounts.clone();
     container.service = inspect.service.clone().filter(|value| !value.is_empty());
-    attribution::classify(container, &inspect, local, discovery);
+    attribution::classify(
+        container,
+        &attribution::Evidence {
+            workdir: inspect.workdir,
+            compose_project: inspect.compose_project,
+            compose_workdir: inspect.compose_workdir,
+        },
+        local,
+        discovery,
+    );
 }
 
 pub(super) fn collect(

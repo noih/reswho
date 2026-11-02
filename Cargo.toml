@@ -26,3 +26,6 @@ libproc = "0.14.11"
 tempfile = "3"
 pulldown-cmark = { version = "0.13", default-features = false }
 jsonschema = { version = "0.60.2", default-features = false }
+
+[build-dependencies]
+cc = "1"

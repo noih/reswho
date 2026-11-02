@@ -36,7 +36,10 @@ pub struct Container {
 
 impl Container {
     pub fn is_inactive(&self) -> bool {
-        matches!(self.state.as_deref(), Some("created" | "exited" | "dead"))
+        matches!(
+            self.state.as_deref(),
+            Some("created" | "exited" | "dead" | "stopped")
+        )
     }
 
     pub fn is_active(&self) -> bool {

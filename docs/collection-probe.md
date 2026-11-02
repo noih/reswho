@@ -18,11 +18,11 @@ cargo run -- --help-format
 
 支援一次性 Markdown／JSON、`--from` 與 `--depth`。非互動執行預設 Markdown；stdin／stdout 都是終端機時預設 TUI。基本 TUI 已支援樹狀操作、排序、搜尋、選取路徑列與背景刷新，見 [TUI 操作](tui.md)。
 
-已加入 [Docker 容器 metadata／stats 與分類](containers.md)，可用 `--no-containers` 跳過。
+已加入 [Docker／Apple Container metadata、stats 與分類](containers.md)，可用 `--no-containers` 跳過。
 
 已加入指定 PID 的命令詳情及有限的 script／JAR 入口線索，見 [命令契約](json-format.md#指定-pid-的命令資訊)。一般列表不查詢命令；TUI 可按 `d` 按需開啟程序詳情。
 
-未實作：容器內程序、其他 runtime adapter。每輪獨立採集，不累積跨刷新統計或歷史，不產生閒置或遺留判定。
+未實作：容器內程序、Podman 等其他 runtime adapter。每輪獨立採集，不累積跨刷新統計或歷史，不產生閒置或遺留判定。
 
 ## 分類與計數
 

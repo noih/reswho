@@ -18,16 +18,16 @@ pub const FORMAT_HELP: &str = "reswho-md/18 (collection prototype)\n\n\
 \n\
 Container groups use container counts and runtime memory, not process RSS.\n\
 Host process totals exclude the separate Containers subtree; never add both scopes.\n\
-Docker uses the current context / DOCKER_CONTEXT / DOCKER_HOST; --no-containers skips it.\n\
-Docker queries share a 10s deadline and a 256-container inventory limit; partial inventory uses >=.\n\
-Only Docker is implemented; supported Unix endpoints use fresh paired API samples, other connections use CLI stats.\n\
-API samples use --sample-ms with no cross-refresh smoothing; Docker memory subtracts inactive file cache, CLI values are rounded.\n\
+Docker uses the current context / DOCKER_CONTEXT / DOCKER_HOST; Apple Container uses the local user service when its CLI is on PATH.\n\
+Runtimes run in parallel with a shared 10s deadline and 256-container limit per runtime; --no-containers skips all. Partial inventory uses >=.\n\
+Docker Unix endpoints use fresh paired API samples; other Docker connections use CLI stats. Apple Container 1.6.1 uses fresh paired XPC counters, at most four requests in flight.\n\
+API/XPC samples use --sample-ms without cache or smoothing. Docker memory subtracts inactive file cache; Apple memory is raw memoryUsageBytes. Unsupported Apple versions retain inventory with unknown stats.\n\
 Container CPU 100% is one daemon logical core; sampling differs from host processes.\n\
-Container active = running/paused/restarting; created/exited/dead metrics are not applicable (-), excluded from unknown counts.\n\
+Container active = running/paused/restarting; created/exited/dead/stopped metrics are not applicable (-), excluded from unknown counts.\n\
 Container summaries show active / total; unknown activity or incomplete inventory keeps active counts partial.\n\
 Removing or unrecognized/missing states remain unknown, not inactive. Uptime is for the current running/paused incarnation.\n\
 Published tcp:HOST->CONTAINER ports are configuration, not observed listeners or traffic.\n\
-Compose labels declare project ownership; ~ bind inference requires local Unix transport and project markers.\n\
+Compose labels declare project ownership; ~ bind inference requires local transport and project markers.\n\
 Remote bind paths are not checked locally. Ambiguous candidates are shown in container details.\n\
 --from group:REF shows container mounts, start time, service and attribution candidates.\n\
 Runtime diagnostics omit raw CLI stderr which may contain endpoint credentials.\n\

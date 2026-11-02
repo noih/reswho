@@ -1117,3 +1117,43 @@ fn worker_cancels_and_joins_owned_collection() {
     cancel.cancel();
     assert!(cancel.wait(Duration::ZERO).is_err());
 }
+
+#[test]
+fn apple_runtime_renders_and_stopped_containers_follow_active_filter() {
+    let mut snapshot = snapshot();
+    let containers = snapshot
+        .root
+        .children
+        .iter_mut()
+        .find(|n| n.reference == "group:containers")
+        .unwrap();
+    let runtime = &mut containers.children[0];
+    runtime.name = "apple (local)".into();
+    for node in &mut runtime.children {
+        let container = node.container.as_mut().unwrap();
+        container.runtime = "apple".into();
+        if container.state.as_deref() == Some("exited") {
+            container.state = Some("stopped".into());
+        }
+    }
+    let mut app = App::new("group:containers".into(), usize::MAX);
+    app.update(Ok(snapshot));
+    let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("apple (local)"));
+    assert!(app.rows.iter().any(|row| row.key == "group:stopped"));
+    app.active_only = true;
+    app.rebuild();
+    assert!(!app.rows.iter().any(|row| row.key == "group:stopped"));
+    assert!(app.rows.iter().any(|row| row.key == "group:live"));
+    assert!(app.rows.iter().any(|row| row.key == "group:unknown"));
+}

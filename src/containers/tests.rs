@@ -118,7 +118,7 @@ fn compose_and_bind_inference_retain_evidence_and_conflicts() {
         source: first.clone(),
         destination: "/workspace".into(),
     }];
-    let mut detail = docker::Inspect::default();
+    let mut detail = attribution::Evidence::default();
     let mut discovery = tree::projects::Discovery::default();
     attribution::classify(&mut item, &detail, true, &mut discovery);
     assert!(matches!(
@@ -214,7 +214,7 @@ fn partial_inventory_and_container_markdown_preserve_semantics() {
 #[test]
 fn absent_or_ambiguous_paths_never_force_project_ownership() {
     let mut item = container("one");
-    let detail = docker::Inspect::default();
+    let detail = attribution::Evidence::default();
     let mut discovery = tree::projects::Discovery::default();
     for source in ["relative/project", "/", "/a/nonexistent/project"] {
         item.mounts = vec![Mount {
@@ -406,4 +406,33 @@ fn json_contract_preserves_container_attribution_and_scopes() {
             }
         }
     }
+}
+
+#[test]
+fn multiple_runtimes_keep_identity_totals_and_partial_inventory_separate() {
+    let docker = runtime("endpoint-a");
+    let mut apple = runtime("endpoint-b");
+    apple.name = "apple".into();
+    apple.context = Some("local".into());
+    apple.inventory_complete = false;
+    let one = container("same-name");
+    let mut two = one.clone();
+    two.runtime = "apple".into();
+    two.endpoint_ref = "endpoint-b".into();
+    two.state = Some("stopped".into());
+    two.cpu_percent = None;
+    two.memory_bytes = None;
+    let root = build_all(vec![(docker, vec![one]), (apple, vec![two])]).unwrap();
+    assert_eq!(root.children.len(), 2);
+    assert_ne!(
+        root.children[0].children[0].reference,
+        root.children[1].children[0].reference
+    );
+    let totals = root.container_totals.as_ref().unwrap();
+    assert_eq!(totals.containers, 2);
+    assert_eq!(totals.active_containers, 1);
+    assert_eq!(totals.inactive_containers, 1);
+    assert_eq!(totals.memory_unknown, 0);
+    assert_eq!(totals.known_memory_bytes, 100);
+    assert!(!totals.inventory_complete);
 }

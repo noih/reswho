@@ -244,7 +244,7 @@ fn default_context_empty_inventory_and_inventory_limit_are_explicit() {
 
 struct ApiRunner {
     cli: Fake,
-    transport: crate::containers::command::DockerCommand,
+    transport: crate::containers::command::RuntimeCommand,
 }
 
 impl Runner for ApiRunner {
@@ -260,7 +260,7 @@ impl Runner for ApiRunner {
 fn api_runner(cli: Fake) -> ApiRunner {
     ApiRunner {
         cli,
-        transport: crate::containers::command::DockerCommand {
+        transport: crate::containers::command::RuntimeCommand {
             cancel: crate::snapshot::Cancellation::default(),
             program: "unused-fixture-command".into(),
             deadline: Instant::now() + std::time::Duration::from_secs(5),

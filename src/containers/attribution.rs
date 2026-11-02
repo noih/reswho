@@ -1,12 +1,16 @@
-use super::{
-    docker::Inspect,
-    model::{Container, Project, ProjectSource},
-};
+use super::model::{Container, Project, ProjectSource};
 use crate::tree::projects::Discovery;
 use std::{
     collections::BTreeSet,
     path::{Component, Path, PathBuf},
 };
+
+#[derive(Default)]
+pub(super) struct Evidence {
+    pub workdir: Option<String>,
+    pub compose_project: Option<String>,
+    pub compose_workdir: Option<String>,
+}
 
 fn clean_absolute(path: &Path) -> bool {
     path.is_absolute()
@@ -25,7 +29,7 @@ fn project_path(path: &Path, discovery: &mut Discovery) -> Option<PathBuf> {
 
 pub(super) fn classify(
     container: &mut Container,
-    inspect: &Inspect,
+    inspect: &Evidence,
     local: bool,
     discovery: &mut Discovery,
 ) {

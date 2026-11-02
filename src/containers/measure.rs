@@ -1,6 +1,6 @@
 use super::{
     build,
-    command::{DockerCommand, Output, Runner},
+    command::{Output, Runner, RuntimeCommand},
     docker,
 };
 use crate::snapshot::Cancellation;
@@ -18,7 +18,7 @@ struct CommandTiming {
 }
 
 struct TimedRunner {
-    inner: DockerCommand,
+    inner: RuntimeCommand,
     commands: Vec<CommandTiming>,
     stats_started: bool,
 }
@@ -91,7 +91,7 @@ fn measure_docker_collection() {
     for round in 1..=3 {
         assert!(Instant::now() < deadline, "measurement budget exhausted");
         let mut runner = TimedRunner {
-            inner: DockerCommand {
+            inner: RuntimeCommand {
                 cancel: Cancellation::default(),
                 deadline: deadline.min(Instant::now() + Duration::from_secs(2)),
                 program: "docker".into(),
@@ -172,7 +172,11 @@ fn measure_full_snapshot() {
         let root =
             crate::tree::select(&snapshot.root, "group:containers").expect("container scope");
         let totals = root.container_totals.as_ref().expect("container totals");
-        let runtime = root.children[0].runtime.as_ref().expect("runtime");
+        let runtimes: Vec<_> = root
+            .children
+            .iter()
+            .filter_map(|node| node.runtime.as_ref())
+            .collect();
         let mut pending = vec![&root];
         let mut bases = std::collections::BTreeSet::new();
         let mut container_diagnostics = 0;
@@ -185,8 +189,9 @@ fn measure_full_snapshot() {
             }
             pending.extend(&node.children);
         }
-        let complete = runtime.inventory_complete
-            && runtime.unavailable.is_empty()
+        let complete = runtimes
+            .iter()
+            .all(|runtime| runtime.inventory_complete && runtime.unavailable.is_empty())
             && container_diagnostics == 0
             && totals.cpu_unknown == 0
             && totals.memory_unknown == 0;
@@ -194,11 +199,11 @@ fn measure_full_snapshot() {
             "{}",
             serde_json::json!({
                 "round": round, "collection_ms": snapshot.collection_ms, "host_sample_ms": snapshot.sample_ms,
-                "host_processes": snapshot.root.totals.processes, "docker_ms":runtime.collection_ms,
+                "host_processes": snapshot.root.totals.processes, "runtimes":runtimes.iter().map(|r| (&r.name, r.collection_ms)).collect::<Vec<_>>(),
                 "containers":totals.containers, "active":totals.active_containers,
                 "cpu_unknown":totals.cpu_unknown, "memory_unknown":totals.memory_unknown,
                 "memory_bases":bases, "complete":complete, "container_diagnostics":container_diagnostics,
-                "runtime_diagnostics":runtime.unavailable.iter().map(|d| (&d.code, &d.operation)).collect::<Vec<_>>(),
+                "runtime_diagnostics":runtimes.iter().flat_map(|r| &r.unavailable).map(|d| (&d.code, &d.operation)).collect::<Vec<_>>(),
                 "host_warning_count":snapshot.warnings.len(),
             })
         );

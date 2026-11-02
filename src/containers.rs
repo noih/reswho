@@ -1,4 +1,6 @@
 use crate::model::{Attribution, AttributionSource};
+#[cfg(target_os = "macos")]
+mod apple;
 mod attribution;
 mod command;
 mod docker;
@@ -30,20 +32,67 @@ pub(crate) fn collect_with_cancel(
     cancel: &crate::snapshot::Cancellation,
     sample_interval: Duration,
 ) -> Result<Node> {
-    let mut runner = command::DockerCommand {
-        cancel: cancel.clone(),
-        program: "docker".into(),
-        deadline: Instant::now() + Duration::from_secs(10),
-        sample_interval,
-        api_version: std::env::var("DOCKER_API_VERSION").ok(),
-    };
-    let (runtime, containers) = docker::collect(
-        &mut runner,
-        std::env::var("DOCKER_CONTEXT").ok(),
-        std::env::var("DOCKER_HOST").ok(),
-        time::OffsetDateTime::now_utc(),
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let sources = std::thread::scope(|scope| -> Result<Vec<(Runtime, Vec<Container>)>> {
+        let docker = scope.spawn(|| {
+            let mut runner = command::RuntimeCommand {
+                cancel: cancel.clone(),
+                program: "docker".into(),
+                deadline,
+                sample_interval,
+                api_version: std::env::var("DOCKER_API_VERSION").ok(),
+            };
+            docker::collect(
+                &mut runner,
+                std::env::var("DOCKER_CONTEXT").ok(),
+                std::env::var("DOCKER_HOST").ok(),
+                time::OffsetDateTime::now_utc(),
+            )
+        });
+        #[cfg(target_os = "macos")]
+        let apple = command::find_program("container").map(|program| {
+            scope.spawn(move || apple::native(program, cancel, deadline, sample_interval))
+        });
+        let mut sources = vec![
+            docker
+                .join()
+                .map_err(|_| anyhow::anyhow!("Docker collector failed"))?,
+        ];
+        #[cfg(target_os = "macos")]
+        if let Some(apple) = apple {
+            sources.push(
+                apple
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("Apple collector failed"))?,
+            );
+        }
+        Ok(sources)
+    })?;
+    cancel.check()?;
+    build_all(sources)
+}
+
+fn build_all(sources: Vec<(Runtime, Vec<Container>)>) -> Result<Node> {
+    let mut root = Node::group(
+        "group:containers".into(),
+        "Containers".into(),
+        vec!["Container scope; excluded from host process totals".into()],
+        Grouping::Category,
     );
-    build(runtime, containers)
+    let mut totals = ContainerTotals {
+        inventory_complete: true,
+        ..ContainerTotals::default()
+    };
+    for (runtime, containers) in sources {
+        totals.inventory_complete &= runtime.inventory_complete;
+        for container in &containers {
+            totals.add(container);
+        }
+        root.children.extend(build(runtime, containers)?.children);
+    }
+    root.container_totals = Some(totals);
+    crate::tree::validate_references(&root)?;
+    Ok(root)
 }
 
 fn build(runtime: Runtime, containers: Vec<Container>) -> Result<Node> {

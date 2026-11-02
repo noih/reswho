@@ -20,7 +20,7 @@ reswho --json-schema > reswho.schema.json
 - 先檢查 `schema`。新版本可能只輸出最新契約，不保證能指定舊版。
 - 刪除／改名欄位、改型別、改單位、改 null 或統計語意、改 ref 生成方式、增加封閉 enum 值，都須增加 `reswho/N` 的 N 並提供遷移說明。
 - 新增可忽略的欄位可視為相容擴充；讀取者必須忽略未知 object 欄位。Schema 的 `additionalProperties` 因此允許擴充。既有必填欄位不能消失，不能把新欄位變成舊讀取者的必需資訊。
-- `kind`、`grouping`、attribution source、diagnostic code、runtime status、socket protocol、project source 為 Schema 定義的封閉 enum。Docker state、TCP state、port protocol、memory basis 等來源描述字串不是封閉 enum，讀取者須保留未知值。
+- `kind`、`grouping`、attribution source、diagnostic code、runtime status、socket protocol、project source 為 Schema 定義的封閉 enum。container state、TCP state、port protocol、memory basis 等來源描述字串不是封閉 enum，讀取者須保留未知值。
 - `name`、`evidence`、診斷 `message` 是展示文字，可以改措辭，不作解析或分支條件。兄弟節點、診斷與 evidence 的順序不是契約，不得用陣列索引當識別碼。
 - Markdown／TUI 排版變更不改 JSON。程式處理請使用欄位，不解析 `Σ`、時間符號或文字單位。
 
@@ -155,17 +155,17 @@ Socket：`fd` 為非負 descriptor；`protocol` 為 tcp/udp；`local` 為 `IP:po
 
 ## Runtime、Container 與容器子結構
 
-Runtime：`name`（目前 docker）、`context`、`endpoint_ref`、`daemon_id`（後三者可為 null）、`status`（available/unavailable）、`inventory_complete`、`collection_ms`、`unavailable`。available 只表示已成功列出 inventory，不保證 stats/inspect 完整。endpoint_ref 是 endpoint 的不透明識別，不暴露 endpoint 原文。
+Runtime：`name`（目前 docker / apple）、`context`、`endpoint_ref`、`daemon_id`（後三者可為 null）、`status`（available/unavailable）、`inventory_complete`、`collection_ms`、`unavailable`。available 只表示已成功列出 inventory，不保證 stats/inspect 完整。endpoint_ref 是 endpoint 的不透明識別，不暴露 endpoint 原文。
 
 | Container 欄位 | 意義 |
 | --- | --- |
-| `runtime`、`endpoint_ref`、`id` | runtime 名稱、endpoint 識別、完整容器 ID |
+| `runtime`、`endpoint_ref`、`id` | runtime 名稱、endpoint 識別、原生容器 ID（Apple 可以是名稱，非固定長度 hex） |
 | `name`、`state` | 名稱、來源生命週期狀態（可 null／未識別值） |
 | `started_at` | runtime 原始啟動時間字串或 null；Docker 通常為 RFC3339，但不保證來源字串有效，須檢查後才使用 |
 | `uptime_seconds` | 成功解析且適用的本次 running/paused incarnation 時長，否則 null |
 | `cpu_percent` | daemon 單一邏輯核心為100%；與主機取樣不同 |
-| `memory_bytes` | runtime 提供的用量；Linux Docker 扣除適用的 cgroup inactive file，CLI 來源另經文字數值捨入 |
-| `memory_basis` | `docker_api_linux_cache_adjusted` 為直接 API 的整數 bytes；`docker_cli_linux_cache_adjusted_rounded` 為 CLI 捨入值；讀取者須保留未知來源值 |
+| `memory_bytes` | runtime 提供的用量；Linux Docker 扣除適用的 cgroup inactive file，CLI 來源另經文字數值捨入；Apple 為原始 memoryUsageBytes |
+| `memory_basis` | `docker_api_linux_cache_adjusted` 為直接 API 的整數 bytes；`docker_cli_linux_cache_adjusted_rounded` 為 CLI 捨入值；`apple_xpc_memory_usage_bytes` 為 Apple XPC 原始 bytes；讀取者須保留未知來源值 |
 | `ports` | Port 陣列或 null；null 表示未取得／無法解讀，[] 表示沒有發布端點 |
 | `mounts` | Mount 陣列；取得的掛載設定，缺失原因看 unavailable，不可由 [] 單獨證明完整 |
 | `project` | Project 或 null |
@@ -177,7 +177,9 @@ Port：`protocol` 來源字串、`container_port`（uint16）、`host_ip`（stri
 
 本機 Unix endpoint 的 Linux Docker stats 使用同輪兩次 one-shot，間隔沿用 `--sample-ms`（預設250ms）；`cpu_percent` 是該輪樣本間的平均，沒有跨輪平滑。SSH／TCP 等端點或不支援的 API 版本沿用 CLI 的取樣方式。`sample_ms` 仍只描述主機取樣階段，不代表容器的實際取樣窗。這些來源差異不改變 JSON 欄位結構；版本仍為 `reswho/8`。
 
-Mount：`kind` 來源類型、`source` 與 `destination` 路徑。遠端 daemon 的路徑不是本機路徑；不自動在本機解析。
+Apple Container 1.6.1 以同輪兩次 XPC counters 與回應的 monotonic 時間差計算 CPU，等待沿用 `--sample-ms`，無跨輪資料。未知版本只提供 inventory 並回報 unsupported；不以慢速 CLI stats 偷換取樣方式。`apple` endpoint 依本機使用者服務識別，daemon_id 為 null。
+
+Mount：`kind` 來源類型（Apple virtiofs 映射為 bind）、`source` 與 `destination` 路徑。遠端 daemon 的路徑不是本機路徑；不自動在本機解析。
 
 Project：`name`、`path`（string/null）、`source`（compose/bind_workdir/bind_project）。僅靠同名不合併不同 endpoint 或專案路徑。
 
@@ -194,7 +196,7 @@ Project：`name`、`path`（string/null）、`source`（compose/bind_workdir/bin
 
 `container_totals` 欄位：`containers`、`active_containers`、`inactive_containers`、`activity_unknown`、`inventory_complete`、`known_cpu_percent`、`known_memory_bytes`、`cpu_unknown`、`memory_unknown`、`oldest_uptime_seconds`、`uptime_unknown`。
 
-- active=running/paused/restarting；inactive=created/exited/dead；其他／缺失 state 為 activity_unknown。前三種計數之和等於觀測 containers。
+- active=running/paused/restarting；inactive=created/exited/dead/stopped；其他／缺失 state 為 activity_unknown。前三種計數之和等於觀測 containers。
 - inactive 的 cpu/memory/uptime 為 null、不計入 unknown；未知活動性不能當 inactive。
 - cpu/memory/uptime_unknown 不超過 `containers - inactive_containers`。全 inactive 的已知總和為0、oldest=null，語意是不適用，不是缺測。
 - inventory_complete=false 表示可能還有未列入的容器；containers 是已觀測數，未知計數只涵蓋已觀測成員。零容器且 inventory 不完整不代表沒有容器。
@@ -231,7 +233,7 @@ Schema 驗證型別、必填欄位、值域與節點組合；跨欄位／跨節�
 | parent_chain_incomplete | 程序父鏈循環或達深度界線，改為獨立根 |
 | collection_note | 靜態採集限制，屬說明而非當次錯誤 |
 
-目前 operation 包括 collection、containers、host.cpu、host.logical_cpus、host.memory_total、host.memory_used、host.swap、identity、identity.before、identity.after、task_counters、cpu、network、network.socket、executable、cwd、repository_metadata、parent_chain、docker、docker.inventory、docker.inspect、docker.stats。此欄是可擴充字串；未知 operation 應顯示 message 或套用 code 的一般處理。
+目前 operation 包括 collection、containers、host.cpu、host.logical_cpus、host.memory_total、host.memory_used、host.swap、identity、identity.before、identity.after、task_counters、cpu、network、network.socket、executable、cwd、repository_metadata、parent_chain、docker、docker.inventory、docker.inspect、docker.stats、apple、apple.inventory、apple.stats。此欄是可擴充字串；未知 operation 應顯示 message 或套用 code 的一般處理。
 
 ## 身分與跨快照比較
 

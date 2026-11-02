@@ -6,6 +6,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "macos")]
+pub(super) fn find_program(name: &str) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(name))
+        .find(|path| {
+            path.metadata()
+                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        })
+}
+
 const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 
 pub(super) struct Output {
@@ -25,7 +36,7 @@ pub(super) trait Runner {
     }
 }
 
-pub(super) struct DockerCommand {
+pub(super) struct RuntimeCommand {
     pub cancel: crate::snapshot::Cancellation,
     pub deadline: Instant,
     pub program: std::path::PathBuf,
@@ -51,7 +62,7 @@ fn nonblocking(pipe: &impl AsRawFd) -> Result<()> {
     let fd = pipe.as_raw_fd();
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        bail!("cannot configure Docker output pipe");
+        bail!("cannot configure container CLI output pipe");
     }
     Ok(())
 }
@@ -62,7 +73,7 @@ fn drain(pipe: &mut impl Read, buffer: &mut Vec<u8>) -> Result<bool> {
         Ok(0) => Ok(true),
         Ok(length) => {
             if buffer.len() + length > MAX_OUTPUT_BYTES {
-                bail!("Docker output exceeds 8 MiB limit");
+                bail!("container CLI output exceeds 8 MiB limit");
             }
             buffer.extend_from_slice(&chunk[..length]);
             Ok(false)
@@ -70,11 +81,11 @@ fn drain(pipe: &mut impl Read, buffer: &mut Vec<u8>) -> Result<bool> {
         Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
             Ok(false)
         }
-        Err(_) => bail!("cannot read Docker output"),
+        Err(_) => bail!("cannot read container CLI output"),
     }
 }
 
-impl Runner for DockerCommand {
+impl Runner for RuntimeCommand {
     fn direct_stats(&mut self, host: &str, ids: &[String]) -> Result<Option<super::stats::Batch>> {
         let Some(socket) = host
             .strip_prefix("unix://")
@@ -98,7 +109,7 @@ impl Runner for DockerCommand {
     fn run(&mut self, args: &[String]) -> Result<Output> {
         self.cancel.check()?;
         if Instant::now() >= self.deadline {
-            bail!("Docker collection deadline exceeded");
+            bail!("container CLI collection deadline exceeded");
         }
         let mut command = Command::new(&self.program);
         command
@@ -118,8 +129,8 @@ impl Runner for DockerCommand {
         }
         let mut child = OwnedChild {
             process: command.spawn().map_err(|error| match error.kind() {
-                ErrorKind::NotFound => anyhow::anyhow!("Docker CLI not found on PATH"),
-                _ => anyhow::anyhow!("cannot start Docker CLI ({})", error.kind()),
+                ErrorKind::NotFound => anyhow::anyhow!("container CLI not found on PATH"),
+                _ => anyhow::anyhow!("cannot start container CLI ({})", error.kind()),
             })?,
             reaped: false,
         };
@@ -127,12 +138,12 @@ impl Runner for DockerCommand {
             .process
             .stdout
             .take()
-            .context("Docker stdout unavailable")?;
+            .context("container CLI stdout unavailable")?;
         let mut stderr = child
             .process
             .stderr
             .take()
-            .context("Docker stderr unavailable")?;
+            .context("container CLI stderr unavailable")?;
         nonblocking(&stdout)?;
         nonblocking(&stderr)?;
         let mut output = Vec::new();
@@ -147,9 +158,11 @@ impl Runner for DockerCommand {
             {
                 child.reaped = true;
                 let issue = if !status.success() {
-                    Some(format!("Docker command failed ({status}); stderr withheld"))
+                    Some(format!(
+                        "container CLI command failed ({status}); stderr withheld"
+                    ))
                 } else if !errors.is_empty() {
-                    Some("Docker command reported diagnostics; stderr withheld".into())
+                    Some("container CLI command reported diagnostics; stderr withheld".into())
                 } else {
                     None
                 };
@@ -161,7 +174,7 @@ impl Runner for DockerCommand {
             if Instant::now() >= self.deadline {
                 return Ok(Output {
                     stdout: output,
-                    issue: Some("Docker collection deadline exceeded".into()),
+                    issue: Some("container CLI collection deadline exceeded".into()),
                 });
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -178,7 +191,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("pid");
         let cancel = crate::snapshot::Cancellation::default();
-        let mut runner = DockerCommand {
+        let mut runner = RuntimeCommand {
             cancel: cancel.clone(),
             program: "/bin/sh".into(),
             sample_interval: Duration::from_millis(250),
@@ -220,7 +233,7 @@ mod tests {
 
     #[test]
     fn timeout_reaps_owned_child_and_preserves_partial_output() {
-        let mut runner = DockerCommand {
+        let mut runner = RuntimeCommand {
             cancel: crate::snapshot::Cancellation::default(),
             program: "/bin/sh".into(),
             sample_interval: Duration::from_millis(250),
@@ -249,7 +262,7 @@ mod tests {
     fn bounded_reader_and_failed_command_do_not_expose_stderr() {
         let mut output = vec![0; MAX_OUTPUT_BYTES];
         assert!(drain(&mut std::io::Cursor::new(b"extra"), &mut output).is_err());
-        let mut runner = DockerCommand {
+        let mut runner = RuntimeCommand {
             cancel: crate::snapshot::Cancellation::default(),
             program: "/bin/sh".into(),
             sample_interval: Duration::from_millis(250),

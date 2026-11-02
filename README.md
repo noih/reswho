@@ -1,6 +1,6 @@
 # reswho
 
-A read-only macOS resource monitor that groups processes by application, project, and executable, with Docker container inspection.
+A read-only macOS resource monitor that groups processes by application, project, and executable, with Docker and Apple Container inspection.
 
 Status: early development.
 
