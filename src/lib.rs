@@ -2,6 +2,7 @@ pub mod collect;
 pub mod containers;
 pub mod model;
 pub mod output;
+pub mod settings;
 pub mod snapshot;
 pub mod sort;
 pub mod tree;

@@ -1,14 +1,15 @@
 use anyhow::{Context, Result};
-use clap::{ArgGroup, Parser};
+use clap::{ArgGroup, Parser, Subcommand};
 use reswho::{
-    output,
+    output, settings,
     snapshot::{self, Cancellation, Options},
     sort::Sort,
     tree, tui,
 };
 use std::{
+    collections::BTreeMap,
     io::{self, IsTerminal, Write},
-    time::Duration,
+    path::PathBuf,
 };
 
 #[derive(Debug, Parser)]
@@ -18,9 +19,13 @@ use std::{
 )]
 #[command(group(ArgGroup::new("format").args(["md", "json", "tui"])))]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+    #[arg(long, global = true, help = "Read JSON settings from PATH")]
+    config: Option<PathBuf>,
     #[arg(long, help = "Emit a single Markdown snapshot")]
     md: bool,
-    #[arg(long, help = "Emit a single JSON snapshot")]
+    #[arg(long, global = true, help = "Emit JSON (snapshot or offline settings)")]
     json: bool,
     #[arg(long, conflicts_with_all = ["md", "json", "tui", "help_format"], help = "Print the JSON Schema without collecting resources")]
     json_schema: bool,
@@ -35,8 +40,18 @@ struct Args {
     from: String,
     #[arg(long, default_value = "2", value_parser = parse_depth, help = "Output depth / initial TUI expansion (0..128 or all)")]
     depth: usize,
-    #[arg(long, default_value = "250", value_parser = clap::value_parser!(u64).range(200..=5000), help = "Minimum CPU sampling interval in milliseconds")]
-    sample_ms: u64,
+    #[arg(
+        long,
+        global = true,
+        help = "Override minimum CPU sampling wait in ms (200..5000; default 250)"
+    )]
+    sample_ms: Option<u64>,
+    #[arg(
+        long,
+        global = true,
+        help = "Override TUI wait after each result in ms (positive; default 2000)"
+    )]
+    refresh_ms: Option<u64>,
     #[arg(long, help = "Skip container runtime queries")]
     no_containers: bool,
     #[arg(
@@ -46,6 +61,26 @@ struct Args {
         help = "Sort siblings by CPU, memory, uptime (descending) or natural name; also sets initial TUI sort"
     )]
     sort: Sort,
+}
+
+impl Args {
+    fn validate_formats(&self) -> Result<(), clap::Error> {
+        if u8::from(self.md) + u8::from(self.json) + u8::from(self.tui) > 1
+            || (self.json_schema && (self.md || self.json || self.tui || self.help_format))
+        {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--md, --json and --tui are mutually exclusive; --json-schema also conflicts with these formats and --help-format",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    #[command(about = "Show effective settings offline without collecting resources")]
+    Settings,
 }
 
 fn parse_reference(value: &str) -> Result<String, String> {
@@ -75,44 +110,86 @@ fn parse_depth(value: &str) -> Result<usize, String> {
 
 fn run() -> Result<()> {
     let args = Args::parse();
+    if let Err(error) = args.validate_formats() {
+        error.exit();
+    }
     let content = if args.json_schema {
         output::JSON_SCHEMA.into()
     } else if args.help_format {
         output::FORMAT_HELP.into()
     } else {
-        if args.tui
-            || (!args.md && !args.json && io::stdin().is_terminal() && io::stdout().is_terminal())
-        {
-            return tui::run(
-                Options {
-                    sample_interval: Duration::from_millis(args.sample_ms),
-                    containers: !args.no_containers,
-                    command_pid: None,
-                },
-                args.from,
-                args.depth,
-                args.sort,
-            );
+        let user = settings::Config::load(args.config.as_deref())?;
+        let mut overrides = BTreeMap::new();
+        for (key, value) in [
+            ("sampling.interval_ms", args.sample_ms),
+            ("refresh.interval_ms", args.refresh_ms),
+        ] {
+            if let Some(value) = value {
+                overrides.insert(key.into(), value.into());
+            }
         }
-        let mut snapshot = snapshot::capture(
-            &Options {
-                sample_interval: Duration::from_millis(args.sample_ms),
-                containers: !args.no_containers,
-                command_pid: args
-                    .from
-                    .strip_prefix("pid:")
-                    .and_then(|pid| pid.parse().ok()),
-            },
-            &Cancellation::default(),
-        )?;
-        snapshot.root = tree::select(&snapshot.root, &args.from)?;
-        snapshot.scope = args.from;
-        args.sort.apply(&mut snapshot.root);
-        if args.json {
-            tree::limit_depth(&mut snapshot.root, args.depth);
-            format!("{}\n", serde_json::to_string_pretty(&snapshot)?)
+        let resolved = settings::Registry::core().resolve(&user, &overrides)?;
+        for key in &resolved.report().unknown_keys {
+            eprintln!("reswho: unknown setting {key} (not applied)");
+        }
+        if matches!(args.command, Some(Command::Settings)) {
+            let report = resolved.report();
+            if args.json {
+                format!("{}\n", serde_json::to_string_pretty(report)?)
+            } else {
+                report
+                    .settings
+                    .iter()
+                    .map(|(key, setting)| {
+                        format!(
+                            "{key} = {} (source: {}, definition: {}/{})\n",
+                            setting.value,
+                            setting.source,
+                            setting.definition.provider,
+                            setting.definition.version
+                        )
+                    })
+                    .collect()
+            }
         } else {
-            output::markdown_with_depth(&snapshot, args.depth)
+            if args.tui
+                || (!args.md
+                    && !args.json
+                    && io::stdin().is_terminal()
+                    && io::stdout().is_terminal())
+            {
+                return tui::run(
+                    Options {
+                        sample_interval: resolved.interval("sampling.interval_ms"),
+                        containers: !args.no_containers,
+                        command_pid: None,
+                    },
+                    args.from,
+                    args.depth,
+                    args.sort,
+                    resolved.interval("refresh.interval_ms"),
+                );
+            }
+            let mut snapshot = snapshot::capture(
+                &Options {
+                    sample_interval: resolved.interval("sampling.interval_ms"),
+                    containers: !args.no_containers,
+                    command_pid: args
+                        .from
+                        .strip_prefix("pid:")
+                        .and_then(|pid| pid.parse().ok()),
+                },
+                &Cancellation::default(),
+            )?;
+            snapshot.root = tree::select(&snapshot.root, &args.from)?;
+            snapshot.scope = args.from;
+            args.sort.apply(&mut snapshot.root);
+            if args.json {
+                tree::limit_depth(&mut snapshot.root, args.depth);
+                format!("{}\n", serde_json::to_string_pretty(&snapshot)?)
+            } else {
+                output::markdown_with_depth(&snapshot, args.depth)
+            }
         }
     };
     match io::stdout().lock().write_all(content.as_bytes()) {
@@ -131,6 +208,36 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn global_json_conflicts_are_checked_after_subcommand_propagation() {
+        for flag in ["--json-schema", "--md", "--tui"] {
+            for arguments in [
+                vec!["reswho", flag, "settings", "--json"],
+                vec!["reswho", flag, "--json", "settings"],
+                vec!["reswho", "--json", flag, "settings"],
+                vec!["reswho", "--json", "settings", flag],
+                vec!["reswho", "settings", flag, "--json"],
+                vec!["reswho", "settings", "--json", flag],
+            ] {
+                assert!(
+                    Args::try_parse_from(&arguments)
+                        .and_then(|args| args.validate_formats())
+                        .is_err(),
+                    "{arguments:?}"
+                );
+            }
+        }
+        for arguments in [
+            ["reswho", "settings", "--json"],
+            ["reswho", "--json", "settings"],
+        ] {
+            Args::try_parse_from(arguments)
+                .unwrap()
+                .validate_formats()
+                .unwrap();
+        }
+    }
 
     #[test]
     fn modes_conflict_and_selectors_are_validated() {

@@ -1,6 +1,9 @@
 import fcntl
 import os
 import pty
+import json
+import re
+import tempfile
 import select
 import struct
 import subprocess
@@ -10,6 +13,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+config_owner = tempfile.TemporaryDirectory(prefix="reswho-pty-")
+config_root = Path(config_owner.name)
 
 
 def verify(arguments, exit_key, marker, details=False):
@@ -32,7 +37,7 @@ def verify(arguments, exit_key, marker, details=False):
             stdin=slave,
             stdout=slave,
             stderr=slave,
-            env={**os.environ, "TERM": "xterm-256color"},
+            env={**os.environ, "TERM": "xterm-256color", "XDG_CONFIG_HOME": str(config_root)},
             start_new_session=True,
         )
         deadline = time.monotonic() + 10
@@ -115,17 +120,100 @@ def verify(arguments, exit_key, marker, details=False):
         os.close(slave)
 
 
-verify(["--sort", "name"], b"q", b"sample")
-verify(["--tui", "--sample-ms", "5000"], b"\x03", b"Loading resources...")
-verify(["--tui", "--from", "pid:4294967295"], b"q", b"Unable to load resources")
 
-fixture = subprocess.Popen(
-    ["/bin/sh", "-c", "read -r owned_fixture_input", "fixture", "--token", "fixture-private-value"],
-    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-)
+def verify_schedule(mode):
+    master, slave = pty.openpty()
+    process = None
+    fixture = None
+    before = termios.tcgetattr(slave)
+    transcript = bytearray()
+    config = config_root / f"{mode}.json"
+    config.write_text(json.dumps({"version": 1, "settings": {
+        "sampling.interval_ms": 400,
+        "refresh.interval_ms": 600 if mode == "auto" else 60000,
+    }}))
+
+    def drain(seconds):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([master], [], [], 0.05)
+            if ready:
+                transcript.extend(os.read(master, 65536))
+            assert process.poll() is None, transcript.decode(errors="replace")
+
+    try:
+        fixture = subprocess.Popen(["/bin/sh", "-c", "read -r owned_input"], stdin=subprocess.PIPE,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
+        arguments = [str(ROOT / "target/debug/reswho"), "--no-containers", "--config", str(config),
+                     "--from", f"pid:{fixture.pid}"]
+        if mode == "pause":
+            arguments.extend(["--refresh-ms", "600"])
+        process = subprocess.Popen(arguments, stdin=slave, stdout=slave, stderr=slave,
+                                   env={**os.environ, "TERM": "xterm-256color"}, start_new_session=True)
+        deadline = time.monotonic() + 10
+        while b"sample" not in transcript and time.monotonic() < deadline:
+            drain(0.1)
+        plain = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b" ", transcript)
+        match = re.search(rb"sample\s+(\d+)ms", plain)
+        assert match and int(match[1]) >= 400, f"config sampling was not applied: {plain[-1000:]!r}"
+        if mode == "pause":
+            os.write(master, b"p")
+            drain(0.2)
+            assert b"paused" in transcript
+        fixture.stdin.close()
+        fixture.wait(timeout=3)
+        if mode == "auto":
+            deadline = time.monotonic() + 4
+            while b"STALE" not in transcript and time.monotonic() < deadline:
+                drain(0.1)
+            assert b"STALE" in transcript, "configured automatic refresh did not run"
+        else:
+            drain(1.8)
+            assert b"STALE" not in transcript, "refresh ignored pause or configured wait"
+            os.write(master, b"r")
+            deadline = time.monotonic() + 4
+            while b"STALE" not in transcript and time.monotonic() < deadline:
+                drain(0.1)
+            assert b"STALE" in transcript, "manual refresh must bypass pause and wait"
+        os.write(master, b"q")
+        process.wait(timeout=3)
+        assert process.returncode == 0
+        assert termios.tcgetattr(slave) == before
+        print(f"PASS config sampling and {mode} refresh restored")
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+        if fixture is not None:
+            if fixture.poll() is None:
+                fixture.kill()
+            fixture.wait()
+            if not fixture.stdin.closed:
+                fixture.stdin.close()
+        os.close(master)
+        os.close(slave)
+        config.unlink(missing_ok=True)
+
 try:
-    verify(["--tui", "--from", f"pid:{fixture.pid}", "--sample-ms", "1000"], b"q", b"sample", details=True)
+    verify(["--sort", "name"], b"q", b"sample")
+    verify(["--tui", "--sample-ms", "5000"], b"\x03", b"Loading resources...")
+    verify(["--tui", "--from", "pid:4294967295"], b"q", b"Unable to load resources")
+
+    fixture = subprocess.Popen(
+        ["/bin/sh", "-c", "read -r owned_fixture_input", "fixture", "--token", "fixture-private-value"],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        verify(["--tui", "--from", f"pid:{fixture.pid}", "--sample-ms", "1000"], b"q", b"sample", details=True)
+    finally:
+        fixture.terminate()
+        fixture.wait()
+        fixture.stdin.close()
+    for mode in ["auto", "wait", "pause"]:
+        verify_schedule(mode)
 finally:
-    fixture.terminate()
-    fixture.wait()
-    fixture.stdin.close()
+    config_owner.cleanup()
+    assert not config_root.exists(), "owned PTY config temp was not removed"
+    print("PASS owned PTYs/children closed and config temp removed")

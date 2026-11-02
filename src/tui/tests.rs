@@ -1157,3 +1157,40 @@ fn apple_runtime_renders_and_stopped_containers_follow_active_filter() {
     assert!(app.rows.iter().any(|row| row.key == "group:live"));
     assert!(app.rows.iter().any(|row| row.key == "group:unknown"));
 }
+
+#[test]
+fn refresh_wait_pause_and_manual_requests_are_independent_of_sampling() {
+    let mut app = App::new("group:all".into(), 2);
+    let now = Instant::now();
+    let next = now + Duration::from_millis(750);
+    app.collecting = false;
+    assert!(!super::should_collect(&app, next, now));
+    assert!(!super::should_collect(
+        &app,
+        next,
+        next - Duration::from_millis(1)
+    ));
+    assert!(super::should_collect(&app, next, next));
+    app.paused = true;
+    assert!(!super::should_collect(
+        &app,
+        next,
+        next + Duration::from_secs(5)
+    ));
+    app.request_refresh();
+    assert!(super::should_collect(&app, next, now));
+    assert!(app.paused);
+    app.collecting = true;
+    assert!(!super::should_collect(
+        &app,
+        next,
+        next + Duration::from_secs(5)
+    ));
+    app.update(Err("fixture failure".into()));
+    assert!(app.paused);
+    assert!(!super::should_collect(
+        &app,
+        next,
+        next + Duration::from_secs(5)
+    ));
+}

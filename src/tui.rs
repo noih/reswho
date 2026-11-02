@@ -57,7 +57,13 @@ impl Drop for TerminalRestore {
     }
 }
 
-pub fn run(options: Options, scope: String, depth: usize, sort: Sort) -> Result<()> {
+pub fn run(
+    options: Options,
+    scope: String,
+    depth: usize,
+    sort: Sort,
+    refresh_interval: Duration,
+) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("TUI requires terminal stdin and stdout; use --md or --json");
     }
@@ -74,7 +80,7 @@ pub fn run(options: Options, scope: String, depth: usize, sort: Sort) -> Result<
             Ok(terminal)
         })
         .context("present initial frame")??;
-    let result = event_loop(&mut terminal, &worker, app, table);
+    let result = event_loop(&mut terminal, &worker, app, table, refresh_interval);
     drop(terminal);
     let restored = ratatui::try_restore().context("restore terminal");
     restore.0 = restored.is_err();
@@ -88,6 +94,7 @@ fn event_loop(
     worker: &Worker,
     mut app: App,
     mut table: TableState,
+    refresh_interval: Duration,
 ) -> Result<()> {
     let mut next_refresh = Instant::now();
     let mut dirty = false;
@@ -101,20 +108,14 @@ fn event_loop(
                     anchor.restore(&app, &mut table);
                 }
                 dirty = true;
-                next_refresh = Instant::now() + Duration::from_secs(2);
+                next_refresh = Instant::now()
+                    .checked_add(refresh_interval)
+                    .context("refresh interval cannot be safely scheduled")?;
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => bail!("resource collector stopped unexpectedly"),
         }
-        let detail_request = app
-            .details
-            .as_ref()
-            .is_some_and(|details| details.needs_query);
-        if !app.collecting
-            && (app.manual_refresh.is_some()
-                || detail_request
-                || (!app.paused && Instant::now() >= next_refresh))
-        {
+        if should_collect(&app, next_refresh, Instant::now()) {
             request_snapshot(worker, &mut app);
             dirty |= app.snapshot.is_none();
         }
@@ -148,6 +149,16 @@ fn event_loop(
             }
         }
     }
+}
+
+fn should_collect(app: &App, next_refresh: Instant, now: Instant) -> bool {
+    !app.collecting
+        && (app.manual_refresh.is_some()
+            || app
+                .details
+                .as_ref()
+                .is_some_and(|details| details.needs_query)
+            || (!app.paused && now >= next_refresh))
 }
 
 fn request_snapshot(worker: &Worker, app: &mut App) {

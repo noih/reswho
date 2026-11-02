@@ -6,6 +6,8 @@
 
 ## 已確認方向
 
+可擴充架構與共用設定的已確認設計見 [Extension 與設定契約](extensions-settings.md)；registry、設定檔與外部 extension 尚未實作。
+
 - 名稱為 `reswho`，採 TUI，產品介面可全英文。
 - 第一版平台為 macOS，使用 Rust＋Ratatui，採集層與呈現層分離。
 - 第一版唯讀，不提供停止程序、停止容器或刪除資料的操作。
