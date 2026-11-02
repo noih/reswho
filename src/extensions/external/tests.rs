@@ -1,11 +1,20 @@
 use super::*;
 use crate::model::{Snapshot, SystemSummary};
-use std::{fs, os::unix::fs::PermissionsExt};
+use std::fs;
 
 fn fixture(dir: &Path, id: &str, body: &str) -> External {
-    let executable = dir.join(format!("{id}.py"));
-    fs::write(&executable, format!("#!/usr/bin/python3\n{body}\n")).unwrap();
-    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let executable = dir.join(id);
+    let source = dir.join(format!("{id}.c"));
+    fs::write(&source, format!("#include <stdio.h>\n#include <stdlib.h>\n#include <unistd.h>\n#include <signal.h>\n#include <string.h>\n#include <assert.h>\nint main(void) {{ {body}; return 0; }}")).unwrap();
+    assert!(
+        std::process::Command::new("cc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .status()
+            .unwrap()
+            .success()
+    );
     let mut manifest: Manifest = serde_json::from_value(json!({"id":id,"version":"1.0.0","engines":{"reswho":">=0.1.0 <0.2"},"protocol_version":1,"platforms":[std::env::consts::OS],"capabilities":["collect","classify","details"],"executable":executable})).unwrap();
     manifest.validate().unwrap();
     External { manifest }
@@ -150,14 +159,14 @@ fn protocol_failures_are_isolated_and_not_retried_within_the_round() {
     let dir = tempfile::tempdir().unwrap();
     let counter = dir.path().join("calls");
     let body = format!(
-        "from pathlib import Path\nPath({:?}).open('a').write('called\\n')\nraise RuntimeError('SECRET_STDERR_SENTINEL')",
+        "FILE *f=fopen({:?}, \"a\"); fputs(\"called\\n\", f); fclose(f); fputs(\"SECRET_STDERR_SENTINEL\", stderr); return 1",
         counter.to_str().unwrap()
     );
     let bad = fixture(dir.path(), "bad", &body);
     let healthy = fixture(
         dir.path(),
         "healthy",
-        "import json,sys\nr=json.load(sys.stdin)\njson.dump({'protocol_version':1,'provider':r['provider'],'version':r['version'],'contribution':{'capability':'classify','proposals':[]}},sys.stdout)",
+        "char input[8192]; fread(input,1,sizeof(input),stdin); puts(\"{\\\"protocol_version\\\":1,\\\"provider\\\":\\\"healthy\\\",\\\"version\\\":\\\"1.0.0\\\",\\\"contribution\\\":{\\\"capability\\\":\\\"classify\\\",\\\"proposals\\\":[]}}\")",
     );
     let settings = super::super::default_settings().unwrap();
     let cancel = Cancellation::default();
@@ -197,7 +206,7 @@ fn timeout_cancellation_and_pipe_limits_reap_owned_process_groups() {
         dir.path(),
         "sleeping",
         &format!(
-            "import os,time\nfrom pathlib import Path\nPath({:?}).write_text(str(os.getpid()))\ntime.sleep(30)",
+            "FILE *f=fopen({:?}, \"w\"); fprintf(f, \"%d\", getpid()); fclose(f); sleep(30)",
             pid_file.to_str().unwrap()
         ),
     );
@@ -211,7 +220,7 @@ fn timeout_cancellation_and_pipe_limits_reap_owned_process_groups() {
     let flooding = fixture(
         dir.path(),
         "flood",
-        "import sys\nsys.stdout.write('x'*9000000)\nsys.stdout.flush()",
+        "for(int i=0;i<9000000;i++) putchar('x'); fflush(stdout)",
     );
     let context = Context::new(&settings, &cancel);
     assert!(dispatch(&flooding, &context, Request::Collect).is_err());
@@ -246,7 +255,7 @@ fn wire_validation_settings_scope_and_incompatible_versions_do_not_execute() {
     let inspected = fixture(
         dir.path(),
         "inspect",
-        "import json,sys\nr=json.load(sys.stdin)\nassert r['settings']=={}\nassert r['host']['version']=='0.1.0'\nassert 'command' not in r['processes'][0]\nassert 'environment' not in r['processes'][0]\njson.dump({'protocol_version':1,'provider':r['provider'],'version':r['version'],'contribution':{'capability':'classify','proposals':[]}},sys.stdout)",
+        "char input[8192]={0}; fread(input,1,sizeof(input)-1,stdin); assert(strstr(input,\"\\\"settings\\\":{}\")); assert(strstr(input,\"0.1.0\")); assert(!strstr(input,\"command\")); assert(!strstr(input,\"environment\")); puts(\"{\\\"protocol_version\\\":1,\\\"provider\\\":\\\"inspect\\\",\\\"version\\\":\\\"1.0.0\\\",\\\"contribution\\\":{\\\"capability\\\":\\\"classify\\\",\\\"proposals\\\":[]}}\")",
     );
     assert!(
         dispatch(
@@ -257,11 +266,11 @@ fn wire_validation_settings_scope_and_incompatible_versions_do_not_execute() {
         .is_ok()
     );
     for body in [
-        "print('not json')",
-        "import json\nprint(json.dumps({'protocol_version':2,'provider':'bad','version':'1.0.0','contribution':{'capability':'classify','proposals':[]}}))",
-        "import os,signal\nos.kill(os.getpid(),signal.SIGKILL)",
-        "import json\nprint(json.dumps({'protocol_version':1,'provider':'bad','version':'9.0.0','contribution':{'capability':'classify','proposals':[]}}))",
-        "import json\nprint(json.dumps({'protocol_version':1,'provider':'bad','version':'1.0.0','contribution':{'capability':'parsed_details','identity':{'pid':999,'started_unix_us':123},'fields':[]}}))",
+        "puts(\"not json\")",
+        "puts(\"{\\\"protocol_version\\\":2,\\\"provider\\\":\\\"bad\\\",\\\"version\\\":\\\"1.0.0\\\",\\\"contribution\\\":{\\\"capability\\\":\\\"classify\\\",\\\"proposals\\\":[]}}\")",
+        "kill(getpid(), SIGKILL)",
+        "puts(\"{\\\"protocol_version\\\":1,\\\"provider\\\":\\\"bad\\\",\\\"version\\\":\\\"9.0.0\\\",\\\"contribution\\\":{\\\"capability\\\":\\\"classify\\\",\\\"proposals\\\":[]}}\")",
+        "puts(\"{\\\"protocol_version\\\":1,\\\"provider\\\":\\\"bad\\\",\\\"version\\\":\\\"1.0.0\\\",\\\"contribution\\\":{\\\"capability\\\":\\\"parsed_details\\\",\\\"identity\\\":{\\\"pid\\\":999,\\\"started_unix_us\\\":123},\\\"fields\\\":[]}}\")",
     ] {
         let bad = fixture(dir.path(), "bad", body);
         assert!(
@@ -281,7 +290,7 @@ fn wire_validation_settings_scope_and_incompatible_versions_do_not_execute() {
         dir.path(),
         "incompatible",
         &format!(
-            "from pathlib import Path\nPath({:?}).touch()",
+            "FILE *f=fopen({:?}, \"w\"); fclose(f)",
             marker.to_str().unwrap()
         ),
     );
@@ -317,9 +326,9 @@ fn wire_validation_settings_scope_and_incompatible_versions_do_not_execute() {
 #[test]
 fn external_collect_uses_runtime_dtos_and_failure_snapshots_match_schema9() {
     let dir = tempfile::tempdir().unwrap();
-    let body = "import json,sys\nr=json.load(sys.stdin)\njson.dump({'protocol_version':1,'provider':r['provider'],'version':r['version'],'contribution':{'capability':'collect','runtime':{'name':r['provider'],'context':None,'endpoint_ref':'fixture-local','daemon_id':None,'status':'available','inventory_complete':True,'collection_ms':0,'unavailable':[]},'containers':[]}},sys.stdout)";
+    let body = "char input[8192]; fread(input,1,sizeof(input),stdin); puts(\"{\\\"protocol_version\\\":1,\\\"provider\\\":\\\"good\\\",\\\"version\\\":\\\"1.0.0\\\",\\\"contribution\\\":{\\\"capability\\\":\\\"collect\\\",\\\"runtime\\\":{\\\"name\\\":\\\"good\\\",\\\"context\\\":null,\\\"endpoint_ref\\\":\\\"fixture-local\\\",\\\"daemon_id\\\":null,\\\"status\\\":\\\"available\\\",\\\"inventory_complete\\\":true,\\\"collection_ms\\\":0,\\\"unavailable\\\":[]},\\\"containers\\\":[]}}\")";
     let good = fixture(dir.path(), "good", body);
-    let bad = fixture(dir.path(), "bad", "raise SystemExit(1)");
+    let bad = fixture(dir.path(), "bad", "return 1");
     let settings = super::super::default_settings().unwrap();
     let cancel = Cancellation::default();
     let context = Context::new(&settings, &cancel);

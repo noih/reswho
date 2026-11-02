@@ -44,6 +44,7 @@ impl Manifest {
         manifest.executable = fs::canonicalize(&manifest.executable)
             .map_err(|_| anyhow::anyhow!("extension executable not found"))?;
         manifest.validate()?;
+        manifest.validate_entrypoint()?;
         Ok(manifest)
     }
     pub fn validate(&mut self) -> Result<()> {
@@ -91,7 +92,16 @@ impl Manifest {
         check.register_extension(&self.id, self.definitions.clone(), self.uses.clone())?;
         Ok(())
     }
+    fn validate_entrypoint(&self) -> Result<()> {
+        if !self.args.is_empty() {
+            bail!("extension args are unsupported; install a native binary entry point");
+        }
+        super::native::validate(&self.executable)
+    }
     pub fn incompatibility(&self) -> Option<String> {
+        if let Err(error) = self.validate_entrypoint() {
+            return Some(error.to_string());
+        }
         if self.protocol_version != PROTOCOL_VERSION {
             return Some("unsupported protocol version".into());
         }
@@ -226,6 +236,7 @@ impl State {
     }
     pub fn install(&mut self, mut manifest: Manifest) -> Result<()> {
         manifest.validate()?;
+        manifest.validate_entrypoint()?;
         let mut check = super::settings_registry()?;
         check.restore_shared(&self.shared_definitions)?;
         for entry in &self.installed {
@@ -342,7 +353,9 @@ pub struct Listing {
 
 fn parse_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let mut bytes = Vec::new();
-    File::open(path)?.take(1_048_577).read_to_end(&mut bytes)?;
+    super::native::open_regular(path)?
+        .take(1_048_577)
+        .read_to_end(&mut bytes)?;
     if bytes.len() > 1_048_576 {
         bail!("extension metadata exceeds limit");
     }

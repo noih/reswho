@@ -56,7 +56,7 @@ It compares CLI no-stream, direct non-streaming API, and two fresh one-shot samp
 Explicit macOS PTY smoke verification requires Python 3:
 
 ```sh
-cargo build
+cargo build --bins --examples
 python3 tests/pty_smoke.py
 ```
 
@@ -95,4 +95,14 @@ Settings fixtures cover ordered atomic registration, compatible defaults, contra
 
 Extension fixtures exercise the common dispatcher with synthetic providers: concurrent collection with shared resolved sampling settings, failure and duplicate-container isolation, PID/start/path proposal validation, unchanged PID totals and classification precedence, selected command details with core redaction, JSON Schema and Markdown output, and TUI detail rendering. Offline extension CLI tests clear PATH and use a temporary config root; no runtime services are queried. Existing Docker/Apple transport fixtures remain unchanged.
 
-External extension lifecycle tests own a temporary config root and cover flock-serialized mutation, atomic invalid-update rejection, corrupt state, restart/order/tombstones, canonical retention, forward uses and npm engines eligibility. Protocol fixtures execute only task-owned Python processes through the shared bounded runner, covering each capability, declared-only settings, version/identity/JSON failures, nonzero/crash, per-round suppression and next-round retry, stdout bounds, cancellation/timeouts and PID cleanup. The installed example proves custom attribution and scalar parsed details through Schema9/Markdown/TUI; the PTY runner installs it only in its owned temporary config root and uses an owned shell for the production pipeline. Old Schema8 remains separately tested. Public settings metadata tests cover signed/fractional numbers, integer safety, homogeneous single-choice options, compatibility, invalid defaults, scalar-only values and redaction.
+External extension lifecycle tests own a temporary config root and cover flock-serialized mutation, atomic invalid-update rejection, corrupt state, restart/order/tombstones, canonical retention, forward uses and npm engines eligibility. Protocol fixtures compile and execute only task-owned native C binaries through the shared bounded runner, covering each capability, declared-only settings, version/identity/JSON failures, nonzero/crash, per-round suppression and next-round retry, stdout bounds, cancellation/timeouts and PID cleanup. The installed example proves custom attribution and scalar parsed details through Schema9/Markdown/TUI; the PTY runner installs it only in its owned temporary config root and uses an owned shell for the production pipeline. Old Schema8 remains separately tested. Public settings metadata tests cover signed/fractional numbers, integer safety, homogeneous single-choice options, compatibility, invalid defaults, scalar-only values and redaction.
+
+Phase4 external verification uses the compiled Rust example (`cargo build --example extension_example`; ordinary `cargo test` also builds examples), never a script-runtime payload. Mach-O fixtures reject scripts, malformed headers/load commands and incompatible architecture; state replacement retains explicit enablement while disabling an invalid entry point. Native supervisor fixtures kill only their owned host processes with SIGINT/SIGTERM/SIGABRT/SIGKILL, including launch and return boundaries, four concurrent providers, descendants and guard exit. They verify recorded PIDs have exited before removing isolated temp roots. Monitor initialization failure, missing executable and stdin backpressure have focused checks. Python remains repository PTY/test tooling only. No user config or runtime service is changed.
+
+Bounded supervisor latency/RSS comparison (three rounds per mode, 15-second measurement budget, no concurrent build/measurement):
+
+```sh
+cargo test --lib containers::command::tests::measure_guard_overhead -- --ignored --nocapture --test-threads=1
+```
+
+This uses the same owned compiled 100ms no-op fixture through the bounded runner, with and without supervisor. The observed parent PID establishes zero versus one extra process. Guard RSS comes from libproc, includes shared pages and is not incremental physical memory. This is a bounded startup reference, not a live runtime or load benchmark.

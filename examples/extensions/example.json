@@ -12,7 +12,7 @@
     "classify",
     "details"
   ],
-  "executable": "./example.py",
+  "executable": "../../target/debug/examples/extension_example",
   "uses": [
     {
       "key": "sampling.interval_ms",

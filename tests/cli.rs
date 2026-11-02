@@ -265,3 +265,91 @@ fn lifecycle_commands_are_offline_and_updates_preserve_state_on_failure() {
     );
     dir.close().unwrap();
 }
+
+#[test]
+fn fifo_entrypoints_and_manifests_never_block_offline_lifecycle() {
+    use std::{
+        ffi::CString,
+        fs,
+        os::unix::ffi::OsStrExt,
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.json");
+    fs::write(&config, r#"{"version":1,"settings":{}}"#).unwrap();
+    let binary = dir.path().join("provider");
+    fs::copy("/usr/bin/false", &binary).unwrap();
+    let manifest = dir.path().join("manifest.json");
+    let mut value = serde_json::json!({"id":"fifo","version":"1.0.0","engines":{"reswho":"*"},"protocol_version":1,"platforms":["macos"],"capabilities":["classify"],"executable":binary});
+    fs::write(&manifest, value.to_string()).unwrap();
+    let run = |args: &[&str]| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_reswho"))
+            .arg("--config")
+            .arg(&config)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        while child.try_wait().unwrap().is_none() && start.elapsed() < Duration::from_secs(1) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let timed_out = child.try_wait().unwrap().is_none();
+        if timed_out {
+            child.kill().unwrap();
+        }
+        let result = child.wait_with_output().unwrap();
+        assert!(!timed_out, "offline extension command blocked on FIFO");
+        result
+    };
+    assert!(
+        run(&["extensions", "install", manifest.to_str().unwrap()])
+            .status
+            .success()
+    );
+    value["id"] = "healthy".into();
+    value["executable"] = "/usr/bin/false".into();
+    fs::write(&manifest, value.to_string()).unwrap();
+    assert!(
+        run(&["extensions", "install", manifest.to_str().unwrap()])
+            .status
+            .success()
+    );
+    fs::remove_file(&binary).unwrap();
+    let name = CString::new(binary.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o700) }, 0);
+    let result = run(&["extensions", "--json"]);
+    assert!(result.status.success());
+    let list: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let entries = list.as_array().unwrap();
+    assert_eq!(
+        entries.iter().find(|entry| entry["id"] == "fifo").unwrap()["enabled"],
+        false
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .find(|entry| entry["id"] == "healthy")
+            .unwrap()["enabled"],
+        true
+    );
+    value["id"] = "fifo".into();
+    value["executable"] = binary.to_string_lossy().as_ref().into();
+    fs::write(&manifest, value.to_string()).unwrap();
+    assert!(
+        !run(&["extensions", "install", manifest.to_str().unwrap()])
+            .status
+            .success()
+    );
+    fs::remove_file(&manifest).unwrap();
+    let name = CString::new(manifest.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o700) }, 0);
+    assert!(
+        !run(&["extensions", "install", manifest.to_str().unwrap()])
+            .status
+            .success()
+    );
+    dir.close().unwrap();
+}

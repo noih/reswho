@@ -12,7 +12,11 @@ reswho extensions enable example
 reswho extensions remove example
 ```
 
-完整 manifest 範例是 [example.json](../examples/extensions/example.json)，執行程式是 [example.py](../examples/extensions/example.py)。沒有 marketplace、下載或設定編輯器。Install 只讀取 metadata 與解析 executable 路徑，不執行 provider。相對 executable 以 manifest 所在目錄解析並保存絕對路徑；args 原樣傳給 executable，不經 shell 展開。
+完整 manifest 範例是 [example.json](../examples/extensions/example.json)，原生 Rust 範例是 [extension_example.rs](../examples/extension_example.rs)。先執行 `cargo build --example extension_example`，manifest 指向本機 `target/debug/examples/extension_example`。沒有 marketplace、下載或設定編輯器。Install 只讀 metadata、驗證 binary 與解析路徑，不執行 provider。相對 executable 以 manifest 所在目錄解析並保存絕對路徑；`args` 只允許省略或空陣列，設定與輸入走 JSON stdin，不能以 interpreter＋script args 包裝入口。
+
+外部入口只支援開發者提供的 macOS native binary；沒有 script extension、內嵌或自動安裝的 Node／Python／Lua runtime。安裝 shell script 可以下載／放置 binary＋manifest，但不能作為 extension executable。安裝與每次執行前檢查可執行權限、Mach-O 64-bit executable header、host architecture（含 universal slice）、有界 load commands 與 entry point；kernel exec 仍負責完整載入驗證。Shebang、文字、截斷、錯誤架構及非 executable Mach-O 被拒絕。既有入口遺失或被替換成 script 時 effective disabled，保留 explicit enabled、版本、順序與設定。
+
+這是可信 package 的入口契約，不是編譯 binary 的語言來源辨識，也不是 OS sandbox。禁止交付 interpreter＋script payload；無法可靠判定合法 binary 內部是否嵌入 runtime 或呼叫其他程式。開發者須提供目標 macOS／architecture 的 binary，使用者只需放置／安裝。不防禦同使用者在驗證與 exec 之間惡意替換檔案；安裝者須保護 package 的寫入權限。
 
 `id` 使用小寫 ASCII、數字、`_`、`-`，不可與 builtin 重複。`version` 必須是完整 canonical SemVer。`engines.reswho` 必填，使用 [node-semver 2.2.0](https://docs.rs/node-semver/2.2.0/node_semver/) 的 npm range 語意，例如 `>=0.1.0 <0.2.0`。支援 `>`／`>=`／`<`／`<=`、exact、`^`、`~`、wildcard、hyphen range、AND、`||`；不使用 Rust VersionReq，不啟用 loose 或隱含 prerelease。`^0.2.0` 不包含0.3.0；`^0.0.3` 不包含0.0.4。npm engines 通常是 advisory，reswho 則強制跳過不相容來源。
 
@@ -34,7 +38,7 @@ Manifest [Schema](../schemas/reswho-extension-manifest-1.schema.json) 與 `defin
 
 ## 一次呼叫
 
-以 executable＋args 啟動一次程序；stdin 是單一 JSON，寫完關閉。stdout 必須是單一 JSON response，不可混入 log；stderr 有界收取但不回顯。非零退出、crash、stderr diagnostics、timeout、過大輸出或錯誤 JSON／版本／身分只使該來源失敗。
+以原生 executable 啟動一次程序；stdin 是單一 JSON，寫完關閉。stdout 必須是單一 JSON response，不可混入 log；stderr 有界收取但不回顯。非零退出、crash、stderr diagnostics、timeout、過大輸出或錯誤 JSON／版本／身分只使該來源失敗。
 
 Request 範例：
 
@@ -65,7 +69,13 @@ Response 共通 envelope：
 
 provider／version／protocol 必須與登記及 request 相符。能力不得錯置。每輪最多4個 provider 同時執行，按登記序採納結果；所有外部能力及 runtime collection 共用 host 採樣後的10秒 deadline，逾時結果拒絕。來源本輪一旦失敗，不再呼叫其剩餘能力；下一輪可重試，不保存失敗歷史。取消／逾時會終止自有 process group、wait child 並關閉有界 pipe。
 
-Bounds：metadata／state 各1MiB、最多128個安裝序號（含 tombstone）、每個 manifest 最多256 definitions＋uses、64 args；request／stdout／stderr 各8MiB；每批最多16384 processes／proposals，collect 最多4096 containers，details 最多64 fields。核心不把裁切的資料假裝完整；超限拒絕該來源。
+Bounds：metadata／state 各1MiB、最多128個安裝序號（含 tombstone）、每個 manifest 最多256 definitions＋uses、空 args；request／stdout／stderr 各8MiB；每批最多16384 processes／proposals，collect 最多4096 containers，details 最多64 fields。核心不把裁切的資料假裝完整；超限拒絕該來源。
+
+每次外部呼叫增加一個內建原生 supervisor，沒有外部呼叫時不建立 supervisor；最多4個並行。Supervisor 在 fork provider 前關閉所有非必要 descriptors（含 host 與 sibling lifeline writer），只保留 stdin／stdout／stderr 與專用 FD3 reader，再以 pipe gate 先建立 provider process group、註冊 kqueue，最後允許 exec。kqueue 等待 host lifeline EOF 或 provider NOTE_EXIT，沒有忙輪詢或全域程序掃描；不再有 provider 先退出才登記 monitor 的空窗。初始化失敗時不允許 provider exec，回收後以125退出。
+
+Host 正常退出、Ctrl-C／SIGTERM、crash／SIGKILL 或取消／deadline 關閉 lifeline 時，supervisor 終止自有 group、wait provider 並退出。Provider 正常／非零退出時也清理同群子孫；清理 group 前不 reap provider，保留 PID／PGID 身分與原始 exit code／signal。Host wait supervisor。Supervisor 提前關閉 Rust spawn 的 exec-error pipe，因此 spawn 成功只表示已建立 supervisor；provider exec 失敗以有界輸出的失敗 status 回報，不依賴原 error pipe。FD3 在 stdio 完成重導後才配置，provider 在 gate 後關閉它。
+
+Extension 契約禁止 daemonize、setsid／setpgid 逃逸與持久 helper；保證涵蓋正常／合作 extension 及仍在管理 group 的所有子孫。刻意逃逸、外部惡意直接殺 guard、OS-wide failure 或不可中斷 kernel wait 不在保證內；這不是任意 native code containment 或 OS sandbox。
 
 ## Classify：作者自有證據
 
@@ -102,6 +112,7 @@ Contribution 為 `{"capability":"collect","runtime":{...},"containers":[...]}`�
 ## 隔離範例
 
 ```sh
+cargo build --example extension_example
 task_dir=$(mktemp -d)
 printf '%s\n' '{"version":1,"settings":{"sampling.interval_ms":400}}' > "$task_dir/config.json"
 touch "$task_dir/.reswho-example"

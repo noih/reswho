@@ -159,3 +159,35 @@ fn incompatible_installs_do_not_inject_definitions_and_disabled_updates_stay_dis
     assert!(!State::load(&path).unwrap().installed[0].enabled);
     dir.close().unwrap();
 }
+
+#[test]
+fn native_packaging_rejects_script_args_and_disables_replaced_binary() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("provider");
+    fs::copy(std::env::current_exe().unwrap(), &binary).unwrap();
+    let mut value = manifest("native");
+    value.executable = binary.clone();
+    let mut state = State::default();
+    state.install(value.clone()).unwrap();
+    value.args = vec!["payload.py".into()];
+    assert!(state.install(value).is_err());
+    fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let settings = state
+        .registry()
+        .unwrap()
+        .resolve(&crate::settings::Config::default(), &BTreeMap::new())
+        .unwrap();
+    let list = state.list(&settings, true);
+    let entry = list
+        .iter()
+        .find(|entry| entry.descriptor.id == "native")
+        .unwrap();
+    assert!(!entry.descriptor.enabled);
+    assert!(entry.explicit_enabled);
+    assert!(!entry.compatible);
+    assert!(super::super::external::installed(&state, &settings).is_empty());
+    assert!(state.install(state.installed[0].manifest.clone()).is_err());
+    dir.close().unwrap();
+}

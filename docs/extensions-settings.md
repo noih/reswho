@@ -2,7 +2,7 @@
 
 Tenqo：rw-27。
 
-狀態：階段1／2已驗收。階段3的本機 executable 安裝、state／版本相容性、batch JSON transport、custom evidence／parsed details、public scalar settings metadata 與 reswho/9 已實作並完成開發驗證，待獨立 review。Drop-in 目錄掃描不在本次範圍。
+狀態：階段1／2／3已驗收。階段4的 rw-34 native-binary-only 與 rw-33 host-death lifecycle protection 已完成開發驗證，待獨立 review。rw-31 discovery／in-app diagnostics 與 rw-32 profiling 留待下一階段。
 
 ## Extension 邊界
 
@@ -77,7 +77,7 @@ Refresh 與 sampling 是不同用途。保持目前同時最多一輪採集、�
 
 每階段由開發 owner 執行針對性測試，整合後依 TESTING.md 完成 fmt／Clippy／一般 Rust 測試；CLI／排程改動補受影響的 PTY 範圍。每階段一次獨立 review，修復只重驗受影響範圍。一般測試不得啟動真實容器服務，外部協定使用自有假程序／fixture；既有 native container probes 的未改動證據可沿用。
 
-目前：階段3功能與 scoped 驗證完成，提交 coherent 本地 commit 後停在獨立 review 邊界。使用明確 manifest install 與既有 config root；未實作自動 drop-in discovery、marketplace、設定 editor 或 multiselect。target 保留開發 cache；測試僅用 isolated state/config，沒有修改真正使用者設定或啟動服務。
+目前：階段4由單一開發 owner 實作，不派子代理、不寫 Tenqo，本地提交後停在 leader 指派的獨立 review 邊界。使用明確 manifest install 與既有 config root；未實作自動 drop-in discovery、marketplace、設定 editor 或 multiselect。target 保留開發 cache；測試僅用 isolated state/config，沒有修改真正使用者設定或啟動服務。
 
 ## 階段1可用介面
 
@@ -169,3 +169,19 @@ Metadata 收尾：public adapter／manifest Schema／example 統一使用 type/o
 Context::finish 集中所有 post-dispatch capability 驗證失敗的本輪 bookkeeping：shared command details 的身分／資料、parsed fields、classification evidence、collect duplicate identity／aggregate overflow。Aggregate 另保留原 provider id，不用 runtime display name 代替。Metadata 不可得時的 fallback label 不加入其他合法 provider 的 failure key；同輪後續能力跳過、fresh context 可重試、健康 sibling 保留。
 
 Regression 先重現正常退出的 descendant 存活與 shared details 拒絕後仍執行其他能力。修復後 fmt／Clippy、4個 runner lifecycle tests、21個 extension tests、8個 command sanitizer tests、2個 TUI detail tests 與6個 JSON contract tests 通過；其中 scope 包含 normal／nonzero descendant、timeout／cancel、各 capability validation rejection、fresh-round retry、metadata fallback id collision 與健康 sibling。測試自有 descendants 確認消失，先前失敗 regression 的 owned PID 也確認不存在；子程序／scoped threads／temp 已釋放，target 約6.7GiB保留。未改 terminal routing，依裁定沿用 full suite／PTY／native 的未受影響證據，沒有重跑或新功能工作。
+
+## 階段4 Current（2026-11-03）
+
+rw-34：外部入口改為 host-compatible Mach-O native binary，安裝與執行前驗證；不支援 script／interpreter payload，不安裝或嵌入 runtime。Manifest args 僅允許空；合法 binary 內部的語言來源不做推測。既有 state 中失效／script 入口 effective disabled，保留明確 enabled、順序及 canonical settings。範例改為小型 Rust executable；protocol fixtures 改用編譯的 C binary。Python 僅保留 repository test tooling。完整 packaging boundary 見 extension-protocol.md。
+
+rw-33：內建 C supervisor 在 pre-exec 路徑使用原生 syscall，不使用 Rust allocator／locks、shell 或 daemon。先關閉非必要 FDs（含所有繼承的 lifeline writer），fork 後以 gate 建立 group 並註冊 monitor，再允許 exec。kqueue 等待 host lifeline EOF／provider exit；殺同群子孫後 reap provider，host wait supervisor。原型曾測出極短 provider 先退出的競態，已以 gate 修正。沒有外部呼叫時零 guard；最多4個 active guards。Supervisor 提早關閉 spawn error pipe，exec failure 轉為失敗 exit status；monitor 初始化失敗不允許執行。Leader 已核准空 args 與合作 group 邊界：禁止 daemonize／setsid／setpgid 逃逸／persistent helpers；不宣稱能隔離惡意 native code、外部直接殺 guard 或 OS-wide failure。
+
+Focused 證據：23個 extension tests、7個 command tests 通過，包括原生範例分類／詳情／Schema9、格式拒絕、state replacement、正常／非零退出、取消／deadline、四個並行 provider／descendants／guards，以及 host launch SIGKILL、running SIGINT／SIGTERM／SIGABRT／SIGKILL、return SIGKILL。每輪確認記錄的自有 PID 消失，temp roots 顯式 close。launch 測試在首個 provider 記錄 PID 後終止 host，覆蓋其他並行 launch，不宣稱逐一注入每個 syscall 邊界。補充 fault-injected kqueue 初始化失敗、missing exec 與8MiB stdin backpressure 測試通過；return fixture 另確認 completed marker，PID marker 原子發布，修正後 targeted lifecycle test 通過。
+
+最終成本：同一有界 runner＋100ms native no-op，每模式3輪、總1.18秒。無 guard 456.337／128.369／121.372ms；有 guard 141.840／141.911／142.537ms。首輪冷啟動偏差明顯，兩組中位數約相差14ms；僅3輪，不外推實際負載。Parent PID assertion 證明無 guard 模式0個新增 supervisor、guard 模式1個；三輪 guard RSS 均1,343,488 bytes（約1.28MiB，含共享頁，不等於新增實體記憶體）。沒有跑 live runtime 或 stress campaign。
+
+整合 gate：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test` 通過（145 library＋2 parser＋8 CLI＋6 JSON；3個 measurement／4個 live tests 維持 ignored）。`cargo build --bins --examples`、`python3 tests/pty_smoke.py` 全部通過，含安裝原生 example 的 CLI JSON／TUI details、q／Ctrl-C terminal restoration、sampling／auto／wait／pause。原有 transport／schema／settings 未改部分沿用19e229c證據。最後僅加強 lifecycle fixture 的 return assertion／原子 marker，重驗該測試及 fmt，未重跑 blanket gate。
+
+Disposable Rust tempfile roots（native source／binary、isolated state/config、PID markers）均顯式 close；PTY runner 回報 children／descriptors 關閉與 config temp 移除。/tmp/reswho-convert-phase4.py、/tmp/reswho-phase4-guard-debug 已移除並確認不存在；早期失敗原型記錄的 PID 50015／51193／51472／51473／51474 及 PTY fixture PID 55176／55252 均確認 ESRCH，未清理其他程序。target 約6.9GiB，開發 owner 刻意保留給同專案下一階段，下一階段邊界再檢視。無 runtime／service 安裝、無真正 user config mutation、無 push／Tenqo writes。已完成本地 coherent 提交準備，獨立 reviewer 由 leader 指派。
+
+階段4 review P2 修復：native validator 與直接共用 manifest/state reader 改為 O_NONBLOCK 開檔，再以該 FD 的 metadata 拒絕非 regular file，保留既有 symlink 語意。真實 CLI FIFO regression 先重現1秒超時；修復後 install FIFO executable／FIFO manifest 均立即拒絕，已安裝 binary 被換成 FIFO 時 list effective-disabled 且健康項目保留。23個 extension tests、9個 CLI tests、fmt／Clippy 通過；依裁決不重跑 full suite／PTY／lifecycle。Regression 的 CLI child 在超時失敗時也 kill＋wait，temp roots 均回收。
