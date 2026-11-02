@@ -56,6 +56,16 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
     assert!(process["resident_bytes"].as_u64().unwrap() > 0);
     assert!(process["cpu_percent"].as_f64().unwrap() >= 0.0);
     assert!(process["started_unix_us"].as_u64().unwrap() > 0);
+    assert_eq!(
+        process["command"]["argv"],
+        serde_json::json!(["/bin/sleep", "60"])
+    );
+    assert!(
+        process["command"]["unavailable"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(process["network"]["complete"], true);
     assert!(process["network"]["sockets"].as_array().unwrap().is_empty());
     assert_eq!(snapshot["root"]["totals"]["processes"], 1);
@@ -80,6 +90,13 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
         })
         .expect("fixture project is classified");
     let group_ref = group["reference"].as_str().unwrap();
+    let member = group["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["reference"] == reference)
+        .unwrap();
+    assert!(member["process"]["command"].is_null());
     let md = Command::new(env!("CARGO_BIN_EXE_reswho"))
         .arg("--no-containers")
         .args(["--from", group_ref, "--depth", "0"])
@@ -143,6 +160,129 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
     assert_eq!(group["totals"]["processes"], 1);
     let path = directory.path().to_path_buf();
     drop(child);
+    directory.close().unwrap();
+    assert!(!path.exists());
+}
+
+#[test]
+#[ignore = "macOS command inspection; owns one shell blocked on its stdin pipe"]
+fn live_command_redacts_arguments_and_never_outputs_environment() {
+    let child = OwnedProcess(
+        Command::new("/bin/sh")
+            .args([
+                "-c",
+                "read -r owned_fixture_input",
+                "fixture",
+                "--token",
+                "fixture-token-782",
+                "--password=fixture-password-782",
+                "https://user:fixture-url-782@example.test/",
+                "",
+            ])
+            .env("RESWHO_FIXTURE_SECRET", "fixture-environment-782")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let reference = format!("pid:{}", child.0.id());
+    for mode in ["--json", "--md"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_reswho"))
+            .args([
+                mode,
+                "--no-containers",
+                "--from",
+                &reference,
+                "--depth",
+                "0",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        for hidden in [
+            "fixture-token-782",
+            "fixture-password-782",
+            "fixture-url-782",
+            "fixture-environment-782",
+            "RESWHO_FIXTURE_SECRET",
+            "read -r owned_fixture_input",
+        ] {
+            assert!(!text.contains(hidden), "exposed {hidden}");
+        }
+        if mode == "--json" {
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let command = &value["root"]["process"]["command"];
+            assert_eq!(
+                command["argv"],
+                serde_json::json!([
+                    "/bin/sh",
+                    "-c",
+                    "[filtered]",
+                    "fixture",
+                    "--token",
+                    "[filtered]",
+                    "--password=[filtered]",
+                    "[filtered]",
+                    ""
+                ])
+            );
+            assert_eq!(command["redacted_indices"], serde_json::json!([2, 5, 6, 7]));
+            assert!(command["entrypoint"].is_null());
+            let schema: serde_json::Value =
+                serde_json::from_str(reswho::output::JSON_SCHEMA).unwrap();
+            jsonschema::validator_for(&schema)
+                .unwrap()
+                .validate(&value)
+                .unwrap();
+        } else {
+            assert!(text.contains("cmd:"));
+            assert!(text.contains("[filtered]"));
+        }
+    }
+    drop(child);
+}
+
+#[test]
+#[ignore = "macOS script entrypoint inspection; owns one temporary script and shell"]
+fn live_script_entrypoint_preserves_literal_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let script = directory.path().join("worker job.sh");
+    std::fs::write(&script, "read -r owned_fixture_input\n").unwrap();
+    let child = OwnedProcess(
+        Command::new("/bin/sh")
+            .arg(&script)
+            .current_dir(directory.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_reswho"))
+        .args([
+            "--json",
+            "--no-containers",
+            "--from",
+            &format!("pid:{}", child.0.id()),
+            "--depth",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let command = &value["root"]["process"]["command"];
+    assert_eq!(command["entrypoint"], script.to_str().unwrap());
+    assert_eq!(command["argv"][1], script.to_str().unwrap());
+    assert!(command["redacted_indices"].as_array().unwrap().is_empty());
+    drop(child);
+    let path = directory.path().to_path_buf();
     directory.close().unwrap();
     assert!(!path.exists());
 }

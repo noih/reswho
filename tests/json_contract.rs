@@ -24,6 +24,34 @@ fn validate(value: &Value) {
     assert!(errors.is_empty(), "{}", errors.join("\n"));
 }
 
+#[test]
+fn command_extension_preserves_argument_boundaries_and_validates_types() {
+    let root = tree::build(vec![process(71, Path::new("/"))]).unwrap();
+    let selected = tree::select(&root, "pid:71").unwrap();
+    let mut value = serde_json::to_value(snapshot(selected)).unwrap();
+    value["root"]["process"]["command"] = json!({
+        "argv": ["python3", "worker job.py", "--token", "[filtered]"],
+        "redacted_indices": [3],
+        "entrypoint": "worker job.py",
+        "unavailable": []
+    });
+    validate(&value);
+    value["root"]["process"]["command"]["argv"] = json!("not an argument array");
+    assert!(!validator().is_valid(&value));
+    value["root"]["process"]["command"] = json!({
+        "argv": null, "entrypoint": null, "redacted_indices": [],
+        "unavailable": [Diagnostic::new("permission_denied", "command.read", "denied")]
+    });
+    validate(&value);
+    value["root"]["process"]["command"]["unavailable"] = json!([]);
+    assert!(!validator().is_valid(&value));
+    value["root"]["process"]
+        .as_object_mut()
+        .unwrap()
+        .remove("command");
+    validate(&value);
+}
+
 fn snapshot(root: Node) -> Snapshot {
     Snapshot {
         schema: JSON_SCHEMA_VERSION,

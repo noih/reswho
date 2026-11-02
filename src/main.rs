@@ -87,6 +87,7 @@ fn run() -> Result<()> {
                 Options {
                     sample_interval: Duration::from_millis(args.sample_ms),
                     containers: !args.no_containers,
+                    command_pid: None,
                 },
                 args.from,
                 args.depth,
@@ -97,6 +98,10 @@ fn run() -> Result<()> {
             &Options {
                 sample_interval: Duration::from_millis(args.sample_ms),
                 containers: !args.no_containers,
+                command_pid: args
+                    .from
+                    .strip_prefix("pid:")
+                    .and_then(|pid| pid.parse().ok()),
             },
             &Cancellation::default(),
         )?;

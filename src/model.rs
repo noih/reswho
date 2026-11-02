@@ -18,6 +18,7 @@ pub struct Process {
     pub name: String,
     pub executable: Option<PathBuf>,
     pub cwd: Option<PathBuf>,
+    pub command: Option<ProcessCommand>,
     pub cpu_percent: Option<f64>,
     pub resident_bytes: Option<u64>,
     pub network: Option<Network>,
@@ -37,6 +38,14 @@ impl Process {
             && self.network.is_none()
             && (self.name.is_empty() || self.name == format!("process {}", self.pid))
     }
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ProcessCommand {
+    pub argv: Option<Vec<String>>,
+    pub redacted_indices: Vec<usize>,
+    pub entrypoint: Option<String>,
+    pub unavailable: Vec<Diagnostic>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

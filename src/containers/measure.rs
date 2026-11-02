@@ -164,6 +164,7 @@ fn measure_full_snapshot() {
             &crate::snapshot::Options {
                 sample_interval: Duration::from_millis(250),
                 containers: true,
+                command_pid: None,
             },
             &Cancellation::default(),
         )

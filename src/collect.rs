@@ -3,6 +3,8 @@ use anyhow::{Context, Result, bail};
 use std::{collections::HashMap, time::Duration};
 
 #[cfg(target_os = "macos")]
+mod command;
+#[cfg(target_os = "macos")]
 mod network;
 
 pub struct Collection {
@@ -13,7 +15,7 @@ pub struct Collection {
 }
 
 pub(crate) const COLLECTION_NOTES: [&str; 3] = [
-    "Collection prototype: command arguments, container-internal processes and review heuristics are not implemented.",
+    "Command details are queried only for a selected PID in Markdown/JSON; container-internal processes are not implemented.",
     "TCP/UDP sockets are a non-atomic snapshot, not traffic or inactivity history; sockets may change during collection.",
     "Process memory is RSS; shared pages may overlap between processes. Group totals are sums of known RSS, not unique physical memory.",
 ];
@@ -24,21 +26,22 @@ pub fn cpu_percent(previous: u64, current: u64, elapsed_ticks: u64) -> Option<f6
 }
 
 pub fn collect(interval: Duration) -> Result<Collection> {
-    collect_with_cancel(interval, &crate::snapshot::Cancellation::default())
+    collect_with_cancel(interval, &crate::snapshot::Cancellation::default(), None)
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn collect_with_cancel(
     interval: Duration,
     cancel: &crate::snapshot::Cancellation,
+    command_pid: Option<u32>,
 ) -> Result<Collection> {
     use std::time::Instant;
     let initial_cpu = macos::host_cpu_ticks();
-    let first = macos::scan(false, cancel)?;
+    let first = macos::scan(false, cancel, None)?;
     let start = Instant::now();
     cancel.wait(interval)?;
     let final_cpu = macos::host_cpu_ticks();
-    let mut second = macos::scan(true, cancel)?;
+    let mut second = macos::scan(true, cancel, command_pid)?;
     let sample_ms = start.elapsed().as_millis() as u64;
     for (pid, observation) in &mut second {
         observation.process.cpu_percent = first.get(pid).and_then(|old| {
@@ -123,6 +126,7 @@ fn host_cpu_percent(before: [u32; 4], after: [u32; 4]) -> Option<f64> {
 pub(crate) fn collect_with_cancel(
     _interval: Duration,
     _cancel: &crate::snapshot::Cancellation,
+    _command_pid: Option<u32>,
 ) -> Result<Collection> {
     bail!("resource collection currently supports macOS only")
 }
@@ -223,6 +227,7 @@ mod macos {
     pub(super) fn scan(
         details: bool,
         cancel: &crate::snapshot::Cancellation,
+        command_pid: Option<u32>,
     ) -> Result<HashMap<u32, Observation>> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -293,12 +298,38 @@ mod macos {
                     Err(error) => process.unavailable.push(Diagnostic::io("cwd", &error)),
                 }
             }
+            if command_pid == Some(pid as u32) {
+                process.command = Some(if let Ok(identity) = &initial {
+                    const PROC_FLAG_LP64: u32 = 0x10;
+                    let pointer_width = if identity.pbi_flags & PROC_FLAG_LP64 != 0 {
+                        8
+                    } else {
+                        4
+                    };
+                    command::collect(pid, process.executable.as_deref(), pointer_width)
+                } else {
+                    command::unavailable(Diagnostic::new(
+                        "unavailable",
+                        "command",
+                        "command: process identity unavailable",
+                    ))
+                });
+            }
             let final_identity = bsd_info(pid);
             let consistent = initial
                 .as_ref()
                 .ok()
                 .zip(final_identity.as_ref().ok())
                 .is_some_and(|(before, after)| started(before) == started(after));
+            let command_consistent = command_pid != Some(pid as u32)
+                || (consistent
+                    && initial
+                        .as_ref()
+                        .ok()
+                        .zip(final_identity.as_ref().ok())
+                        .is_some_and(|(before, after)| before.pbi_uid == after.pbi_uid)
+                    && process.executable.is_some()
+                    && executable(pid).ok() == process.executable);
             if !consistent {
                 process = Process {
                     pid: pid as u32,
@@ -316,6 +347,7 @@ mod macos {
                 };
                 cpu_ticks = None;
             }
+            command::discard_if_changed(&mut process, command_pid, command_consistent);
             observations.insert(
                 pid as u32,
                 Observation {

@@ -38,12 +38,14 @@ impl Cancellation {
 pub struct Options {
     pub sample_interval: Duration,
     pub containers: bool,
+    pub command_pid: Option<u32>,
 }
 
 pub fn capture(options: &Options, cancel: &Cancellation) -> Result<Snapshot> {
     let start = Instant::now();
     cancel.check()?;
-    let mut collection = collect::collect_with_cancel(options.sample_interval, cancel)?;
+    let mut collection =
+        collect::collect_with_cancel(options.sample_interval, cancel, options.command_pid)?;
     cancel.check()?;
     let mut root = tree::build(collection.processes)?;
     if options.containers {

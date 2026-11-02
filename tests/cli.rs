@@ -9,7 +9,7 @@ fn help_is_available_without_resource_collection() {
     assert!(result.status.success());
     assert!(result.stderr.is_empty());
     let text = String::from_utf8(result.stdout).unwrap();
-    assert!(text.contains("reswho-md/17"));
+    assert!(text.contains("reswho-md/18"));
     assert!(text.contains("root=0"));
     assert!(text.contains("Group ⏱︎ is the longest known member uptime"));
     assert!(text.contains("ΣN is the total host process count"));

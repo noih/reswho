@@ -65,3 +65,11 @@ This creates owned PTYs and reswho processes with `--no-containers`. It checks a
 JSON contract tests use the dev-only `jsonschema` validator with remote resolution disabled. They validate `schemas/reswho-8.schema.json` against synthetic examples and serialized trees, reject invalid types/node variants, and check the offline `--json-schema` CLI. Classification fixtures own temporary marker directories and remove them after use; no real containers are queried. The explicit process live test also validates the emitted JSON.
 
 Shared sorting tests cover own process metrics versus descendant totals, unknown and inactive values, container scope, natural name order, unchanged references/totals, and Markdown/JSON ordering. CLI argument tests cover every sort mode; the PTY smoke test checks `--sort name` sets the initial TUI order while automatic TTY detection still applies.
+
+PID command tests cover bounded KERN_PROCARGS2 decoding, argc-only parsing (no environment output), 32/64-bit alignment and leading empty argv[0], empty arguments, malformed/oversized data, conservative redaction, launch targets and identity invalidation. JSON contract tests validate the optional reswho/8 command extension; Markdown checks keep commands out of summaries and preserve argument boundaries in selected-PID details.
+
+The existing process live test also checks selected command collection and its absence in group queries. `live_command_redacts_arguments_and_never_outputs_environment` creates one owned shell blocked in the builtin `read` on a piped stdin. Only synthetic secrets are passed, and JSON/Markdown must not expose them or the environment sentinel. The shell is killed and reaped by the fixture guard on both success and assertion failure; no child service is created. `live_script_entrypoint_preserves_literal_path` owns a temporary script with a spaced filename and a shell blocked on stdin; it verifies the literal launch path and removes the script directory after reaping the shell. Run the affected live tests explicitly:
+
+```sh
+cargo test --test live -- --ignored --test-threads=1 --skip live_tcp_udp_ipv4_ipv6_endpoints_and_duplicate_descriptors
+```

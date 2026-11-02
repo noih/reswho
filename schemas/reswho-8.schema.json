@@ -483,6 +483,16 @@
           "items": {
             "$ref": "#/$defs/diagnostic"
           }
+        },
+        "command": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/process_command"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -1328,6 +1338,84 @@
               }
             }
           ]
+        }
+      ]
+    },
+    "process_command": {
+      "type": "object",
+      "properties": {
+        "argv": {
+          "anyOf": [
+            {
+              "type": "array",
+              "maxItems": 4096,
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entrypoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "redacted_indices": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4095
+          }
+        },
+        "unavailable": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        }
+      },
+      "required": [
+        "argv",
+        "entrypoint",
+        "redacted_indices",
+        "unavailable"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "argv": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "entrypoint": {
+                "type": "null"
+              },
+              "redacted_indices": {
+                "maxItems": 0
+              },
+              "unavailable": {
+                "minItems": 1
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "unavailable": {
+                "maxItems": 0
+              }
+            }
+          }
         }
       ]
     }

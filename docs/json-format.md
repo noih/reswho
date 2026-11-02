@@ -24,6 +24,27 @@ reswho --json-schema > reswho.schema.json
 - `name`、`evidence`、診斷 `message` 是展示文字，可以改措辭，不作解析或分支條件。兄弟節點、診斷與 evidence 的順序不是契約，不得用陣列索引當識別碼。
 - Markdown／TUI 排版變更不改 JSON。程式處理請使用欄位，不解析 `Σ`、時間符號或文字單位。
 
+## 指定 PID 的命令資訊
+
+`--json --from pid:N` 只查詢選取程序的命令，子程序、一般群組查詢與 TUI 不查詢。新增的 `process.command` 是 `/8` 相容擴充；新版輸出此欄，舊版輸出可缺省。`null` 表示未要求查詢；物件存在但 `argv: null` 表示已要求、但無法取得，原因在該物件的 `unavailable`。
+
+| 欄位 | 意義 |
+| --- | --- |
+| `argv` | 保留順序與空字串的參數陣列，包含 argv[0]；值可能已遮罩。不是可直接執行的 shell 字串 |
+| `redacted_indices` | 被全部或部分遮罩的 argv 索引（從 0 起算），不依 `[filtered]` 字面值判斷 |
+| `entrypoint` | 明確啟動形式中的 script／JAR 參數，否則 null。它不是實際開啟檔案或專案歸屬的證明 |
+| `unavailable` | 命令採集的 Diagnostic 陣列；成功為空 |
+
+例如 `python3 worker.py --token VALUE` 會保留參數位置、將 VALUE 替換為 `[filtered]`。敏感選項值、assignment 的值、URL、header、控制字元與常見 inline-code 形式會遮罩。短選項無法跨所有工具統一解讀，採保守遮罩，可能隱藏非敏感值。這是已知形式的遮罩，不是完整秘密偵測；未識別的自訂位置參數仍可能含敏感資料。沒有輸出未遮罩命令的選項。
+
+敏感名稱涵蓋 token、pwd、password/passwd、passphrase/passkey、auth/authorization、secret、credential、api-key/access-key/private-key、cookie、header、session、bearer，以及 key/pass/user/env。長參數名稱忽略大小寫及分隔符，涵蓋 `--api-key`／`--api_key`／`--apiKey`、`--db-pwd` 等變體；`--name VALUE` 與 `--name=VALUE` 都會遮罩值。所有 assignment 的值仍採保守遮罩，即使名稱不在清單中。參數名稱保留，例如 `-token VALUE` → `-token [filtered]`、`-password=VALUE` → `-password=[filtered]`、`-pVALUE` → `-p[filtered]`；不刪除參數或改變其順序。
+
+入口只處理 node/nodejs、Python（含數字版本）、Ruby、Perl、sh/bash/zsh 的直接 script，以及 `java -jar FILE`。Python 可略過已知無值啟動選項；未知選項、module/eval、wrapper 與複雜啟動形式不猜入口。相對參數保留原樣：目前 cwd 不一定是啟動時 cwd，因此不拼接絕對路徑，也不改變分類。
+
+原生介面為 macOS `KERN_PROCARGS2`。只解析 argc 指定的參數，尾端可能帶有的環境資料不解析、不保存、不輸出。限制為 1 MiB buffer 加 argc header、4096 個參數、每參數 16 KiB；超限、buffer 填滿而完整性不明、非 UTF-8 或截斷會整份回報 unavailable。依目標程序位元寬度計算 executable 後的 padding，只跨過規定的對齊空間，因此保留前導空 argv，而不是跳過所有 NUL。對齊區若非全零會回報 invalid_data。採集前後核對啟動身分、UID 與 executable，失敗丟棄命令；程序仍可自行修改 argv，觀測不是原子快照，也不是可信啟動紀錄。
+
+介面依據：[Apple XNU sysctl 實作](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sysctl.c)、[exec 參數對齊](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_exec.c)。
+
 ## 共通值
 
 所有下列物件欄位均會輸出；可缺值的欄位使用 `null`，不省略 key。空陣列使用 `[]`，不是 null。

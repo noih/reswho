@@ -8,7 +8,7 @@ mod markdown_tests;
 
 pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-8.schema.json");
 
-pub const FORMAT_HELP: &str = "reswho-md/17 (collection prototype)\n\n\
+pub const FORMAT_HELP: &str = "reswho-md/18 (collection prototype)\n\n\
 | Row | Fields, in order |\n\
 | --- | --- |\n\
 | Process | name pid:REF · CPU/core  RSS  uptime  ports |\n\
@@ -57,6 +57,9 @@ Sockets count unique observed TCP/UDP sockets per process, not descriptors; no c
 Socket snapshots are non-atomic; no traffic, Unix sockets or inactivity history is reported.\n\
 Nested groups represent attribution; nested processes represent observed parenthood.\n\
 Process rows are summaries; --from pid:N shows details for the selected PID only.\n\
+cmd preserves argument order; quotes delimit empty/whitespace arguments, not a runnable shell command.\n\
+[filtered] replaces detected sensitive values, assignments, URLs and inline code; other positional values may still be sensitive.\n\
+entry is a supported script/JAR launch argument, not verified ownership; relative paths are not resolved against current cwd.\n\
 Unreadable rows combine processes with no readable details; they cannot be expanded.\n\
 JSON retains individual processes and diagnostics, including unreadable entries.\n\
 PPID is preserved even when a parent belongs to a different group.\n\
@@ -136,7 +139,7 @@ fn render_markdown(snapshot: &Snapshot) -> String {
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "# reswho\n\nFormat: reswho-md/17 · help: reswho --help-format  "
+        "# reswho\n\nFormat: reswho-md/18 · help: reswho --help-format  "
     );
     let _ = writeln!(
         text,
@@ -341,6 +344,39 @@ fn process_details(process: &Process) -> Vec<String> {
         if let Some(path) = path {
             notes.push(format!("{label}: {}", code(&path.to_string_lossy())));
         }
+    }
+    if let Some(command) = &process.command {
+        if let Some(argv) = &command.argv {
+            let rendered = argv
+                .iter()
+                .map(|arg| {
+                    if arg.is_empty()
+                        || arg
+                            .chars()
+                            .any(|c| c.is_whitespace() || matches!(c, '"' | '\\'))
+                    {
+                        serde_json::to_string(arg).expect("string serialization")
+                    } else {
+                        arg.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            notes.push(if argv.is_empty() {
+                "cmd: []".into()
+            } else {
+                format!("cmd: {}", code(&rendered))
+            });
+        }
+        if let Some(entrypoint) = &command.entrypoint {
+            notes.push(format!("entry: {}", code(entrypoint)));
+        }
+        notes.extend(
+            command
+                .unavailable
+                .iter()
+                .map(|reason| format!("! {}", escaped(reason.as_str()))),
+        );
     }
     if let Some(network) = &process.network {
         let suffix = if network.complete { "" } else { " + ?" };
@@ -587,6 +623,17 @@ mod tests {
             name: "shell".into(),
             cwd: Some("/".into()),
             executable: Some("/bin/shell".into()),
+            command: Some(crate::model::ProcessCommand {
+                argv: Some(vec![
+                    "shell".into(),
+                    "job script.sh".into(),
+                    "".into(),
+                    "[filtered]".into(),
+                ]),
+                entrypoint: Some("job script.sh".into()),
+                redacted_indices: vec![3],
+                ..crate::model::ProcessCommand::default()
+            }),
             cpu_percent: Some(0.0),
             resident_bytes: Some(1024),
             network: Some(Network {
@@ -634,6 +681,8 @@ mod tests {
             "cwd:",
             "exe:",
             "TCP/UDP sockets",
+            "cmd:",
+            "entry:",
             "Operation not permitted",
         ] {
             assert!(!overview.contains(hidden), "{hidden}");
@@ -653,6 +702,9 @@ mod tests {
         assert!(details.contains("cwd: `/`"));
         assert!(details.contains("exe: `/bin/shell`"));
         assert!(details.contains("pid:11"));
+        assert_eq!(details.matches("cmd:").count(), 1);
+        assert!(details.contains("cmd: `shell \"job script.sh\" \"\" [filtered]`"));
+        assert!(details.contains("entry: `job script.sh`"));
         details.clear();
         write_node(&mut details, &tree::select(&tree, "pid:20").unwrap(), 0);
         assert!(details.contains("Operation not permitted (os error 1)"));

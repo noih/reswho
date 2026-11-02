@@ -1,6 +1,6 @@
 # Markdown 輸出格式
 
-已實作：`reswho-md/17`。Tenqo：rw-8、rw-9、rw-16。JSON `reswho/8`，語意見 [JSON 格式](json-format.md)。容器採用獨立統計範圍，詳見 [容器採集](containers.md)；既有主機分類與 ref 保留。
+已實作：`reswho-md/18`。Tenqo：rw-8、rw-9、rw-16。JSON `reswho/8`，語意見 [JSON 格式](json-format.md)。容器採用獨立統計範圍，詳見 [容器採集](containers.md)；既有主機分類與 ref 保留。
 
 ## 原則
 
@@ -95,3 +95,9 @@ group:unclassified · 0.0%  3.0MiB  ⏱︎ 5h  Σ2
 涵蓋全機／選取群組／PID、depth 0／1／多層、單一程序、部分未知、全 unreadable、直接與推論歸屬，以及含空白／反引號／控制字元的名稱或路徑。驗證不啟停使用者程序。
 
 參考：[Markdown Guide — Basic Syntax](https://www.markdownguide.org/basic-syntax/)。標題、清單、引用和 code 採既有 Markdown 意義；狀態符號與欄位契約由 reswho 的 `--help-format` 定義。
+
+## PID 命令詳情
+
+`--md --from pid:N` 在選取 PID 的引用附註加入 `cmd:`，有明確 script／JAR 線索時加入 `entry:`。其他列維持摘要。空字串與含空白的參數以雙引號表示，這是展示格式，不是可執行的 shell command；精確參數邊界請使用 JSON argv。
+
+`[filtered]` 表示已遮罩的參數值；遮罩範圍與原生採集限制見 [JSON 命令契約](json-format.md#指定-pid-的命令資訊)。未知選項及相對入口不作額外路徑推論。無法取得命令時仍保留程序其他資訊，並顯示 `! command...`。
