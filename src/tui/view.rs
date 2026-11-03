@@ -1,13 +1,11 @@
 use super::state::App;
-use crate::{model::Node, output};
+use crate::{model::Node, output, sort::Sort};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::Line,
-    widgets::{
-        Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
-    },
+    widgets::{Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
 };
 
 pub(super) fn safe(value: &str) -> String {
@@ -245,7 +243,8 @@ pub(super) fn panel(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 pub(super) fn draw(frame: &mut Frame, app: &App, table: &mut TableState) {
-    let overlay = app.extensions_page || app.settings.as_ref().is_some_and(|popup| popup.open);
+    let overlay =
+        app.help || app.extensions_page || app.settings.as_ref().is_some_and(|popup| popup.open);
     if overlay {
         draw_base(frame, app, &mut table.clone());
         let area = frame.area();
@@ -257,6 +256,9 @@ pub(super) fn draw(frame: &mut Frame, app: &App, table: &mut TableState) {
         );
     } else {
         draw_base(frame, app, table);
+    }
+    if app.help {
+        help(frame, frame.area(), app);
     }
     if app.extensions_page {
         super::extensions::draw(frame, app);
@@ -327,11 +329,6 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
         );
         return;
     }
-    let filter = if app.active_only {
-        "active (+ unknown)"
-    } else {
-        "all"
-    };
     let search = if app.editing {
         format!("/{}_", safe(&app.query))
     } else if app.query.is_empty() {
@@ -340,11 +337,7 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
         format!("/{}", safe(&app.query))
     };
     frame.render_widget(
-        Paragraph::new(format!(
-            "Sort {}{status} | Containers {filter} | {search}",
-            app.sort.label()
-        ))
-        .style(Style::default().fg(Color::Yellow)),
+        Paragraph::new(format!("{search}{status}")).style(Style::default().fg(Color::Yellow)),
         toolbar,
     );
     let wide = tree_area.width >= 85;
@@ -392,16 +385,30 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
     });
     let mut widths = vec![
         Constraint::Min(12),
-        Constraint::Length(9),
+        Constraint::Length(10),
         Constraint::Length(10),
         Constraint::Length(8),
     ];
-    let mut headings = vec!["Resource", "CPU/core", "Memory", "Age"];
+    let mut headings = match app.sort {
+        Sort::Name => vec!["Resource ↑", "CPU/core", "Memory", "Age"],
+        Sort::Cpu => vec!["Resource", "CPU/core ↓", "Memory", "Age"],
+        Sort::Memory => vec!["Resource", "CPU/core", "Memory ↓", "Age"],
+        Sort::Uptime => vec!["Resource", "CPU/core", "Memory", "Age ↓"],
+    };
+    if tree_area.width < 47 {
+        let active = match app.sort {
+            Sort::Name => 0,
+            Sort::Cpu => 1,
+            Sort::Memory => 2,
+            Sort::Uptime => 3,
+        };
+        widths[active] = Constraint::Min(headings[active].chars().count() as u16);
+    }
     if wide {
         widths.push(Constraint::Length(14));
         headings.push("State / Ports");
     }
-    let title = if app.active_only || !app.query.is_empty() {
+    let title = if !app.query.is_empty() {
         " Resources (totals include hidden rows) "
     } else {
         " Resources (host / containers separate) "
@@ -509,13 +516,15 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
     } else {
         format!("{}  ", app.refresh_hint())
     };
-    let keys = if app.extensions_page || app.settings.as_ref().is_some_and(|popup| popup.open) {
-        String::new()
-    } else if area.width < 80 {
-        format!("? Help  q Quit  {refresh}")
-    } else {
-        format!("→ Open / Search s Settings e Extensions ? Help q Quit  {refresh}")
-    };
+    let keys =
+        if app.help || app.extensions_page || app.settings.as_ref().is_some_and(|popup| popup.open)
+        {
+            String::new()
+        } else if area.width < 80 {
+            format!("? Help  q Quit  {refresh}")
+        } else {
+            format!("→ Open / Search s Settings e Extensions ? Help q Quit  {refresh}")
+        };
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(diagnostic, Style::default().fg(Color::Yellow)),
@@ -523,36 +532,8 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
         ]),
         footer,
     );
-    if app.help {
-        help(frame, area, app);
-    }
 }
 
 fn help(frame: &mut Frame, area: Rect, app: &App) {
-    let popup = Rect::new(
-        area.x + 2,
-        area.y + 1,
-        area.width.saturating_sub(4),
-        area.height.saturating_sub(2),
-    );
-    frame.render_widget(Clear, popup);
-    let mut text = "reswho controls\n\nUp/Down or k/j: move    Left/h: collapse or parent\nRight/l: expand, child or leaf details    Enter/Space: toggle\ns: Settings from main (Enter accept, Esc undo field / discard popup)\nSettings: PgUp/PgDn scroll selected-option info (key, default, bounds, value)\ne: Extensions from main (Right/l details, Left/h or Esc back)\nd: process / resource / extension details (also parent processes)\nDetails: Left/h or Esc back; Right/l has no next level\nDetails: Up/Down, j/k, PgUp/PgDn scroll, r refresh, p pause\nc: CPU    m: memory    u: uptime (descending within siblings)\nn: name (natural order, case-insensitive; node2 before node10)\n/: search name, PID, ref or path    Enter: accept    Esc: clear\na: all / active containers (unknown retained)\n[ / ]: scroll path    PgUp/PgDn: move 10 rows\nr: refresh once (keeps pause); reuse pending collection\np: pause automatic refresh\nq: quit from main    Ctrl-C: quit anywhere    ? / Esc: close help\n\nRefresh: configured wait after each result; one query at a time.\nHost CPU: whole-machine usage (0-100%). CPU/core: 100% = one core.\nRows can exceed 100%; >= means a partial total with unreadable values.\nAge is process uptime or oldest group member, including idle time.\nHost RSS and container memory are separate scopes; never add both.\nFilters affect visible rows, not aggregate totals. Unknown is not zero.\nSearch reveals matching branches without changing saved expansion.\n".to_owned();
-    if let Some(error) = &app.error {
-        text.push_str(&format!("\nSTALE: {}\n", safe(error)));
-    }
-    if let Some(snapshot) = &app.snapshot {
-        for warning in snapshot
-            .warnings
-            .iter()
-            .filter(|warning| !crate::collect::COLLECTION_NOTES.contains(&warning.as_str()))
-        {
-            text.push_str(&format!("\n! {}", safe(warning.as_str())));
-        }
-    }
-    frame.render_widget(
-        Paragraph::new(text)
-            .block(Block::bordered().title(" Help "))
-            .wrap(Wrap { trim: false }),
-        popup,
-    );
+    app.help_view.draw(frame, area, app);
 }

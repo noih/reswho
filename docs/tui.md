@@ -16,17 +16,18 @@ stdin 與 stdout 都是 TTY 時，`reswho` 自動開啟 TUI；其他情況預設
 | c／m／u | 同層 CPU／RAM／uptime 降序排列 |
 | n | 同層名稱自然升序排列 |
 | / | 搜尋名稱、PID、ref、路徑；Enter 保留，Esc 清除 |
-| a | 容器 all／active 切換；保留未知狀態 |
 | [／] | 左右捲動底部路徑列 |
 | r／p | 立即刷新／暫停自動刷新 |
 | s／e | 主畫面開啟 Settings／Extensions；既有 modal 內不交叉開啟 |
 | ?、q／Ctrl-C | 說明；q 僅主畫面退出，Ctrl-C 隨時退出 |
 
-搜尋保留匹配項目的父層；匹配群組時顯示其子樹。清除搜尋會恢復原展開狀態。篩選只影響顯示，不重算 totals；容器與主機資源維持不同計算範圍。Age 是程序啟動至今的時間，群組為最老成員，並非持續忙碌時間。`?` 表示未知，`-` 表示不適用，`>=` 表示部分已知值。
+Help 以 Controls／Panels／Metrics 三頁顯示。Tab／Shift-Tab 切頁，↑／↓、j／k、PgUp／PgDn 捲動當頁，Home／End 到首尾；Esc／? 關閉並返回原選取。小視窗內容折行，正文與底部切頁／關閉提示之間固定保留一列空白；空間不足時縮短正文，完整內容可捲動查看。
+
+搜尋保留匹配項目的父層；匹配群組時顯示其子樹。清除搜尋會恢復原展開狀態。所有容器狀態均保留，僅受搜尋與分支收合影響。搜尋只影響顯示，不重算 totals；容器與主機資源維持不同計算範圍。Age 是程序啟動至今的時間，群組為最老成員，並非持續忙碌時間。`?` 表示未知，`-` 表示不適用，`>=` 表示部分已知值。
 
 名稱排序忽略大小寫，連續ASCII數字比較完整數值，因此 `1, 2, 3, 10, 11`、`node2, node10`、`v2.3, v2.11` 依自然順序排列。相同數字片段的短寫法先，例如 `2` 在 `02` 前；不以固定寬度整數解析，長數字不溢位。相同名稱以 ref 穩定排序，不改父子層級，切換排序與刷新都保留選取。
 
-排序、刷新或篩選重排列項目時，若原選取身分仍存在，捲動位置會盡量讓它留在畫面原本那一列；靠近列表邊界或視窗變小時，以保持選取可見為優先。一般上下移動不鎖定畫面列，Home／End 仍可跳到首尾。原項目消失時退到仍可見的父層；沒有可用父層才選第一列，空結果則不選取任何列。
+排序、刷新或搜尋重排列項目時，若原選取身分仍存在，捲動位置會盡量讓它留在畫面原本那一列；靠近列表邊界或視窗變小時，以保持選取可見為優先。一般上下移動不鎖定畫面列，Home／End 仍可跳到首尾。原項目消失時退到仍可見的父層；沒有可用父層才選第一列，空結果則不選取任何列。
 
 數值依列上口徑降序排序：程序用自身用量，群組用所屬範圍合計，部分合計使用已知下界；全未知／不適用置後。同值以 ref 穩定排序。程序列不以子樹合計取代自身用量。
 
@@ -40,7 +41,7 @@ stdin 與 stdout 都是 TTY 時，`reswho` 自動開啟 TUI；其他情況預設
 
 收到每輪採集結果後，依 `refresh.interval_ms`（預設2000ms，`--refresh-ms` 可覆寫）等待再採下一輪，同時最多一輪。`sampling.interval_ms`（預設250ms，`--sample-ms` 可覆寫）只控制同輪配對取樣等待，與 refresh、暫停及手動刷新分開。設定檔與離線查詢見 [extensions-settings.md](extensions-settings.md)。採集在背景執行，刷新保留群組展開與選取；程序身分包含 PID 與啟動時間。程序消失或 PID 重用時退回仍存在的父層；若 `--from pid:…` 本身失效，保留舊資料並標示 STALE，不自動轉向新程序。
 
-不另設程式標題列；全機程序數放在 Host CPU／RAM 摘要列。排序工具列只在暫停或錯誤時加上狀態，不切換 live／collecting，也不顯示距上次刷新的秒數。畫面只在資料、操作、視窗大小或首次載入動畫改變時重畫。首次採集先顯示表格、工具列與 status bar，在列表中央顯示 `Loading resources...` 與約250ms更新的 spinner，完成後換成資源列並停止動畫；失敗時顯示錯誤，等待中仍可退出。Docker metadata 與用量每輪重新查詢，不使用跨輪快取。這不改變兩輪之間的等待時間。
+不另設程式標題列；全機程序數放在 Host CPU／RAM 摘要列。排序標記顯示於目前欄位表頭：`Resource ↑`、`CPU/core ↓`、`Memory ↓` 或 `Age ↓`。工具列顯示搜尋，只在暫停或錯誤時加上狀態，不切換 live／collecting，也不顯示距上次刷新的秒數。畫面只在資料、操作、視窗大小或首次載入動畫改變時重畫。首次採集先顯示表格、工具列與 status bar，在列表中央顯示 `Loading resources...` 與約250ms更新的 spinner，完成後換成資源列並停止動畫；失敗時顯示錯誤，等待中仍可退出。Docker metadata 與用量每輪重新查詢，不使用跨輪快取。這不改變兩輪之間的等待時間。
 
 啟動時將 alternate screen 切換與首次完整 loading 繪製包在同一個 synchronized update，避免支援此協定的終端機先呈現空白畫面。同步區段只包含初始化與首次繪製，不等待資源採集；之後仍以事件式差異重畫。初始化或繪製失敗時會嘗試結束同步更新並還原 terminal；不支援協定的終端機仍可能顯示切換過程。
 
@@ -55,7 +56,7 @@ stdin 與 stdout 都是 TTY 時，`reswho` 自動開啟 TUI；其他情況預設
 詳情內 ↑/↓、j/k、PgUp/PgDn 捲動，Home/End 到首尾。長命令與路徑依終端機寬度折行，續行縮排；底部行數範圍依折行後的畫面列計算。歸類層級合併為 `Applications → App → …`，其他路徑、bundle 與依據另列；完整 group ref 保留於 Markdown／JSON。←／h、Esc/d 返回原選取與列表捲動位置；刷新或 resize 仍以維持選取可見為準，已消失的列無法保留。→／l 沒有下一層，不執行動作。Enter、排序、搜尋等列表按鍵不作用於詳情頁，q／s／e 不作用於詳情或說明頁；Ctrl-C 仍可直接退出並還原終端機。
 
 
-Extensions 的 Priority · highest first 為分類裁決來源序，不是顯示 Sort。Shift-Up/Down 移動、Ctrl-S 保存至下一輪、外層 ←／h 或 Esc 放棄；→／l 或 d 開詳情，Enter 不開啟或關閉詳情；內層 ←／h 或 Esc 返回保留 draft、選取與列表捲動。內建 app_bundle、project、ancestor、bin 可排序且不可移除。儲存錯誤在 dialog 顯示。一般樹不顯示 tags；選定 PID details 才提供當輪有效標籤與裁決，子程序不擴大 scope。
+Extensions 的 Priority · highest first 為分類裁決來源序，不是顯示 Sort。Shift-Up/Down 移動、Ctrl-R 將草稿重設為系統預設（內建來源在前、外部來源依原安裝順序在後）、Ctrl-S 保存至下一輪、外層 ←／h 或 Esc 放棄；→／l 或 d 開詳情，Enter 不開啟或關閉詳情；內層 ←／h 或 Esc 返回保留 draft、選取與列表捲動。內建 app_bundle、project、ancestor、bin 可排序且不可移除。Reset 保存時清除自訂來源序，後續預設更新會生效；保存前 Esc 可放棄，詳情內 Ctrl-R 不作用。儲存錯誤在 dialog 顯示。一般樹不顯示 tags；選定 PID details 才提供當輪有效標籤與裁決，子程序不擴大 scope。
 
 程序詳情的 Tags 列僅顯示當輪 effective hashtags：bin 為 `#executable`，runtime／role／custom 使用實際 label，app／project 保留維度前綴與 label，label 空白轉為連字號。沒有有效標籤顯示 None，未取得 report 顯示 Unavailable；不從 System 等分組推導標籤。完整來源、proposal ID、root／basis、排除／撤回／裁決與診斷另列於 Network 之後的 Classification。Markdown 沿用相同文字 renderer；JSON 原始結構、一般樹與子程序摘要範圍不變。
 

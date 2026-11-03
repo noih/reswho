@@ -43,6 +43,9 @@ fn priority_changed(app: &App) -> bool {
         .as_ref()
         .map(|p| p.context.baseline.source_priority.clone())
         .unwrap_or_default();
+    if draft.is_empty() {
+        return !baseline.is_empty();
+    }
     for entry in &app.inventory {
         if !baseline.contains(&entry.descriptor.id) {
             baseline.push(entry.descriptor.id.clone());
@@ -102,6 +105,11 @@ pub(super) fn key(app: &mut App, key: KeyEvent) -> bool {
         }
         return false;
     }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
+        app.priority_draft = Some(Vec::new());
+        app.priority_error = None;
+        return false;
+    }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
         let draft = app.priority_draft.as_ref().expect("priority draft");
         if let Some(popup) = app.settings.as_mut() {
@@ -131,6 +139,13 @@ pub(super) fn key(app: &mut App, key: KeyEvent) -> bool {
             let current_id = current.descriptor.id.clone();
             let target_id = target.descriptor.id.clone();
             let order = app.priority_draft.as_mut().expect("priority draft");
+            if order.is_empty() {
+                order.extend(
+                    app.inventory
+                        .iter()
+                        .map(|entry| entry.descriptor.id.clone()),
+                );
+            }
             if let (Some(a), Some(b)) = (
                 order.iter().position(|id| id == &current_id),
                 order.iter().position(|id| id == &target_id),
@@ -299,10 +314,10 @@ pub(super) fn draw(frame: &mut Frame, app: &App) {
     };
     let footer = Paragraph::new(if app.extension_details {
         "←/Esc Back"
-    } else if frame.area().width < 60 {
-        "Shift ↑/↓  Ctrl-S Save\n→ Details  ←/Esc discard"
+    } else if frame.area().width < 71 {
+        "Ctrl-S Save  Ctrl-R Reset\nShift↑↓ Move  → Open  Esc Back"
     } else {
-        "Shift ↑/↓ Move  Ctrl-S Save  → Details  ←/Esc discard"
+        "Shift ↑/↓ Move  Ctrl-S Save  Ctrl-R Reset  → Details  ←/Esc discard"
     })
     .wrap(Wrap { trim: false })
     .style(Style::default().fg(Color::Gray));
@@ -325,6 +340,8 @@ pub(super) fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(Clear, popup);
     let block = Block::bordered().title(if app.extension_details {
         " Extension details "
+    } else if priority_changed(app) {
+        " Extensions * "
     } else {
         " Extensions "
     });
@@ -338,14 +355,7 @@ pub(super) fn draw(frame: &mut Frame, app: &App) {
     ])
     .areas(inner);
     if !app.extension_details {
-        frame.render_widget(
-            Paragraph::new(if priority_changed(app) {
-                "Priority · highest first · draft"
-            } else {
-                "Priority · highest first"
-            }),
-            priority_area,
-        );
+        frame.render_widget(Paragraph::new("Priority · highest first"), priority_area);
     }
 
     if app.extension_details {
@@ -429,14 +439,9 @@ pub(super) fn draw(frame: &mut Frame, app: &App) {
             Paragraph::new(app.priority_error.clone().unwrap_or_else(|| {
                 entries.get(index).map_or("No providers".into(), |entry| {
                     format!(
-                        "{} · {} · {}",
+                        "{} · {}",
                         name(&entry.descriptor.id),
-                        entry.descriptor.source,
-                        if priority_changed(app) {
-                            "draft"
-                        } else {
-                            "saved"
-                        }
+                        entry.descriptor.source
                     )
                 })
             }))

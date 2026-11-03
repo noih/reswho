@@ -38,9 +38,9 @@ pub(super) struct App {
     pub query: String,
     pub editing: bool,
     pub sort: Sort,
-    pub active_only: bool,
     pub path_scroll: u16,
     pub help: bool,
+    pub help_view: super::help::Help,
     pub details: Option<super::details::Details>,
     pub error: Option<String>,
     pub collecting: bool,
@@ -116,9 +116,9 @@ impl App {
             query: String::new(),
             editing: false,
             sort: Sort::Memory,
-            active_only: false,
             path_scroll: 0,
             help: false,
+            help_view: super::help::Help::default(),
             details: None,
             error: None,
             collecting: false,
@@ -319,15 +319,6 @@ impl App {
         depth: usize,
     ) -> Vec<Row> {
         let transparent = self.transparent(node, &path);
-        if self.active_only
-            && node
-                .container
-                .as_ref()
-                .is_some_and(|container| container.is_inactive())
-            && !path.is_empty()
-        {
-            return Vec::new();
-        }
         let matches = self.query.is_empty()
             || inherited_match
             || (!transparent && searchable(node).contains(&self.query.to_lowercase()));
@@ -364,14 +355,6 @@ impl App {
                 has_children: false,
                 unreadable,
             });
-        }
-        if !path.is_empty()
-            && self.active_only
-            && node.container_totals.as_ref().is_some_and(|totals| {
-                totals.containers > 0 && totals.containers == totals.inactive_containers
-            })
-        {
-            return Vec::new();
         }
         if !matches && children.is_empty() {
             return Vec::new();

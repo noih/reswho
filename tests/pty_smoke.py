@@ -155,7 +155,7 @@ def verify(arguments, exit_key, marker, details=False, external=False, resource=
             assert b"Loading command" in transcript[reopened:], "reopening must query fresh command data"
         if marker == b"sample" and not details:
             if "--sort" in arguments:
-                assert b"Sort NAME" in transcript, "initial sort option was not applied"
+                assert "Resource ↑".encode() in transcript, "initial sort option was not applied"
             for key in [b"j", b"l", b"c", b"m", b"u", b"n", b"/reswho", b"\r", b"\x1b", b"a", b"]", b"[", b"?", b"?"]:
                 os.write(master, key)
                 drain(0.12)
@@ -487,6 +487,99 @@ def verify_settings():
             process.wait(timeout=5)
         os.close(master)
         os.close(slave)
+
+
+def verify_help():
+    master, slave = pty.openpty()
+    process = None
+    transcript = bytearray()
+    before = termios.tcgetattr(slave)
+
+    def drain(seconds):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([master], [], [], 0.05)
+            if ready:
+                transcript.extend(os.read(master, 65536))
+
+    def frame_text():
+        assert process.poll() is None
+        return re.sub(rb"\s+", b" ", full_frame(slave, process, transcript, drain)).decode(errors="replace")
+
+    def page(name, content):
+        frame = frame_text()
+        assert re.search(r"\[\s*" + name + r"\s*\]", frame), frame
+        assert content in frame, frame
+
+    def main_frame():
+        frame = frame_text()
+        assert "Sort" in frame and re.search(r"q\s+Quit", frame), frame
+        assert not re.search(r"\[\s*(Controls|Panels|Metrics)\s*\]", frame), frame
+
+    try:
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+        process = subprocess.Popen(
+            [str(ROOT / "target/debug/reswho"), "--tui", "--no-containers", "--refresh-ms", "60000"],
+            stdin=slave, stdout=slave, stderr=slave,
+            env={**os.environ, "TERM": "xterm-256color", "XDG_CONFIG_HOME": str(config_root)},
+            start_new_session=True,
+        )
+        drain(0.4)
+        main_frame()
+        os.write(master, b"?")
+        drain(0.15)
+        page("Controls", "Navigation")
+        os.write(master, b"\t")
+        drain(0.15)
+        page("Panels", "Settings")
+        os.write(master, b"\x1b[Z")
+        drain(0.15)
+        page("Controls", "Navigation")
+        os.write(master, b"\t\t")
+        drain(0.15)
+        page("Metrics", "Host CPU")
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 10, 36, 0, 0))
+        os.kill(process.pid, signal.SIGWINCH)
+        drain(0.2)
+        os.write(master, b"\x1b[F")
+        drain(0.15)
+        page("Metrics", "one query at a time")
+        os.write(master, b"\x1b")
+        drain(0.2)
+        main_frame()
+        os.write(master, b"?")
+        drain(0.15)
+        page("Controls", "Navigation")
+        os.write(master, b"?")
+        drain(0.15)
+        main_frame()
+        os.write(master, b"q")
+        process.wait(timeout=5)
+        assert process.returncode == 0
+        assert termios.tcgetattr(slave) == before
+        print("PASS Help PTY Tab/Shift-Tab/36x10/End/Esc/?/q/termios (full redraw content smoke)")
+    finally:
+        try:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+        finally:
+            os.close(master)
+            os.close(slave)
+
+
+if "--help-only" in sys.argv:
+    try:
+        verify_help()
+    finally:
+        config_owner.cleanup()
+        assert not config_root.exists()
+        print("PASS Help PTY child reaped, handles closed and temp root removed")
+    sys.exit(0)
 
 
 if "--settings-only" in sys.argv:

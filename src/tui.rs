@@ -1,5 +1,6 @@
 mod details;
 mod extensions;
+mod help;
 mod settings;
 mod state;
 #[cfg(test)]
@@ -230,6 +231,8 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if app.help {
         if matches!(key.code, KeyCode::Char('?') | KeyCode::Esc) {
             app.help = false;
+        } else {
+            app.help_view.key(key);
         }
         return false;
     }
@@ -304,10 +307,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.sort = Sort::Uptime;
             app.rebuild();
         }
-        KeyCode::Char('a') => {
-            app.active_only = !app.active_only;
-            app.rebuild();
-        }
         KeyCode::Char('/') => app.editing = true,
         KeyCode::Esc => {
             app.query.clear();
@@ -322,7 +321,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 .min(width.saturating_sub(1).min(u16::MAX as usize) as u16);
         }
         KeyCode::Char('[') => app.path_scroll = app.path_scroll.saturating_sub(16),
-        KeyCode::Char('?') => app.help = true,
+        KeyCode::Char('?') => {
+            app.help = true;
+            app.help_view = help::Help::default();
+        }
         _ => {}
     }
     false

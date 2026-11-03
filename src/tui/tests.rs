@@ -349,7 +349,7 @@ fn refresh_hint_stays_visible_and_acknowledges_manual_requests() {
     }
     handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
     handle_key(&mut app, KeyEvent::from(KeyCode::Char('?')));
-    assert!(render(&app).contains("r: refresh once"));
+    assert!(render(&app).contains("Refresh once; keep pause"));
     handle_key(&mut app, KeyEvent::from(KeyCode::Char('r')));
     assert!(app.manual_refresh.is_none());
     handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
@@ -812,14 +812,26 @@ fn search_reveals_ancestors_without_losing_saved_expansion() {
 }
 
 #[test]
-fn active_filter_keeps_unknowns_and_unreadable_is_one_leaf() {
+fn all_container_states_remain_visible_and_unreadable_is_one_leaf() {
     let mut app = app();
     let before = serde_json::to_value(&app.snapshot.as_ref().unwrap().root).unwrap();
-    app.active_only = true;
-    app.rebuild();
+    let rows: Vec<_> = app.rows.iter().map(|row| row.key.clone()).collect();
+    select(&mut app, "group:stopped");
+    let selected = app.selected;
+    let expanded = app.expanded.clone();
+    handle_key(&mut app, KeyCode::Char('a').into());
+    assert_eq!(
+        app.rows
+            .iter()
+            .map(|row| row.key.clone())
+            .collect::<Vec<_>>(),
+        rows
+    );
+    assert_eq!(app.selected, selected);
+    assert_eq!(app.expanded, expanded);
     assert!(app.rows.iter().any(|row| row.key == "group:live"));
     assert!(app.rows.iter().any(|row| row.key == "group:unknown"));
-    assert!(!app.rows.iter().any(|row| row.key == "group:stopped"));
+    assert!(app.rows.iter().any(|row| row.key == "group:stopped"));
     assert_eq!(
         serde_json::to_value(&app.snapshot.as_ref().unwrap().root).unwrap(),
         before
@@ -978,7 +990,7 @@ fn keys_keep_search_text_separate_from_shortcuts() {
         KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
     ));
     handle_key(&mut app, KeyEvent::from(KeyCode::Char('a')));
-    assert!(app.active_only);
+    assert!(app.rows.iter().any(|row| row.key == "group:stopped"));
     handle_key(&mut app, KeyEvent::from(KeyCode::Char('p')));
     assert!(app.paused);
 }
@@ -1161,6 +1173,49 @@ fn path_status_tracks_selection_and_preserves_literal_paths() {
 }
 
 #[test]
+fn table_headers_mark_only_the_active_sort_in_ready_and_loading_views() {
+    for width in [100, 80, 36] {
+        for (sort, heading) in [
+            (Sort::Name, "Resource ↑"),
+            (Sort::Cpu, "CPU/core ↓"),
+            (Sort::Memory, "Memory ↓"),
+            (Sort::Uptime, "Age ↓"),
+        ] {
+            for loading in [false, true] {
+                let mut app = App::new("group:all".into(), 2);
+                app.sort = sort;
+                if loading {
+                    app.collecting = true;
+                } else {
+                    app.update(Ok(snapshot()));
+                }
+                let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
+                terminal
+                    .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+                    .unwrap();
+                let lines: Vec<String> = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .chunks(width as usize)
+                    .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+                    .collect();
+                println!(
+                    "FRAME {width}x30 {sort:?} loading={loading}\n{}",
+                    lines.join("\n")
+                );
+                assert_eq!(lines[1].trim_end(), "/ search");
+                assert!(!lines.join("\n").contains("Sort "));
+                assert!(lines[3].contains(heading), "{}", lines[3]);
+                assert_eq!(lines[3].matches(['↑', '↓']).count(), 1);
+                assert_eq!(lines[3].contains("State / Ports"), width >= 85);
+                assert_eq!(lines.join("\n").contains("Loading resources..."), loading);
+            }
+        }
+    }
+}
+
+#[test]
 fn first_snapshot_wait_shows_loading_then_data_or_error() {
     let mut app = App::new("group:all".into(), 2);
     app.collecting = true;
@@ -1187,7 +1242,7 @@ fn first_snapshot_wait_shows_loading_then_data_or_error() {
     assert!(first.contains("| Loading resources..."));
     assert!(first.contains("Resources"));
     assert!(first.contains("Memory"));
-    assert!(first.contains("Sort RAM"));
+    assert!(first.contains("Memory ↓"));
     assert!(first.contains("Path —"));
     assert!(!first.contains("No selection"));
     app.loading_frame = 1;
@@ -1215,7 +1270,7 @@ fn first_snapshot_wait_shows_loading_then_data_or_error() {
         .collect();
     assert!(header.starts_with("Host CPU"));
     assert!(header.contains("processes"));
-    assert!(toolbar.starts_with("Sort RAM"));
+    assert!(toolbar.starts_with("/ search"));
     assert!(loaded.contains("Resources"));
     assert!(!loaded.contains("Loading resources..."));
     app.query = "no-matching-fixture".into();
@@ -1265,7 +1320,7 @@ fn worker_cancels_and_joins_owned_collection() {
 }
 
 #[test]
-fn apple_runtime_renders_and_stopped_containers_follow_active_filter() {
+fn apple_runtime_renders_all_containers_after_a() {
     let mut snapshot = snapshot();
     let containers = snapshot
         .root
@@ -1282,9 +1337,33 @@ fn apple_runtime_renders_and_stopped_containers_follow_active_filter() {
             container.state = Some("stopped".into());
         }
     }
+    let mut stopped = runtime.children[1].clone();
+    stopped.reference = "group:stopped-only-child".into();
+    stopped.name = "stopped-only-child".into();
+    let mut totals = ContainerTotals {
+        inventory_complete: true,
+        ..ContainerTotals::default()
+    };
+    totals.add(stopped.container.as_ref().unwrap());
+    let mut branch = Node::group(
+        "group:stopped-only".into(),
+        "stopped-only".into(),
+        vec![],
+        Grouping::Runtime,
+    );
+    branch.children.push(stopped);
+    branch.container_totals = Some(totals);
+
+    containers
+        .container_totals
+        .as_mut()
+        .unwrap()
+        .add(branch.children[0].container.as_ref().unwrap());
+    containers.children.push(branch);
     let mut app = App::new("group:containers".into(), usize::MAX);
     app.update(Ok(snapshot));
-    let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    handle_key(&mut app, KeyCode::Char('a').into());
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     terminal
         .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
         .unwrap();
@@ -1296,10 +1375,54 @@ fn apple_runtime_renders_and_stopped_containers_follow_active_filter() {
         .map(|cell| cell.symbol())
         .collect();
     assert!(text.contains("apple (local)"));
-    assert!(app.rows.iter().any(|row| row.key == "group:stopped"));
-    app.active_only = true;
+    for name in ["stopped", "live", "unknown", "stopped-only-child"] {
+        assert!(text.contains(name), "{text}");
+    }
+    assert!(!text.contains("Containers all") && !text.contains("Containers active"));
+    assert!(text.contains("/ search"));
+    if let Some(path) = std::env::var_os("RESWHO_UI_EVIDENCE") {
+        std::fs::create_dir_all(&path).unwrap();
+        let lines = terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(100)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(
+            std::path::Path::new(&path).join("main-all-containers-100x30.txt"),
+            lines,
+        )
+        .unwrap();
+    }
+    select(&mut app, "group:stopped-only");
+    handle_key(&mut app, KeyCode::Left.into());
+    assert!(
+        !app.rows
+            .iter()
+            .any(|row| row.key == "group:stopped-only-child")
+    );
+    handle_key(&mut app, KeyCode::Right.into());
+    assert!(
+        app.rows
+            .iter()
+            .any(|row| row.key == "group:stopped-only-child")
+    );
+    let before = serde_json::to_value(&app.snapshot.as_ref().unwrap().root).unwrap();
+    app.query = "stopped-only-child".into();
     app.rebuild();
-    assert!(!app.rows.iter().any(|row| row.key == "group:stopped"));
+    assert!(app.rows.iter().any(|row| row.key == "group:stopped-only"));
+    assert!(!app.rows.iter().any(|row| row.key == "group:live"));
+    assert_eq!(
+        serde_json::to_value(&app.snapshot.as_ref().unwrap().root).unwrap(),
+        before
+    );
+    app.query.clear();
+    app.rebuild();
+    assert!(app.rows.iter().any(|row| row.key == "group:stopped"));
+    handle_key(&mut app, KeyCode::Char('a').into());
+    assert!(app.rows.iter().any(|row| row.key == "group:stopped"));
     assert!(app.rows.iter().any(|row| row.key == "group:live"));
     assert!(app.rows.iter().any(|row| row.key == "group:unknown"));
 }
@@ -1836,11 +1959,9 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
         }
     }
     app.help = true;
-    dump(&app, 36, 10, "help");
     let text = dump(&app, 100, 30, "help");
-    assert!(text.contains("d: process / resource / extension details"));
-    assert!(text.contains("Settings: PgUp/PgDn"));
-    assert!(!text.contains("Enter details"));
+    assert!(text.contains("[Controls]") && text.contains("Navigation"));
+    assert!(!text.contains("reswho controls"));
     app.help = false;
     select(&mut app, "pid:11");
     app.open_details();
@@ -2019,7 +2140,12 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
                 && !text.contains("Enter for details")
         );
         assert!(text.contains("Shift") && text.contains("Save") && !text.contains("j/k"));
-        for hint in ["→ Details", "←/Esc discard"] {
+        let hints = if width >= 71 {
+            ["→ Details", "←/Esc discard", "Ctrl-R Reset"]
+        } else {
+            ["→ Open", "Esc Back", "Ctrl-R Reset"]
+        };
+        for hint in hints {
             assert!(text.contains(hint), "missing {hint}: {text}");
         }
         if width >= 100 {
@@ -2443,6 +2569,29 @@ fn generic_resource_list_and_details_show_units_without_process_queries() {
     let mut app = App::new("group:all".into(), usize::MAX);
     app.update(Ok(source));
     select(&mut app, "group:fixturevolume");
+    app.path_scroll = 16;
+    handle_key(&mut app, KeyCode::Char('?').into());
+    let now = std::time::Instant::now();
+    assert!(should_collect(&app, now, now));
+    app.update(Ok(app.snapshot.clone().unwrap()));
+    for code in [
+        KeyCode::Tab,
+        KeyCode::BackTab,
+        KeyCode::Down,
+        KeyCode::Char('q'),
+        KeyCode::Char('s'),
+        KeyCode::Char('e'),
+    ] {
+        assert!(!handle_key(&mut app, code.into()));
+    }
+    assert!(app.help && app.details.is_none() && !app.extensions_page);
+    handle_key(&mut app, KeyCode::Esc.into());
+    assert_eq!(
+        app.node(app.selected).unwrap().reference,
+        "group:fixturevolume"
+    );
+    assert_eq!(app.path_scroll, 16);
+    assert!(app.manual_refresh.is_none());
     let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
     terminal
         .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
@@ -2510,6 +2659,273 @@ fn repair_empty_resource_provider_keeps_metric_scope_in_the_table() {
         !row.contains("0 proc") && !row.contains("0 B") && !row.contains("0.0%"),
         "{row}"
     );
+}
+
+fn priority_reset_app(path: &std::path::Path) -> App {
+    let resolved = crate::extensions::default_settings().unwrap();
+    let mut app = App::new("group:all".into(), 2);
+    app.inventory = crate::extensions::state::State::default().list(&resolved, false);
+    for id in ["z_external", "a_external"] {
+        let mut entry = crate::extensions::state::State::default()
+            .list(&resolved, false)
+            .remove(0);
+        entry.descriptor.id = id.into();
+        entry.descriptor.source = "external";
+        app.inventory.push(entry);
+    }
+    app.settings = Some(settings::Popup::new(crate::settings::edit::Settings::new(
+        crate::extensions::settings_registry().unwrap(),
+        crate::settings::Config::load_path(Some(path), false).unwrap(),
+        Default::default(),
+        Some(path.to_path_buf()),
+    )));
+    handle_key(&mut app, KeyCode::Char('e').into());
+    app
+}
+
+fn priority_reset_frame(app: &App, width: u16, height: u16, name: &str) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|frame| extensions::draw(frame, app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let text = (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Some(path) = std::env::var_os("RESWHO_UI_EVIDENCE") {
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(
+            std::path::Path::new(&path).join(format!("{name}-{width}x{height}.txt")),
+            &text,
+        )
+        .unwrap();
+    }
+    text
+}
+
+#[test]
+fn priority_reset_discards_saves_defaults_and_moves_external_sources() {
+    use crate::settings::Config;
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let root_path = root.path().canonicalize().unwrap();
+    let path = root_path.join("config.json");
+    let saved = Config {
+        version: 1,
+        source_priority: vec!["a_external".into(), "missing_source".into(), "bin".into()],
+        settings: [("sampling.interval_ms".into(), serde_json::json!(250))].into(),
+    };
+    std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let mut app = priority_reset_app(&path);
+    app.extension_selected = Some("bin".into());
+    let text = priority_reset_frame(&app, 100, 30, "priority-caption-saved");
+    assert!(text.contains("Executable fallback · builtin"), "{text}");
+    assert!(
+        text.contains(" Extensions ") && !text.contains("Extensions *"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("· saved") && !text.contains("· draft"),
+        "{text}"
+    );
+    app.extension_selected = Some("a_external".into());
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+    assert!(
+        app.priority_draft
+            .as_ref()
+            .unwrap()
+            .contains(&"missing_source".into())
+    );
+    let moved = app.priority_draft.clone();
+    handle_key(&mut app, KeyCode::Right.into());
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    );
+    assert_eq!(app.priority_draft, moved);
+    handle_key(&mut app, KeyCode::Esc.into());
+    handle_key(&mut app, KeyCode::Char('r').into());
+    assert_eq!(app.priority_draft, moved);
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    );
+    assert!(app.priority_draft.as_ref().unwrap().is_empty());
+    assert_eq!(app.extension_selected.as_deref(), Some("a_external"));
+    for (width, height) in [(100, 30), (71, 30), (36, 10)] {
+        let text = priority_reset_frame(&app, width, height, "priority-reset-draft");
+        for hint in ["Ctrl-R Reset", "Ctrl-S Save", "> A external"] {
+            assert!(text.contains(hint), "missing {hint}: {text}");
+        }
+        assert!(text.contains("Extensions *"), "{text}");
+        assert!(
+            !text.contains("· saved") && !text.contains("· draft"),
+            "{text}"
+        );
+        if width == 100 {
+            assert!(text.contains("Priority · highest first"), "{text}");
+            assert!(text.contains("A external · external"), "{text}");
+        }
+        if width == 36 {
+            assert!(text.contains("Shift↑↓ Move  → Open  Esc Back"), "{text}");
+        }
+        if width >= 71 {
+            let footer = text
+                .lines()
+                .find(|line| line.contains("Ctrl-R Reset"))
+                .unwrap();
+            assert!(
+                footer.contains("Shift ↑/↓") && footer.contains("←/Esc discard"),
+                "{text}"
+            );
+        }
+    }
+    handle_key(&mut app, KeyCode::Esc.into());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    handle_key(&mut app, KeyCode::Char('e').into());
+    assert!(
+        !priority_reset_frame(&app, 100, 30, "priority-caption-discarded").contains("Extensions *")
+    );
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    );
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    );
+    assert!(!app.extensions_page && app.priority_error.is_none());
+    let config = Config::load_path(Some(&path), true).unwrap();
+    assert!(config.source_priority.is_empty());
+    assert_eq!(config.settings, saved.settings);
+    let mut restarted = priority_reset_app(&path);
+    let text = priority_reset_frame(&restarted, 100, 30, "priority-caption-saved-default");
+    assert!(!text.contains("Extensions *"), "{text}");
+    handle_key(
+        &mut restarted,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    );
+    assert!(
+        !priority_reset_frame(&restarted, 100, 30, "priority-caption-noop-reset")
+            .contains("Extensions *")
+    );
+    handle_key(&mut restarted, KeyCode::Esc.into());
+    handle_key(&mut restarted, KeyCode::Char('e').into());
+    restarted.extension_selected = Some("a_external".into());
+    handle_key(&mut restarted, KeyCode::Char('r').into());
+    let order = restarted.priority_draft.as_ref().unwrap();
+    assert_eq!(
+        &order[..8],
+        [
+            "app_bundle",
+            "project",
+            "ancestor",
+            "bin",
+            "docker",
+            "podman",
+            "apple",
+            "command"
+        ]
+    );
+    assert_eq!(&order[8..], ["z_external", "a_external"]);
+    handle_key(
+        &mut restarted,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    );
+    handle_key(
+        &mut restarted,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT),
+    );
+    let order = restarted.priority_draft.as_ref().unwrap();
+    assert_eq!(&order[8..], ["a_external", "z_external"]);
+    for _ in 0..8 {
+        handle_key(
+            &mut restarted,
+            KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT),
+        );
+    }
+    assert_eq!(restarted.priority_draft.as_ref().unwrap()[0], "a_external");
+    assert!(restarted.manual_refresh.is_none() && restarted.extensions.is_empty());
+    root.close().unwrap();
+    assert!(!root_path.exists());
+}
+
+#[test]
+fn priority_reset_default_is_idempotent_and_preserves_conflict_safe_save() {
+    use crate::settings::Config;
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let root_path = root.path().canonicalize().unwrap();
+    let path = root_path.join("config.json");
+    let mut app = priority_reset_app(&path);
+    for _ in 0..2 {
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        );
+    }
+    assert!(!priority_reset_frame(&app, 100, 30, "priority-reset-default").contains("draft"));
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    );
+    assert!(!path.exists());
+    let default = Config {
+        version: 1,
+        ..Config::default()
+    };
+    let default_bytes = serde_json::to_vec(&default).unwrap();
+    std::fs::write(&path, &default_bytes).unwrap();
+    let before = std::fs::metadata(&path).unwrap();
+    let mut app = priority_reset_app(&path);
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    );
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), default_bytes);
+    assert_eq!(
+        std::os::unix::fs::MetadataExt::ino(&before),
+        std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&path).unwrap())
+    );
+    let saved = Config {
+        version: 1,
+        source_priority: vec!["bin".into()],
+        ..Config::default()
+    };
+    std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let mut app = priority_reset_app(&path);
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    );
+    let fresh = Config {
+        version: 1,
+        source_priority: vec!["project".into()],
+        ..Config::default()
+    };
+    let bytes = serde_json::to_vec(&fresh).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    );
+    assert!(
+        app.extensions_page
+            && app
+                .priority_error
+                .as_ref()
+                .unwrap()
+                .contains("Priority changed on disk")
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    root.close().unwrap();
+    assert!(!root_path.exists());
 }
 
 #[test]
@@ -2756,4 +3172,144 @@ fn ui10_effective_tags_and_classification_trace_are_separate_and_wrapped() {
         let details = details::Details::new(node);
         assert!(details.lines().iter().any(|line| line == "Tags  None"));
     }
+}
+
+#[test]
+fn help_pages_wrap_scroll_clamp_and_restore_main_state() {
+    let mut app = app();
+    select(&mut app, "pid:11");
+    app.path_scroll = 16;
+    app.paused = true;
+    app.collecting = true;
+    let selected = app.rows[app.selected].key.clone();
+    let expanded = app.expanded.clone();
+    let mut table = TableState::default();
+    let rendered_offset = std::cell::Cell::new(0);
+    let mut dump = |app: &App, width, height, name: &str| {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, app, &mut table))
+            .unwrap();
+        rendered_offset.set(table.offset());
+        let buffer = terminal.backend().buffer();
+        let text = (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(path) = std::env::var_os("RESWHO_UI_EVIDENCE") {
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(
+                std::path::Path::new(&path).join(format!("help-{name}-{width}x{height}.txt")),
+                &text,
+            )
+            .unwrap();
+        }
+        text
+    };
+    dump(&app, 100, 30, "before");
+    let offset = rendered_offset.get();
+    handle_key(&mut app, KeyCode::Char('?').into());
+    for (page, name, last) in [
+        (0, "Controls", "quit anywhere"),
+        (1, "Panels", "Scroll inventory / details"),
+        (2, "Metrics", "one query at a time"),
+    ] {
+        assert_eq!(app.help_view.page, page);
+        for (width, height) in [(160, 45), (100, 30), (36, 10)] {
+            app.help_view.scroll.set(0);
+            let text = dump(&app, width, height, name);
+            assert_eq!(rendered_offset.get(), offset);
+            assert!(text.contains(&format!("[{name}]")), "{text}");
+            let hint = if width == 36 {
+                "↑↓ Scroll  Tab Page  Esc Close"
+            } else {
+                "Tab/Shift-Tab page  Esc/? close"
+            };
+            assert!(text.contains(hint), "{text}");
+            let check_gap = |text: &str| {
+                let lines: Vec<_> = text.lines().collect();
+                let footer = lines.iter().position(|line| line.contains(hint)).unwrap();
+                let top = lines.iter().find(|line| line.contains("┌ Help ")).unwrap();
+                let left = top[..top.find("┌ Help ").unwrap()].chars().count();
+                assert!(
+                    lines[footer - 1]
+                        .chars()
+                        .skip(left + 1)
+                        .take(usize::from(width.min(96) - 2))
+                        .all(|ch| ch == ' '),
+                    "missing body/footer gap: {text}"
+                );
+            };
+            check_gap(&text);
+            if width == 160 {
+                assert_eq!(app.help_view.scroll.get(), 0);
+                assert!(text.contains(last), "wide content should fit: {text}");
+            }
+            handle_key(&mut app, KeyCode::End.into());
+            let bottom = dump(&app, width, height, &format!("{name}-bottom"));
+            assert!(bottom.contains(last), "{bottom}");
+            check_gap(&bottom);
+            let lines: Vec<_> = bottom.lines().collect();
+            let footer = lines.iter().position(|line| line.contains(hint)).unwrap();
+            let top = lines.iter().find(|line| line.contains("┌ Help ")).unwrap();
+            let left = top[..top.find("┌ Help ").unwrap()].chars().count();
+            assert!(
+                lines[footer - 2]
+                    .chars()
+                    .skip(left + 1)
+                    .take(usize::from(width.min(96) - 2))
+                    .any(|ch| ch != ' '),
+                "expected exactly one blank row before footer: {bottom}"
+            );
+            let end = app.help_view.scroll.get();
+            handle_key(&mut app, KeyCode::Down.into());
+            assert_eq!(app.help_view.scroll.get(), end);
+            handle_key(&mut app, KeyCode::PageUp.into());
+            assert!(app.help_view.scroll.get() <= end);
+            handle_key(&mut app, KeyCode::Home.into());
+            assert_eq!(app.help_view.scroll.get(), 0);
+            handle_key(&mut app, KeyCode::PageDown.into());
+            assert!(app.help_view.scroll.get() > 0 || end == 0);
+        }
+        app.help_view.scroll.set(usize::MAX);
+        dump(&app, 160, 45, &format!("{name}-resized"));
+        assert!(app.help_view.scroll.get() < usize::MAX);
+        handle_key(&mut app, KeyCode::Tab.into());
+        assert_eq!(app.help_view.scroll.get(), 0);
+    }
+    assert_eq!(app.help_view.page, 0);
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+    );
+    assert_eq!(app.help_view.page, 2);
+    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT));
+    assert_eq!(app.help_view.page, 1);
+    for ch in ['q', 's', 'e', 'r', 'p', '/', 'c', 'd'] {
+        assert!(!handle_key(&mut app, KeyCode::Char(ch).into()));
+    }
+    assert!(app.help && app.details.is_none() && !app.extensions_page);
+    assert!(app.manual_refresh.is_none() && app.paused && app.collecting);
+    assert_eq!(app.rows[app.selected].key, selected);
+    assert_eq!(app.expanded, expanded);
+    assert_eq!(app.path_scroll, 16);
+    handle_key(&mut app, KeyCode::Esc.into());
+    assert!(!app.help);
+    dump(&app, 100, 30, "restored");
+    assert_eq!(rendered_offset.get(), offset);
+
+    assert_eq!(app.rows[app.selected].key, selected);
+    handle_key(&mut app, KeyCode::Char('?').into());
+    assert_eq!(app.help_view.page, 0);
+    assert_eq!(app.help_view.scroll.get(), 0);
+    handle_key(&mut app, KeyCode::Char('?').into());
+    assert!(!app.help);
+    assert!(handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+    ));
 }
