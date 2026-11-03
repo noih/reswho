@@ -2,7 +2,7 @@
   "id": "example",
   "version": "1.0.0",
   "engines": {
-    "reswho": ">=1.0.0 <2.0.0"
+    "reswho": ">=1.0.1 <2.0.0"
   },
   "protocol_version": 1,
   "platforms": [
