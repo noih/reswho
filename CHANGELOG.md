@@ -1,8 +1,13 @@
 # Changelog
 
+## 1.0.1
+
+- 精簡 README，以快速定位資源所屬的 app、project、container 與相關程序為主軸，保留安裝、使用範例與詳細文件連結。
+- 更新1.0.0發佈狀態，移除已完成步驟的待驗證文字。
+
 ## 1.0.0
 
-首次發佈準備；實際公開時間以 GitHub Release 為準。
+首次公開發佈，已提供 GitHub Release、crates.io package 與公開 Homebrew tap formula。
 
 - macOS 唯讀程序與資源歸屬，依 application、project、executable 分組。
 - Ratatui TUI、Markdown、版本化 JSON 與離線 JSON Schema；排序、搜尋、範圍查詢與程序詳細資訊。
@@ -13,9 +18,9 @@
 
 已知限制：
 
-- 第一版僅以 macOS Apple Silicon 為支援目標；deployment target 為15.0，不代表已測過所有 macOS 版本。首輪 macOS 15 Actions 驗證待執行。
+- 第一版僅以 macOS Apple Silicon 為支援目標；deployment target 為15.0，macOS 15 release Actions 已通過，不代表已測過所有 macOS 版本。
 - 程序資料受作業系統權限、程序退出與取樣競態影響；數據可能缺失或不完整。唯讀監測不代表永不寫檔：設定、extension 安裝與 discovery metadata 會寫入 config root。
 - Apple Container stats 僅啟用已驗證的1.6.1 wire version；其他版本保留 inventory 與診斷。Podman 真實驗證僅涵蓋 nested Linux 4.9.4，macOS machine、SSH、rootless 與新版尚未驗證。
 - 外部 extension 以使用者權限執行，並非安全 sandbox。使用者需信任來源。
 - 不提供穩定 Rust library API。JSON 與 extension 協定以各自版本契約為準。
-- 尚未提供 Developer ID 簽章或 notarization。首發前仍需真實 Actions、公開下載、Homebrew 與 crates.io 發佈驗證。
+- 尚未提供 Developer ID 簽章或 notarization。Homebrew 實際安裝與 `brew test` 尚未驗證。
