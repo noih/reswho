@@ -205,7 +205,7 @@ Drop-in 資料夾刪除、manifest／binary 失效或壞更新時，原登記與
 
 ## 本次錯誤與 profiling（rw-32）
 
-TUI 用 `e` 開啟獨立 Extensions 頁，Esc 返回原頁（e 不切換頁面），保留主樹選取與 scroll；開頁不要求採集。主頁有錯誤時顯示精簡 issue count＋e 提示。頁面顯示本次 provider／version／phase／result／reason／duration_ms；不將完整 diagnostic 重複塞進主樹。Markdown 一般輸出顯示每來源的精簡錯誤；`reswho --md --profile` 加計時表。JSON snapshot `reswho/12` 保留 extensions report／resources，tag_report 依 PID detail scope 提供；Schema8／9／10／11 保留。`extensions --json` 保留 metadata array，新增各 entry 的 report（drop-in read／validate／register，以及能力 never_invoked／skipped）；全 registry read scope 同時保留在 snapshot report。離線清單不呼叫 collect／classify／details、不探測服務。
+TUI 用 `e` 開啟獨立 Extensions 頁，Right／l 開 provider 詳情，Left／h 或 Esc 分兩層返回原頁（e 不切換頁面），保留主樹選取與 scroll；開頁不要求採集。主頁有錯誤時顯示精簡 issue count＋e 提示。頁面顯示本次 provider／version／phase／result／reason／duration_ms；不將完整 diagnostic 重複塞進主樹。Markdown 一般輸出顯示每來源的精簡錯誤；`reswho --md --profile` 加計時表。JSON snapshot `reswho/12` 保留 extensions report／resources，tag_report 依 PID detail scope 提供；Schema8／9／10／11 保留。`extensions --json` 保留 metadata array，新增各 entry 的 report（drop-in read／validate／register，以及能力 never_invoked／skipped）；全 registry read scope 同時保留在 snapshot report。離線清單不呼叫 collect／classify／details、不探測服務。
 
 每輪重新建立 report，startup read／validate／register 資料與本輪實際能力分開 phase。只用 Instant 量測實際執行，duration_ms 為可含小數的非負數；skipped／never_invoked 為 null，0 不代表未呼叫。失敗嘗試也保留 duration；核心拒絕 contribution 時標記失敗，不能只以 provider return 當成功。Native command details 及 external details 都只沿用真實按需查詢，不為 profiling 多跑一次。collection_ms 是整輪 wall time；startup、共享批次驗證及平行 provider durations 有重疊，不可加總當總耗時。Worker 失敗時 TUI 保留本次 report，舊 snapshot 僅作 stale 資源畫面。
 

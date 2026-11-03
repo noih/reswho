@@ -2,11 +2,11 @@
 
 ## 狀態
 
-本文件記錄產品方向。macOS 唯讀採集原型已實作，詳見 [採集驗證](collection-probe.md)；已加入 TCP／UDP 端點與通用結構分類；Docker 容器 metadata／stats 已接入，見 [容器採集](containers.md)；[基本 TUI](tui.md) 已接入。容器內程序尚未實作。以下完整第一版範圍不代表已完成。
+本文件記錄產品方向。macOS 唯讀採集原型已實作，詳見 [採集驗證](collection-probe.md)；已加入 TCP／UDP 端點與通用結構分類；Docker、Apple Container 與 Podman metadata／stats 已接入，見 [容器採集](containers.md)；[基本 TUI](tui.md) 已接入。容器內程序尚未實作。以下完整第一版範圍不代表已完成。
 
 ## 已確認方向
 
-可擴充架構與共用設定的已確認設計見 [Extension 與設定契約](extensions-settings.md)；registry、設定檔與外部 extension 尚未實作。
+可擴充架構與共用設定的已確認設計見 [Extension 與設定契約](extensions-settings.md)；registry、設定檔、Settings UI、native external extension 安裝／discovery 及診斷已實作。外部入口僅接受 host-compatible native binary，協定維持 protocol1；目前輸出為 JSON12／MD19。
 
 - 名稱為 `reswho`，採 TUI，產品介面可全英文。
 - 第一版平台為 macOS，使用 Rust＋Ratatui，採集層與呈現層分離。
@@ -42,7 +42,7 @@
 
 分類使用通用、可驗證的結構與 metadata，不依賴特定電腦的 app／process 名稱清單。缺乏線索時保留粗分類或未知，並區分直接觀測與推論。
 
-分類優先順序為直接 App → 直接 Project → 經條件驗證的祖先歸屬 → Bin → Unknown。System 依系統路徑保留大分類，其內亦可按 bin 彙總。非 Git 專案依最近的描述檔辨識，支援標記見 `collection-probe.md`。沒有標記時保留 cwd，不猜用途。
+內建與 native 外部來源提出多維 tags，由核心依 `source_priority` 裁決各維度的有效提案與排除，再由樹依有效 app → project → bin 選主要分組；app／project 可同時有效，此時以 app 分組。未設定時內建順序為 `app_bundle` → `project` → `ancestor` → `bin` → `docker` → `podman` → `apple` → `command`；祖先提案仍須符合 UID／cwd／啟動時間條件。Settings 所有權與安裝序不因分類優先序改變；指定 PID 詳情才顯示 tags／裁決。System 依系統路徑保留大分類，其內亦可按有效 bin 彙總。非 Git 專案依最近的描述檔辨識，支援標記見 `collection-probe.md`。沒有標記時保留 cwd，不猜用途。
 
 分類須附依據。名稱前綴屬弱線索；工作目錄或 mount 能提供較直接的路徑關聯。相同文字出現在 name 與 label 時，不應當作兩份獨立證據。線索衝突時呈現候選或未知，不強制選擇。
 
@@ -97,7 +97,7 @@ Markdown 使用 `#` 報告標題、`##` 大分類與一般段落摘要；其他�
 
 - macOS、Rust＋Ratatui、唯讀。
 - 基本 CPU、memory、swap 概況與程序列表，支援排序、搜尋及詳情。
-- 分類資源樹，顯示應用、Docker、專案／worktree 與未知項目。
+- 分類資源樹，顯示應用、Docker／Apple Container／Podman、專案／worktree、一般資源與未知項目。
 - 可逐層展開的資源樹、搜尋／排序，以及選取項目的路徑狀態列。
 - 顯示 PID、執行時間、路徑、命令、埠與可用的歸屬線索。
 - 低用量服務保留於分類樹，使用者可自行深入查詢。
@@ -118,7 +118,7 @@ Markdown 使用 `#` 報告標題、`##` 大分類與一般段落摘要；其他�
 ## 待決定
 
 - 最低 macOS 版本，以及 Linux／Windows 的後續支援範圍。
-- 歸屬衝突、共享服務與權限降級的具體行為。
+- 共享服務與權限降級的後續產品範圍；目前 tags 衝突裁決見 extension protocol。
 - 效能預算、取樣頻率及驗收標準。
 
 ## 尚未納入第一版的建議

@@ -204,21 +204,38 @@ fn protocol_failures_are_isolated_and_not_retried_within_the_round() {
 fn timeout_cancellation_and_pipe_limits_reap_owned_process_groups() {
     let dir = tempfile::tempdir().unwrap();
     let pid_file = dir.path().join("pid");
+    let pending_pid = dir.path().join("pid.pending");
+    let hold = dir.path().join("hold");
     let sleeping = fixture(
         dir.path(),
         "sleeping",
         &format!(
-            "FILE *f=fopen({:?}, \"w\"); fprintf(f, \"%d\", getpid()); fclose(f); sleep(30)",
-            pid_file.to_str().unwrap()
+            "FILE *f=fopen({:?}, \"w\"); assert(f); while(access({:?}, F_OK)==0) usleep(1000); assert(fprintf(f, \"%d\", getpid())>0); assert(fclose(f)==0); assert(rename({:?}, {:?})==0); sleep(30)",
+            pending_pid, hold, pending_pid, pid_file
         ),
     );
     let settings = super::super::default_settings().unwrap();
     let cancel = Cancellation::default();
     let mut context = Context::new(&settings, &cancel);
     context.deadline = Instant::now() + Duration::from_secs(2);
-    assert!(dispatch(&sleeping, &context, Request::Collect).is_err());
-    let pid: i32 = fs::read_to_string(&pid_file).unwrap().parse().unwrap();
+    let started = Instant::now();
+    let result = dispatch(&sleeping, &context, Request::Collect);
+    assert!(result.is_err());
+    let pid: i32 = fs::read_to_string(&pid_file)
+        .unwrap_or_else(|error| {
+            panic!(
+                "timeout phase (startup + behavior, 2s): provider PID not published after {:?}: {error}; staged={}; error={:?}",
+                started.elapsed(), pending_pid.exists(), result.as_ref().err()
+            )
+        })
+        .parse()
+        .expect("timeout phase: published PID must be complete");
     assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    assert!(started.elapsed() >= Duration::from_secs(2));
+    eprintln!(
+        "timeout phase (startup + behavior): elapsed={:?}",
+        started.elapsed()
+    );
     let flooding = fixture(
         dir.path(),
         "flood",
@@ -228,16 +245,51 @@ fn timeout_cancellation_and_pipe_limits_reap_owned_process_groups() {
     assert!(dispatch(&flooding, &context, Request::Collect).is_err());
     fs::remove_file(&pid_file).unwrap();
     let context = Context::new(&settings, &cancel);
+    fs::write(&hold, "").unwrap();
     std::thread::scope(|scope| {
         let child = scope.spawn(|| dispatch(&sleeping, &context, Request::Collect));
         let start = Instant::now();
+        while !pending_pid.exists() && start.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let staged = pending_pid.exists();
+        let published_early = pid_file.exists();
+        let released = fs::remove_file(&hold);
         while !pid_file.exists() && start.elapsed() < Duration::from_secs(2) {
             std::thread::sleep(Duration::from_millis(5));
         }
+        let ready = pid_file.exists();
+        let startup_elapsed = start.elapsed();
+        let canceled = Instant::now();
         cancel.cancel();
-        assert!(child.join().unwrap().is_err());
+        let result = child.join().unwrap();
+        eprintln!(
+            "cancel phase: startup={startup_elapsed:?}, cleanup={:?}, staged={staged}, ready={ready}",
+            canceled.elapsed()
+        );
+        assert!(result.is_err());
+        assert!(
+            staged,
+            "cancel startup phase: provider did not stage PID within 2s"
+        );
+        assert!(
+            !published_early,
+            "PID became visible before complete publication"
+        );
+        released.unwrap();
+        assert!(
+            ready,
+            "cancel startup phase: provider did not publish PID within 2s"
+        );
+        assert!(
+            canceled.elapsed() < Duration::from_secs(2),
+            "cancel behavior phase exceeded 2s"
+        );
     });
-    let pid: i32 = fs::read_to_string(&pid_file).unwrap().parse().unwrap();
+    let pid: i32 = fs::read_to_string(&pid_file)
+        .expect("cancel phase: published PID missing after cleanup")
+        .parse()
+        .expect("cancel phase: published PID must be complete");
     assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
     dir.close().unwrap();
 }

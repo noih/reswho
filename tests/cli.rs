@@ -304,7 +304,9 @@ fn fifo_entrypoints_and_manifests_never_block_offline_lifecycle() {
     let manifest = dir.path().join("manifest.json");
     let mut value = serde_json::json!({"id":"fifo","version":"1.0.0","engines":{"reswho":"*"},"protocol_version":1,"platforms":["macos"],"capabilities":["classify"],"executable":binary});
     fs::write(&manifest, value.to_string()).unwrap();
-    let run = |args: &[&str]| {
+    let setup_budget = Duration::from_secs(5);
+    let fifo_budget = Duration::from_secs(1);
+    let run = |args: &[&str], phase: &str, budget: Duration| {
         let mut child = Command::new(env!("CARGO_BIN_EXE_reswho"))
             .arg("--config")
             .arg(&config)
@@ -314,34 +316,58 @@ fn fifo_entrypoints_and_manifests_never_block_offline_lifecycle() {
             .spawn()
             .unwrap();
         let start = Instant::now();
-        while child.try_wait().unwrap().is_none() && start.elapsed() < Duration::from_secs(1) {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        let timed_out = child.try_wait().unwrap().is_none();
-        if timed_out {
-            child.kill().unwrap();
+        let polled = loop {
+            match child.try_wait() {
+                Ok(None) if start.elapsed() < budget => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                result => break result,
+            }
+        };
+        let timed_out = matches!(polled, Ok(None));
+        if !matches!(polled, Ok(Some(_))) {
+            let _ = child.kill();
         }
         let result = child.wait_with_output().unwrap();
-        assert!(!timed_out, "offline extension command blocked on FIFO");
+        assert!(
+            polled.is_ok(),
+            "offline lifecycle {phase} poll failed: {polled:?}"
+        );
+        assert!(
+            !timed_out,
+            "offline lifecycle {phase} watchdog (startup + operation, budget={budget:?}): args={args:?}, elapsed={:?}, status={}, stdout_bytes={}, stderr_bytes={}; FIFO blocking cause unproven",
+            start.elapsed(),
+            result.status,
+            result.stdout.len(),
+            result.stderr.len()
+        );
         result
     };
     assert!(
-        run(&["extensions", "install", manifest.to_str().unwrap()])
-            .status
-            .success()
+        run(
+            &["extensions", "install", manifest.to_str().unwrap()],
+            "setup",
+            setup_budget,
+        )
+        .status
+        .success()
     );
     value["id"] = "healthy".into();
     value["executable"] = "/usr/bin/false".into();
     fs::write(&manifest, value.to_string()).unwrap();
     assert!(
-        run(&["extensions", "install", manifest.to_str().unwrap()])
-            .status
-            .success()
+        run(
+            &["extensions", "install", manifest.to_str().unwrap()],
+            "setup",
+            setup_budget,
+        )
+        .status
+        .success()
     );
     fs::remove_file(&binary).unwrap();
     let name = CString::new(binary.as_os_str().as_bytes()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o700) }, 0);
-    let result = run(&["extensions", "--json"]);
+    let result = run(&["extensions", "--json"], "FIFO check", fifo_budget);
     assert!(result.status.success());
     let list: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
     let entries = list.as_array().unwrap();
@@ -360,17 +386,25 @@ fn fifo_entrypoints_and_manifests_never_block_offline_lifecycle() {
     value["executable"] = binary.to_string_lossy().as_ref().into();
     fs::write(&manifest, value.to_string()).unwrap();
     assert!(
-        !run(&["extensions", "install", manifest.to_str().unwrap()])
-            .status
-            .success()
+        !run(
+            &["extensions", "install", manifest.to_str().unwrap()],
+            "FIFO check",
+            fifo_budget,
+        )
+        .status
+        .success()
     );
     fs::remove_file(&manifest).unwrap();
     let name = CString::new(manifest.as_os_str().as_bytes()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o700) }, 0);
     assert!(
-        !run(&["extensions", "install", manifest.to_str().unwrap()])
-            .status
-            .success()
+        !run(
+            &["extensions", "install", manifest.to_str().unwrap()],
+            "FIFO check",
+            fifo_budget,
+        )
+        .status
+        .success()
     );
     dir.close().unwrap();
 }

@@ -8,7 +8,7 @@ reswho --json --from pid:1234 --depth 0
 reswho --json-schema > reswho.schema.json
 ```
 
-`--json-schema` 不採集程序、不查詢 Docker、不連網。Schema 僅使用內部 `$ref`，可離線驗證。Schema 的 `$id` 是 `urn:reswho:snapshot:10`，不是下載網址。Schema 使用 [Draft 2020-12](https://json-schema.org/draft/2020-12)；測試以 [jsonschema](https://docs.rs/jsonschema/0.60.2/jsonschema/) 驗證。
+`--json-schema` 不採集程序、不查詢 Docker、不連網。Schema 僅使用內部 `$ref`，可離線驗證。Schema 的 `$id` 是 `urn:reswho:snapshot:12`，不是下載網址。Schema 使用 [Draft 2020-12](https://json-schema.org/draft/2020-12)；測試以 [jsonschema](https://docs.rs/jsonschema/0.60.2/jsonschema/) 驗證。
 
 ## 輸出與版本規則
 
@@ -47,7 +47,7 @@ reswho --json-schema > reswho.schema.json
 
 ## 共通值
 
-所有下列物件欄位均會輸出；可缺值的欄位使用 `null`，不省略 key。空陣列使用 `[]`，不是 null。
+除各節明示可省略的欄位（例如 tag_report／extension_details）外，下列物件欄位均會輸出；可缺值的欄位使用 `null`。空陣列使用 `[]`，不是 null。
 
 | 型別／後綴 | 規則 |
 | --- | --- |
@@ -66,13 +66,14 @@ JSON 整數範圍可能超出 JavaScript `Number.MAX_SAFE_INTEGER`。需要完�
 
 | 欄位 | 型別與意義 |
 | --- | --- |
-| `schema` | 固定 `reswho/9` |
+| `schema` | 固定 `reswho/12` |
 | `captured_unix_ms` | 本輪收集完成附近的 Unix 時間，不是所有欄位共同的原子採樣時刻 |
 | `sample_ms` | 本機兩次掃描取樣階段的經過時間；各程序觀察時間及 Docker 取樣不同 |
 | `collection_ms` | 本輪採集與分類總耗時；不含輸出序列化時間 |
 | `system` | 整機指標；指定 `--from` 時仍是整機 |
 | `scope` | 選取範圍 ref，等於 `root.reference` |
 | `warnings` | Diagnostic 陣列；含 `collection_note` 靜態限制與本輪整機／採集問題 |
+| `extensions` | 本次 startup／能力執行的結構化 reports，見 reswho/10 段落 |
 | `root` | 所選 Node，完整快照使用 `group:all` |
 
 `system` 的 `cpu_percent` 為整機 0–100%，`logical_cpus` 為邏輯核心數。`memory_total_bytes`、`memory_used_bytes`、`swap_used_bytes` 為整機原始數值。五個欄位均可為 null。
@@ -83,14 +84,15 @@ JSON 整數範圍可能超出 JavaScript `Number.MAX_SAFE_INTEGER`。需要完�
 | --- | --- |
 | `reference` | 不透明查詢 ref；程序 `pid:N`，其他 `group:ID` |
 | `name` | 展示名稱，不唯一，不用於合併／識別 |
-| `kind` | `group`、`process` 或 `container` |
-| `grouping` | 程序為 null；其他為 category/runtime/container/app/repo/checkout/project/bin/system/unknown |
+| `kind` | `group`、`process`、`container` 或 `resource` |
+| `grouping` | 程序為 null；其他為 category/runtime/container/app/repo/checkout/project/bin/system/unknown/resource；resource leaf 亦為 null |
 | `evidence` | 展示用文字陣列；不得依前綴或英文內容解析路徑 |
 | `attribution` | Attribution 或 null；分類的可機讀來源與路徑 |
 | `diagnostics` | 分類／樹建構問題；指定 `--from` 時也包含沿路祖先的分類及 runtime 診斷 |
 | `process` | Process 或 null |
 | `container` | Container 或 null |
 | `runtime` | Runtime 或 null |
+| `resource` | typed resource 或 null；指標不納入 host／container totals |
 | `totals` | 本節點與所有後代的主機程序彙總 |
 | `container_totals` | 容器彙總或 null；只出現在容器 category/runtime/project 群組 |
 | `children` | 子節點陣列；群組之間是歸屬關係，程序之間是經身分檢查的父子關係 |
@@ -98,7 +100,8 @@ JSON 整數範圍可能超出 JavaScript `Number.MAX_SAFE_INTEGER`。需要完�
 
 | kind / grouping | 非 null payload | 限制 |
 | --- | --- | --- |
-| process / null | `process` | container/runtime/container_totals 為 null；子項只可能是 process |
+| process / null | `process` | container/runtime/resource/container_totals 為 null；子項只可能是 process |
+| resource / null | `resource` | process/container/runtime/container_totals 為 null；無 children，omitted_children 為0 |
 | container / container | `container` | process/runtime/container_totals 為 null；無 children，omitted_children 為0 |
 | group / runtime | `runtime`、`container_totals` | process/container 為 null |
 | group / 其他 | 無單一資源 payload | process/container/runtime 為 null；容器 category/project 可有 container_totals |
@@ -132,7 +135,7 @@ JSON 保留 `group:all` 根與 System services 包裝，不套用 TUI／Markdown
 | `compose` | Compose 宣告的專案路徑，可能缺失；屬宣告資料，未證明本機存在 |
 | `bind_workdir` / `bind_project` | 經現有條件檢查的本機 bind 推論專案根；inferred=true |
 
-Category／未知歸屬可為 null。程序會保留自己的歸屬來源，包括祖先推論；群組的 attribution 描述分組依據，不代表所有成員都由直接線索分類。App 優先時 cwd 的其他專案候選仍可能只在 evidence 顯示，不是已確立的第二份歸屬。Container 的專案名稱／service／mounts 另在其 payload，避免把展示名稱當路徑。
+Category／未知歸屬可為 null。一般程序摘要的分類 evidence 為 `[]`、attribution 為 `null`；指定 PID 詳情保留當輪歸屬及 `tag_report` 的多維提案與裁決。群組 attribution 描述有效分組依據，不代表所有成員都由直接線索分類。`source_priority` 決定各維度的有效提案與排除；樹再從有效 tags 依 app → project → bin 選主要分組。App／project 可同時有效，此時仍以 app 分組。Container 的專案名稱／service／mounts 另在其 payload，避免把展示名稱當路徑。
 
 ## Process 與 Network
 
@@ -155,7 +158,7 @@ Socket：`fd` 為非負 descriptor；`protocol` 為 tcp/udp；`local` 為 `IP:po
 
 ## Runtime、Container 與容器子結構
 
-Runtime：`name`（目前 docker / apple）、`context`、`endpoint_ref`、`daemon_id`（後三者可為 null）、`status`（available/unavailable）、`inventory_complete`、`collection_ms`、`unavailable`。available 只表示已成功列出 inventory，不保證 stats/inspect 完整。endpoint_ref 是 endpoint 的不透明識別，不暴露 endpoint 原文。
+Runtime：`name`（目前 docker / podman / apple）、`context`、`endpoint_ref`、`daemon_id`（後三者可為 null）、`status`（available/unavailable）、`inventory_complete`、`collection_ms`、`unavailable`。available 只表示已成功列出 inventory，不保證 stats/inspect 完整。endpoint_ref 是 endpoint 的不透明識別，不暴露 endpoint 原文。
 
 | Container 欄位 | 意義 |
 | --- | --- |
@@ -175,7 +178,9 @@ Runtime：`name`（目前 docker / apple）、`context`、`endpoint_ref`、`daem
 
 Port：`protocol` 來源字串、`container_port`（uint16）、`host_ip`（string/null）、`host_port`（uint16/null）。這是發布設定，不是觀測到的 listener／流量。
 
-本機 Unix endpoint 的 Linux Docker stats 使用同輪兩次 one-shot，間隔沿用 `--sample-ms`（預設250ms）；`cpu_percent` 是該輪樣本間的平均，沒有跨輪平滑。SSH／TCP 等端點或不支援的 API 版本沿用 CLI 的取樣方式。`sample_ms` 仍只描述主機取樣階段，不代表容器的實際取樣窗。這些來源差異不改變 JSON 欄位結構；版本目前為 `reswho/9`，指標語意保留。
+本機 Unix endpoint 的 Linux Docker stats 使用同輪兩次 one-shot，間隔沿用 `--sample-ms`（預設250ms）；`cpu_percent` 是該輪樣本間的平均，沒有跨輪平滑。SSH／TCP 等端點或不支援的 API 版本沿用 CLI 的取樣方式。`sample_ms` 仍只描述主機取樣階段，不代表容器的實際取樣窗。這些來源差異不改變 JSON 欄位結構；版本目前為 `reswho/12`，指標語意保留。
+
+Podman 使用同輪兩次 raw CLI counters，等待有效 `sampling.interval_ms`；CPU 以 CPUNano／SystemNano 差計算，memory basis 為 `podman_cgroup_usage_bytes`。SystemNano 不遞增或重驗失敗時為 unknown；macOS machine／remote bind 不推論本機路徑。實測限4.9.4 nested Linux，詳見 [容器採集](containers.md)。
 
 Apple Container 1.6.1 以同輪兩次 XPC counters 與回應的 monotonic 時間差計算 CPU，等待沿用 `--sample-ms`，無跨輪資料。未知版本只提供 inventory 並回報 unsupported；不以慢速 CLI stats 偷換取樣方式。`apple` endpoint 依本機使用者服務識別，daemon_id 為 null。
 
@@ -262,7 +267,7 @@ Schema 驗證型別、必填欄位、值域與節點組合；跨欄位／跨節�
 
 ```sh
 reswho --json --depth all | jq '
-  if .schema != "reswho/9" then error("unsupported reswho schema") else . end
+  if .schema != "reswho/12" then error("unsupported reswho schema") else . end
   | .root | recurse(.children[])
   | select(.kind == "process")
   | {ref: .reference, pid: .process.pid, start: .process.started_unix_us,
@@ -270,7 +275,7 @@ reswho --json --depth all | jq '
 '
 ```
 
-取得已確立的歸屬路徑：
+取得群組已確立的歸屬路徑（程序 tags 須另以 `--from pid:N` 要求詳情）：
 
 ```sh
 reswho --json --depth all | jq '
@@ -285,9 +290,9 @@ reswho --json --depth all | jq '
 
 ## 從 reswho/8 遷移至 reswho/9
 
-Attribution source 的封閉 enum 新增 `extension`；其 `extension` 物件保存 provider、version、key、label、basis，path 仍在 attribution.path。原有 app／project 證據優先序、PID metrics 與 totals 不變。Process 可新增 `extension_details` 陣列，各組包含 provider、version 與 parsed typed fields（key、label、value、sensitive）；只在 selected-PID details 查詢時提供，敏感值已由核心改成 `[filtered]`。原有 command DTO 與 native redaction 保留。
+Attribution source 的封閉 enum 新增 `extension`；其 `extension` 物件保存 provider、version、key、label、basis，path 仍在 attribution.path。該版保留當時 app／project 證據優先序、PID metrics 與 totals；目前分類裁決見 reswho/12 段落。Process 可新增 `extension_details` 陣列，各組包含 provider、version 與 parsed typed fields（key、label、value、sensitive）；只在 selected-PID details 查詢時提供，敏感值已由核心改成 `[filtered]`。原有 command DTO 與 native redaction 保留。
 
-[reswho-8.schema.json](../schemas/reswho-8.schema.json) 原樣保留供舊 snapshots 使用；它不接受新版本或新 attribution source。Current examples 與 `--json-schema` 使用9。消費端應先檢查 schema；不能把新資料宣稱為8或假設所有來源都屬既有 enum。Schema 驗證 current examples、custom attribution／details 及錯誤來源的完整 snapshot。
+[reswho-8.schema.json](../schemas/reswho-8.schema.json) 原樣保留供舊 snapshots 使用；它不接受新版本或新 attribution source。目前 examples 與 `--json-schema` 使用12；本段保存8→9的遷移背景。消費端應先檢查 schema；不能把新資料宣稱為8或假設所有來源都屬既有 enum。Schema 驗證 current examples、custom attribution／details 及錯誤來源的完整 snapshot。
 
 `reswho extensions --json` 是獨立的 metadata 陣列，不套用 snapshot Schema，也不執行 provider 或探測來源服務。外部 manifest、host CLI engines、JSON wire、設定範圍及 runtime DTO 的使用方式見 [extension-protocol.md](extension-protocol.md)。
 

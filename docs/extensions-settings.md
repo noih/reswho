@@ -2,15 +2,15 @@
 
 Tenqo：rw-27。
 
-狀態：階段1／2／3／4已驗收（階段4含 b50f457 FIFO review 修復）。階段5的 rw-31 discovery／in-app diagnostics 與 rw-32 profiling 已完成開發驗證，待獨立 review。
+目前實作含 typed registry、version1 config、安全保存的 Settings UI、native external 安裝／discovery、診斷／profiling、共同 tags 與 source priority、一般資源，以及 Docker／Podman／Apple collectors。JSON12／MD19／protocol1；階段驗證與 review 的歷史狀態留在下方各段，不代表目前仍缺少那些功能。
 
 ## Extension 邊界
 
 一個 extension 可提供 collect、classify、details 的任意組合：採集額外資源、提出歸屬與證據、按需取得或解析詳情。parse 是內部實作，不要求另拆一種 extension。內建 Rust 模組與外部獨立執行檔遵循相同資料契約；外部程式透過版本化 JSON 協定溝通，按批處理，不為每個 PID 啟動一次。
 
-核心保留資源身分、去重、統計、分類衝突裁決、排序、樹狀結構、TUI／MD／JSON 呈現、脫敏及有界執行。Extension 回傳結構化資料，不直接寫 Markdown 或繪製 TUI；分類須附證據，不能只靠任意 priority 覆蓋其他歸屬，也不能重複計算已有 PID。
+核心保留資源身分、去重、統計、分類衝突裁決、排序、樹狀結構、TUI／MD／JSON 呈現、脫敏及有界執行。Extension 回傳結構化資料，不直接寫 Markdown 或繪製 TUI；分類須附有效 tag 提案與證據，由核心依使用者 `source_priority` 裁決各維度有效提案與排除，再由樹依有效 app → project → bin 選主要分組（app／project 可並存），不能由 provider 自行繞過驗證或重複計算已有 PID。
 
-每個 extension 宣告穩定 id、版本、協定版本、支援平台、能力及設定需求。預期以 `reswho extensions` 列出 id、版本、內建／外部來源與能力；已安裝、已啟用、來源目前可用是不同狀態。列清單不代表要執行所有資源採集。
+每個 extension 宣告穩定 id、版本、協定版本、支援平台、能力及設定需求。以 `reswho extensions` 列出 id、版本、內建／外部來源與能力；已安裝、已啟用、來源目前可用是不同狀態。列清單不代表要執行所有資源採集。
 
 外部程式具有執行使用者的權限；唯讀宣告、逾時與輸出限制不等於 OS 沙箱。錯誤不阻斷其他來源，但內建模組也須遵守相同期限、取消與資料驗證規則。
 
@@ -53,11 +53,13 @@ Tenqo：rw-27。
 | `sampling.interval_ms` | 250 | 同一輪 CPU 配對取樣之間的最短等待；沿用目前 `--sample-ms` 的200–5000毫秒範圍 |
 | `refresh.interval_ms` | 2000 | TUI 收到上一輪採集結果後，到下一輪自動採集的等待時間；須為正整數毫秒 |
 
-`--sample-ms 500` 對應本次 `sampling.interval_ms=500`，主機、Docker／Apple 的配對取樣與未來引用該 key 的 Podman 都讀取相同值。不把實際樣本間隔當成固定500ms，仍以各來源的有效時間差計算 CPU。來源 API 無法控制取樣窗時須保留其實際口徑，不能宣稱已遵守同一取樣窗。
+`--sample-ms 500` 對應本次 `sampling.interval_ms=500`，主機、Docker／Apple／Podman 的配對取樣都讀取相同值。不把實際樣本間隔當成固定500ms，仍以各來源的有效時間差計算 CPU。來源 API 無法控制取樣窗時須保留其實際口徑，不能宣稱已遵守同一取樣窗。
 
 Refresh 與 sampling 是不同用途。保持目前同時最多一輪採集、不補追趕積欠輪次的行為；暫停停止自動排程，手動刷新仍可執行一次。一次性 MD／JSON 不因 refresh 設定而持續執行。採集 deadline 與這兩個間隔也不是同一個設定。
 
-## 落地與驗收
+## 原始落地與驗收計畫
+
+以下保留最初分階段計畫；現行用法見後方 Current、Settings UI 與 [extension protocol](extension-protocol.md)。
 
 先實作型別化設定 registry 與有效值解析，接入現有 sample／refresh 來源；再讓 Docker／Apple 遵循共同 extension 契約，加入只補充分類／詳情的範例，最後接入外部執行檔與清單。設定檔格式／位置、安裝操作、完整 wire schema 於各階段定義，不將本設計當作已發布介面。
 
@@ -116,7 +118,7 @@ reswho extensions --json
 reswho extensions --no-containers --json
 ```
 
-離線清單依固定順序列出 `docker`、`apple`、`app_bundle`、`command`；各有 id、version、protocol_version、source、platforms、capabilities、enabled、availability。`source=builtin`；`enabled` 代表平台與本次設定允許執行，與來源是否可用分開。`--no-containers` 停用本次 container collect；不影響 classify／details。清單不執行 CLI、服務或資源查詢，因此 `availability=unknown`，不宣稱服務正常。
+目前離線 builtin 清單依序列出 `app_bundle`、`project`、`ancestor`、`bin`、`docker`、`podman`、`apple`、`command`；各有 id、version、protocol_version、source、platforms、capabilities、enabled、availability。`source=builtin`；`enabled` 代表平台與本次設定允許執行，與來源是否可用分開。`--no-containers` 停用本次 container collect；不影響 classify／details。清單不執行 CLI、服務或資源查詢，因此 `availability=unknown`，不宣稱服務正常。
 
 共同 Rust API 是 `extensions::Extension::execute(Context, Request) -> Contribution`。Context 含同輪不可變 resolved settings、Cancellation 與 deadline；Request／Contribution 分為 collect、classify、details，dispatcher 依能力驗證並以 provider／version 包裝可序列化的 Response。設定 registry 先建 core，再依上述順序註冊；Docker／Apple 透過 uses 引用同一 `sampling.interval_ms`。`Options.settings` 以 Arc 持有一次解析結果，worker 更新 selected PID 時不重讀設定。
 
@@ -290,7 +292,7 @@ UI9 Current（基於d1f698d；stay／fixed）：依使用者最新裁定，foote
 
 ## 分類來源優先序（rw-38）
 
-使用者 config version1 新增頂層 `source_priority: ["app_bundle", "project", "ancestor", "bin", "example"]`，與 settings definitions、安裝序及 shared canonical owner 分開；`settings --json` 可離線檢視已保存 ID。Extensions dialog 明示 Priority · highest first，Shift-Up/Down 改 draft，Ctrl-S 保存，Esc 放棄；d 詳情、內層 Esc 返回 draft 列表，s／q 不新增導航或離開程序。小終端保留快捷鍵。內建來源參與排序但不可移除。
+使用者 config version1 新增頂層 `source_priority: ["app_bundle", "project", "ancestor", "bin", "example"]`，與 settings definitions、安裝序及 shared canonical owner 分開；`settings --json` 可離線檢視已保存 ID。Extensions dialog 明示 Priority · highest first，Shift-Up/Down 改 draft，Ctrl-S 保存，Esc 放棄；Right／l 開詳情、內層 Left／h 或 Esc 返回 draft 列表，s／q 不新增導航或離開程序。小終端保留快捷鍵。內建來源參與排序但不可移除。
 
 沿用 Settings 安全 transaction：no-follow path、鎖、baseline 衝突檢查、獨立 key merge、0600 temp 與 atomic rename。Malformed／衝突／寫入錯誤保留 draft 並顯示錯誤，沒有假的 applied 狀態。成功才發佈新的 immutable Resolved；採集中保留既有 Arc，下一輪生效。缺席 ID 保留位置，新的 provider 依既有 inventory 附加底部，更新不重排；首次保存記錄完整現有順序。
 

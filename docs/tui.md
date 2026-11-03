@@ -11,7 +11,7 @@ stdin 與 stdout 都是 TTY 時，`reswho` 自動開啟 TUI；其他情況預設
 | ↑／↓、k／j | 選取上一／下一列 |
 | ←／h、→／l | 收合或父層、展開或子層；程序／resource leaf 的 → 開詳情 |
 | Enter／Space | 展開／收合 |
-| d | 主樹的程序／resource 或 Extensions inventory 開啟詳情；←／h 或 Esc 返回上一層 |
+| d | 主樹直接開啟程序（含父程序）／resource 詳情；Extensions inventory 用 →／l 開啟；←／h 或 Esc 返回上一層 |
 | Home／End、PgUp／PgDn | 首尾列、移動十列 |
 | c／m／u | 同層 CPU／RAM／uptime 降序排列 |
 | n | 同層名稱自然升序排列 |
@@ -44,7 +44,7 @@ stdin 與 stdout 都是 TTY 時，`reswho` 自動開啟 TUI；其他情況預設
 
 啟動時將 alternate screen 切換與首次完整 loading 繪製包在同一個 synchronized update，避免支援此協定的終端機先呈現空白畫面。同步區段只包含初始化與首次繪製，不等待資源採集；之後仍以事件式差異重畫。初始化或繪製失敗時會嘗試結束同步更新並還原 terminal；不支援協定的終端機仍可能顯示切換過程。
 
-退出會取消採樣等待與 Docker 查詢，回收自身建立的查詢程序，還原 terminal。取消是協作式的，已進入的原生系統／檔案查詢須先返回。此版本沒有停止服務、權限提升、歷史觀測或 Review 判定。
+退出會取消採樣等待與容器查詢，回收自身建立的查詢程序，還原 terminal。取消是協作式的，已進入的原生系統／檔案查詢須先返回。此版本沒有停止服務、權限提升、歷史觀測或 Review 判定。
 
 程序詳情是按需開啟的完整頁面，保留頂部系統摘要並替換列表，底部只顯示詳情操作。標題用青色、欄位用淡色、正文使用終端機預設色；PID 僅顯示於頁面標題。顯示命令、script/JAR 入口、cwd/exe、PPID/UID、網路端點及歸類依據；命令沿用 `[filtered]` 規則與限制。群組、容器與 Unreadable 合併列不開啟程序詳情。
 

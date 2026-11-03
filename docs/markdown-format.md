@@ -1,6 +1,6 @@
 # Markdown 輸出格式
 
-已實作：`reswho-md/19`。Tenqo：rw-8、rw-9、rw-16。JSON `reswho/12`，語意見 [JSON 格式](json-format.md)。容器採用獨立統計範圍，詳見 [容器採集](containers.md)；既有主機分類與 ref 保留。
+已實作：`reswho-md/19`。Tenqo：rw-8、rw-9、rw-16。JSON `reswho/12`，語意見 [JSON 格式](json-format.md)。容器採用獨立統計範圍，詳見 [容器採集](containers.md)；ownership group ref 依 dimension／id／canonical root 決定，早期原型 refs 應從目前 snapshot 重新取得。
 
 ## 原則
 

@@ -119,3 +119,31 @@ fixtures 用於缺欄位、格式改變、逾時、部分失敗與身分變更�
 最終 affected gate：fmt／all-target Clippy／diff-check 通過；Podman15例（含共用 Schema／MD 與 host/container 總量分離）、Docker mapping9例、extensions59例、CLI11例、JSON contract7例、既有 priority dialog1例的有效證據齊全。Extensions 初輪58/59通過，既有 sleeping-provider2秒期限案例因 PID file尚未出現失敗；CLI 初輪10/11通過，既有 FIFO1秒 watchdog失敗。兩個未修改的案例隨後單獨 serial執行、保留原 oracle／deadline 後通過；可能與平行啟動負載有關，未證明根因，沒有宣稱初輪平行 gate成功。修正新增 builtin 插入位置：Podman 追加到原清單末端，既有 priority canary 不修改即可通過；受影響離線清單／CLI重驗通過。未跑 full suite、PTY、未修改的 Apple／host live 或額外 stress。
 
 Outer250ms deadline 的 nested native fixture確認 supervisor回收 provider／CLI／其子孫與內層 guard；另覆蓋 outer host death、inner timeout、cancel、missing CLI。暫存 native fixtures／pipes均已回收。兩個臨時驗收 harness及217個自有 prototype cache entries（27.4MiB）已刪除，所有已記錄 temp roots確認不存在。專案主要 target約13GiB刻意保留供後續 review／開發，由專案下一階段邊界檢視；未做全域 cache清理。Tracker與獨立review由leader處理，僅本地commit、不push。
+
+## rw-39 Current：文件核對與 intermittent test 診斷（2026-11-03）
+
+基準為乾淨 main `d2adbad`。核對現行 README／TESTING／docs 與 source：JSON12、MD19、protocol1、native-only 外部入口、Settings／discovery／reports、共同 tags／source_priority、Right／Left 導航與 builtin 順序。Source priority 先裁決各維度有效提案／排除，樹再依有效 app → project → bin 選主要分組；不是跨維度任意覆蓋。舊 Schema8–11、日期／revision 實驗及 Podman4.9.4 nested Linux 的驗證界限保留，未擴張至 macOS machine／SSH／rootless／新版。
+
+兩個歷史失敗仍不能合併成已證明的單一根因：
+
+| 案例／失敗類別 | 本輪證據與結論 |
+| --- | --- |
+| `extensions::external::tests::timeout_cancellation_and_pipe_limits_reap_owned_process_groups`：歷史 PID file absent | 2秒 dispatch deadline 包含 native supervisor／provider 啟動；cancel 的2秒等待也從派工開始。一次兩案例並行 capture 原樣通過，不能證明負載就是歷史根因。Absence 仍未重現／未證明；新診斷區分 timeout phase 未發布、cancel startup 未 staged／未發布與 cancel behavior 超時。 |
+| 同案例：另查出的 empty／partial PID readiness race | 原 producer 先 `fopen(pid,"w")`，consumer 只等 exists 就 cancel，可在 `fprintf/fclose` 前殺掉 provider。把兩步間暫停100ms後，原測試在該輪取消後取到空檔，實際失敗為 `ParseIntError { kind: Empty }`。這是已證明的另一類缺陷，不能解釋歷史 absent file。修正沿用 guard fixture 的 private file＋close＋atomic rename。保留的 file barrier 讓 producer 停在寫入前，consumer 直接確認 staged 存在、public PID 不存在，再放行、等待發布及取消；不是靠加長 sleep／deadline 避免競態。 |
+| `fifo_entrypoints_and_manifests_never_block_offline_lifecycle`：1秒 watchdog | 診斷 capture 重現於第一個 `extensions install`，尚未建立任何 FIFO；耗時1.000263s、被自有 watchdog SIGKILL、stdout／stderr 均0 bytes。這輪排除該 fixture 的 FIFO open 與輸出填滿 pipe；仍無法只靠零輸出區分 pre-main 啟動或 main 內工作。保持原 watchdog／pipe，不套用假想 backpressure 修正。 |
+
+一次後續定向 capture 使用臨時 main／args／startup／manifest／install／persist 標記，測試本身仍維持1秒 watchdog。首次 install 的 spawn 約1.49ms，spawn 返回至 main 約587.45ms；main 至 persist 完成約11.50ms，其中 startup 約1.04ms、manifest約0.91ms、install約0.23ms、install完成至持久化完成約8.03ms（含其間工作）。第二次 spawn 返回至 main 約8.62ms，之後約5.9–7.4ms。該輪全部操作通過。它定位了這一輪的主要耗時在 pre-main；沒有擷取到超時當下的階段，不能宣稱歷史1秒失敗或歷史 guard「未 launch」都已證明同因，也不推測是 dyld、簽章或排程中的哪一項。臨時 instrumentation 已完整還原，不引入 production startup hook 或 runner redesign。
+
+Guard 歷史 fixture 已有 atomic PID marker，並以3秒 readiness 等待至少一個／四個 provider；它與本次 absent marker 同屬啟動／readiness 證據不足類別，但沒有新的同時序捕捉可建立因果連結。本輪不擴大成 guard／stress campaign。
+
+受影響驗證保留部分結果：兩個原案例一次並行均通過；forced publication interleaving 的原版失敗提供 red 證據。修正後 external 精確案例通過：timeout2.006177s，cancel startup30.368ms／cleanup6.760ms，原有8MiB洪流拒絕與兩次 PID不存在斷言保留，另明確限制取消後2秒內清理。CLI capture 為10/11通過、上述首次 install watchdog失敗；JSON contract7/7通過，包含 current examples與Schema8–10相容驗證；Schema11僅保留，該測試沒有Schema11相容驗證斷言。後續臨時階段 capture 的 FIFO精確案例通過，不取代前輪失敗，也不宣稱完整平行 gate已綠。首輪新增診斷曾因 Response沒有Debug而編譯失敗；orchestrator未先驗證完整artifact清單便執行CLI／JSON，該輪不是完整gate，已修正格式化錯誤並以成功編譯確認。fmt、all-target Clippy、diff-check通過。未盲目重跑、延長原期限、全域序列化、忽略測試或重跑full suite／PTY／live。
+
+資源：所有 native fixture／CLI children 經既有 bounded runner或kill＋wait回收，scoped worker join後才作readiness斷言，tempdir RAII在成功／失敗皆移除自有sources／binary／PID barrier／config／FIFO。CLI poll錯誤亦先kill／wait再assert，不發訊號給歷史記錄PID。臨時程式備份／Cargo metadata已刪除，production binary重新建置並確認無標記；沒有改真實設定、runtime服務或其他工作。既有target約13GiB保留為專案開發cache，下個階段邊界檢視。Tenqo與獨立review仍由leader負責；僅本地commit、不push。
+
+### rw-39 review 邊界修正
+
+Review指出Schema覆蓋敘述過度：`tests/json_contract.rs`實際驗證Schema8–10相容性；Schema11僅保留，沒有該版相容驗證斷言。已修正TESTING與本節，沒有為文案另加測試。
+
+依裁定只分開既有CLI helper的phase budget：建立任何FIFO前的兩次正常production install使用5秒 `setup`；建立FIFO後的清單、FIFO entrypoint install、FIFO manifest install三次操作仍各限1秒 `FIFO check`。原有enabled／healthy sibling／拒絕安裝斷言、pipe capture、poll error／timeout的kill＋wait、tempdir清理全部保留，沒有State API捷徑、production hook或全域序列化。這修正setup超時被當成FIFO oracle失敗的邊界；每次FIFO CLI仍包含spawn返回後的啟動時間，不宣稱消除所有cold-start flake，更不回推歷史PID absence或OS原因。上方「未延長原期限」描述診斷階段；本次只另設setup預算，未放寬實際FIFO oracle。
+
+變更後只重驗指定FIFO案例，通過（0.67秒）；fmt／diff-check通過。自檢確認setup恰兩次5秒、FIFO check恰三次1秒，預算套用於同一poll迴圈。未重跑JSON／external／full suite，也未重跑未受邏輯影響的Clippy；先前Clippy結果適用於原診斷修正，不冒稱本次另跑。自有CLI均wait，tempdir顯式close成功，沒有新增持久資源；沿用既有target。依裁定本次小幅helper／文件修正自檢後本地提交，無第二輪獨立review。

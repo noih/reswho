@@ -1,6 +1,6 @@
 # macOS 採集驗證
 
-Tenqo：`rw-1` 至 `rw-9`。日期：2026-11-01。環境：macOS 26.5.2、Apple Silicon、10 logical CPUs、32 GiB RAM，Rust 1.99.1。
+Tenqo：`rw-1` 至 `rw-9`。日期：2026-11-01。環境：macOS 26.5.2、Apple Silicon、10 logical CPUs、32 GiB RAM，Rust 1.99.1。以下操作指引已依目前實作更新；後方具日期／revision 的觀測仍保留當時範圍。
 
 ## 可執行範圍
 
@@ -18,31 +18,33 @@ cargo run -- --help-format
 
 支援一次性 Markdown／JSON、`--from` 與 `--depth`。非互動執行預設 Markdown；stdin／stdout 都是終端機時預設 TUI。基本 TUI 已支援樹狀操作、排序、搜尋、選取路徑列與背景刷新，見 [TUI 操作](tui.md)。
 
-已加入 [Docker／Apple Container metadata、stats 與分類](containers.md)，可用 `--no-containers` 跳過。
+已加入 [Docker／Apple Container／Podman metadata、stats 與分類](containers.md)，可用 `--no-containers` 跳過。
 
-已加入指定 PID 的命令詳情及有限的 script／JAR 入口線索，見 [命令契約](json-format.md#指定-pid-的命令資訊)。一般列表不查詢命令；TUI 可按 `d` 按需開啟程序詳情。
+已加入指定 PID 的命令詳情及有限的 script／JAR 入口線索，見 [命令契約](json-format.md#指定-pid-的命令資訊)。一般列表不查詢命令；TUI 可在程序 leaf 按 Right／l 按需開啟詳情；`d` 亦可直接開啟父程序詳情，Left／h 或 Esc 返回。
 
-未實作：容器內程序、Podman 等其他 runtime adapter。每輪獨立採集，不累積跨刷新統計或歷史，不產生閒置或遺留判定。
+未實作：容器內程序。Podman 已接入；真實證據限4.9.4 nested Linux，未驗證 macOS machine／SSH／rootless／新版。每輪獨立採集，不累積跨刷新統計或歷史，不產生閒置或遺留判定。
 
 ## 分類與計數
 
+以下說明內建線索及預設有效 tags 的分組；排除／撤回可能移除對應 ownership，須以當輪裁決為準。
+
 - 分類不使用 app／工具名稱清單，也不假設安裝於 `/Applications`。
 - 執行檔路徑符合最外層 `.app/Contents/` 或 `.app.bundle/Contents/` 結構時歸入應用，涵蓋巢狀 helper 與 clone bundle；各路徑保留獨立子群組，依共同 bundle ID 建立應用總量，不按同名合併。這是路徑與宣告 metadata 證據，不是簽章驗證。
-- 其他程序從 canonical cwd 向上找最近的專案描述檔或 `.git` 邊界，歸入 `Projects`。若應用另有 cwd 專案線索，保留為 candidate，主分類仍為應用。
+- 其他程序從 canonical cwd 向上找最近的專案描述檔或 `.git` 邊界，歸入 `Projects`。若應用另有 cwd 專案線索，可並存為 tag 提案；兩者可同時有效，樹仍以 app 優先分組。
 - 系統執行檔依系統目錄結構保留於 `System`／`System services`；其餘保留 `Unclassified`，兩者都可再依 bin 彙總。
-- 無直接歸屬時，可沿父程序尋找應用／專案，但每一步須有相同的已知 UID、相同的已知 cwd，且父程序啟動時間不晚於子程序。不同或未知 cwd、PID 1、身分不全、循環與超過 128 層均中止推論。直接 app／專案線索不被祖先覆蓋。
-- 推論在程序 evidence 明示來源 PID 與條件；可讀 PPID 不等於已確認同專案。保守規則可能漏分，不為降低未知數而硬猜。
+- 無直接歸屬時，可沿父程序尋找應用／專案，但每一步須有相同的已知 UID、相同的已知 cwd，且父程序啟動時間不晚於子程序。不同或未知 cwd、PID 1、身分不全、循環與超過 128 層均中止推論。預設 priority 下，同維度的直接 app／專案線索先於祖先；使用者可調整來源優先序。
+- 推論在指定 PID 詳情保留來源 PID 與條件；可讀 PPID 不等於已確認同專案。保守規則可能漏分，不為降低未知數而硬猜。
 - 移除 Docker 名稱特例，runtime adapter 尚未提供 metadata 前，依一般應用／系統路徑分類，不能視為完整容器用量。
 - 同一程序只屬一個分類。不同分類的 PPID 保留，但不把程序複製到另一組。
 - 同一組內的父子關係須有相容的啟動時間；循環或超過 128 層的異常鏈轉為明示的獨立根，避免遺失或重複程序。
-- group ID 使用分類與來源 key 的 SHA-256 前 16 hex；同一快照會檢查碰撞並拒絕混組。識別規則屬原型契約，未來若改變必須更新格式版本。
+- Ownership group ID 使用 dimension／id／canonical root 的穩定身分，不含勝出來源或 label；同一快照會檢查碰撞並拒絕混組。識別規則屬原型契約，未來若改變必須更新格式版本。
 - 深度從選取起點 0 計算，預設 2；metadata 不算資源階層。限制深度不改變已計算的 totals。
 - Markdown 收合標記為原列尾端的 `[+N]`（收合的直接子項數），不另列展開指令；用法見 `--help-format`。此標記僅影響顯示，ref 與 JSON omitted_children 不變。
 - 路徑證據簡寫為 `app PATH`／`git PATH`，意義集中在 `--help-format`，不逐項描述辨識步驟。
 
 ## Projects 與分類優先級
 
-直接 App → 直接 Project → 符合既有 UID／cwd／啟動時間條件的祖先歸屬 → Bin → Unknown。直接觀測不被祖先推論覆蓋；System 是路徑大分類，保留其摘要層。分類不代表用途、閒置或可安全關閉。
+內建與 native 外部來源提出多維 tags，由核心依 `source_priority` 裁決各維度有效提案與排除，樹再從有效 tags 依 app → project → bin 選主要分組。App／project 可同時有效，此時仍以 app 分組。預設內建順序為 `app_bundle` → `project` → `ancestor` → `bin` → `docker` → `podman` → `apple` → `command`；使用者可在 Extensions 調整。祖先仍須符合 UID／cwd／啟動時間條件；System 保留路徑大分類。只有指定 PID 詳情提供 tags／提案／裁決，一般樹不帶 tag payload。分類不代表用途、閒置或可安全關閉。
 
 `Projects` 取代 `Development`，分類 ref 改為 `group:projects`。專案標記只檢查 regular file 存在，不解析／執行內容、不需要安裝對應工具；它是目錄線索，並非確認專案有效或正在開發。名稱相同仍依 canonical 完整路徑分開。
 
@@ -60,7 +62,7 @@ cargo run -- --help-format
 
 ## Bin 與 Markdown 呈現
 
-Bin 對尚未歸入 App／Project 的程序樹，依根程序完整 executable 路徑彙總，不按程序名稱猜測。子程序留在原程序樹，因此 bin totals 包含根程序及其觀測到的未分類子程序，成員不一定全是同一個執行檔。多條同路徑根程序樹合併；僅一個程序時直接顯示 PID，不建立 bin 群組。缺少 executable 的根節點留在 Unknown ownership。Bin ref 僅在該群有多個程序時存在。
+預設優先序下，Bin 對尚未歸入 App／Project 的程序樹提出 executable ownership，不按程序名稱猜測；撤銷有效 bin tag 後不以 raw path 復活分組。子程序留在原程序樹，因此 bin totals 包含根程序及其觀測到的未分類子程序，成員不一定全是同一個執行檔。多條同路徑根程序樹合併；僅一個程序時直接顯示 PID，不建立 bin 群組。缺少 executable 的根節點留在 Unknown ownership。Bin ref 僅在該群有多個程序時存在。
 
 群組使用 `[app]`、`[repo]`、`[checkout]`、`[project]`、`[bin]`、`[system]`、`[unknown]` 標示方式；分類層不重複標籤。選擇 A：程序名稱完整保留，不以 `=` 省略。名稱與 ref 使用一般文字，不加粗體或 ref 反引號；路徑使用行內 code，避免特殊字元被 Markdown 解讀。格式標記只用於區分語意或保護字面值：`-` 清單表示資源樹，縮排 `>` 引用表示屬性／證據／診斷，並不佔資源深度。單一 PID 的路徑與詳細資訊透過 `--from pid:N` 查詢。
 
@@ -72,7 +74,7 @@ Bin 對尚未歸入 App／Project 的程序樹，依根程序完整 executable �
     - zsh pid:75554 · 0.0%  1.5MiB  5h  -
 ```
 
-格式版本為 `reswho-md/10`／`reswho/7`。大分類以標題呈現、根與分類摘要為段落；診斷 `!`／推論 `~` 僅用於附註，詳見 [Markdown 輸出格式](markdown-format.md)。JSON Node 新增 `grouping`，群組值為 category/app/repo/checkout/project/bin/system/unknown/runtime/container，程序為 null。容器資訊使用 container、runtime 與 container_totals 欄位，與主機 totals 分開。資源與 evidence 分開，JSON 不加入 Markdown 標記。
+目前格式版本為 `reswho-md/19`／`reswho/12`；舊版 Schema8–11 保留。大分類以標題呈現、根與分類摘要為段落；診斷 `!`／推論 `~` 僅用於附註，詳見 [Markdown 輸出格式](markdown-format.md)。JSON Node 使用 `grouping`，群組值包含 category/app/repo/checkout/project/bin/system/unknown/runtime/container/resource，程序與 resource leaf 為 null。容器資訊使用 container、runtime 與 container_totals 欄位，與主機 totals 分開。資源與 evidence 分開，JSON 不加入 Markdown 標記。
 
 ## Repository 與 checkout
 
@@ -108,7 +110,7 @@ FFI buffer 使用 libc／libproc 的固定 C struct，以實際回傳長度驗�
 
 Markdown 在群組 RAM 後顯示 `⏱︎`：組內最長的已知 uptime，包含閒置時間；未知成員存在時加 `>=`，全部未知為 `?`。數值在限制深度前計算，收合不影響結果。JSON `reswho/2` 的 totals 加入 `oldest_uptime_seconds` 與 `uptime_unknown`，既有欄位保留。
 
-目前 Markdown 為 `reswho-md/10`。一般樹狀展開只顯示程序摘要；`--from pid:N` 顯示選取 PID 的詳細資訊，其子程序仍為摘要。完全無可讀身分、路徑或指標的程序合併成 `Unreadable · N processes`，不附 ref／展開箭頭；部分可讀程序不折疊。此為 Markdown 呈現規則，不改變分類與 totals；JSON 保留個別程序，明確 PID 查詢仍可讀取診斷原因。
+此階段 Markdown 為 `reswho-md/10`。一般樹狀展開只顯示程序摘要；`--from pid:N` 顯示選取 PID 的詳細資訊，其子程序仍為摘要。完全無可讀身分、路徑或指標的程序合併成 `Unreadable · N processes`，不附 ref／展開箭頭；部分可讀程序不折疊。此為 Markdown 呈現規則，不改變分類與 totals；JSON 保留個別程序，明確 PID 查詢仍可讀取診斷原因。
 
 ## Socket 採集與格式
 
@@ -122,7 +124,7 @@ Markdown 在群組 RAM 後顯示 `⏱︎`：組內最長的已知 uptime，包�
 - `-` 表示本次成功採集範圍內沒有符合項目，`?` 表示未知，`tcp:8080 + ?` 表示已知項目加未知部分。零連線不表示可以停止。
 - 尚未收集 Unix socket、流量或無活動時長。
 
-rw-2 當時格式更新為 `reswho-md/2`／`reswho/2`（目前 Markdown 為 `/8`）：新增 network 資料與逐程序歸屬證據；移除名稱特例，因此舊 `group:containers`／Unknown project 分組可能不存在。hash 演算法不變，沒有提供舊 group ref alias；應從新快照複製 ref。
+rw-2 當時格式更新為 `reswho-md/2`／`reswho/2`（該段記錄時 Markdown 為 `/8`）：新增 network 資料與逐程序歸屬證據；移除名稱特例，因此舊 `group:containers`／Unknown project 分組可能不存在。hash 演算法不變，沒有提供舊 group ref alias；應從新快照複製 ref。
 
 參考：[libproc socket types](https://docs.rs/libproc/0.14.11/libproc/net_info/index.html)、[Apple proc_info.h](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info.h)。
 

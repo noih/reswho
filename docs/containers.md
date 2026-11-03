@@ -1,6 +1,6 @@
 # 容器採集
 
-已實作 Docker 與 Apple Container 唯讀 adapter。Tenqo：rw-9、rw-26。Markdown `reswho-md/19`，JSON `reswho/12`。Podman 尚未接入。
+已實作 Docker、Apple Container 與 Podman 唯讀 adapter。Markdown `reswho-md/19`，JSON `reswho/12`。Podman 僅有4.9.4 nested Linux 實機證據；macOS machine／SSH／rootless／新版尚未實測，詳見下方與 runtime probes。
 
 ## 連線與範圍
 
@@ -14,7 +14,7 @@
 
 ## Apple Container
 
-PATH 有 `container` 時加入 `apple (local)`，用 `--version` 與 `list --all --format json` 取得版本與 inventory。服務不可用時顯示 unavailable，不執行 system start。Docker 與 Apple 在各自短期 worker 中並行，共用10秒容器查詢 deadline，結束或取消時 join；`--no-containers` 跳過兩者。
+PATH 有 `container` 時加入 `apple (local)`，用 `--version` 與 `list --all --format json` 取得版本與 inventory。服務不可用時顯示 unavailable，不執行 system start。Docker、Podman 與 Apple 在各自短期 worker 中並行，共用10秒容器查詢 deadline，結束或取消時 join；`--no-containers` 跳過容器採集，但不停用一般資源 collectors。
 
 已驗證 1.6.1 的 XPC stats 協定：直接向本機使用者的 apiserver 送出唯讀 containerStats，最多4個在途請求，單筆最多2秒且受整輪 deadline 限制。C bridge 僅處理 libxpc 的 block callback 與至多64KiB stats 資料，Rust 每5ms檢查完成／取消；釋放 request 時取消 connection，晚到的 callback 有獨立存活期，不引用 Rust stack。不產生 helper process、不使用跨輪 cache。
 
