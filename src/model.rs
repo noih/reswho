@@ -6,12 +6,14 @@ mod diagnostic;
 pub use attribution::{Attribution, AttributionSource};
 pub use diagnostic::Diagnostic;
 
-pub const JSON_SCHEMA_VERSION: &str = "reswho/11";
+pub const JSON_SCHEMA_VERSION: &str = "reswho/12";
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Process {
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip)]
     pub roles: Vec<Role>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag_report: Option<crate::extensions::tags::Report>,
     pub pid: u32,
     pub ppid: Option<u32>,
     pub uid: Option<u32>,
@@ -257,7 +259,7 @@ pub struct SystemSummary {
     pub swap_used_bytes: Option<u64>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Snapshot {
     pub extensions: Vec<crate::extensions::report::Record>,
     pub schema: &'static str,
@@ -268,4 +270,87 @@ pub struct Snapshot {
     pub scope: String,
     pub warnings: Vec<Diagnostic>,
     pub root: Node,
+}
+
+impl Snapshot {
+    pub fn project(&mut self, detail_pid: Option<u32>) {
+        project_node(&mut self.root, detail_pid);
+    }
+}
+
+pub fn project_node(node: &mut Node, detail_pid: Option<u32>) {
+    if let Some(process) = &mut node.process {
+        process.roles.clear();
+        if Some(process.pid) != detail_pid {
+            process.tag_report = None;
+            process.extension_details.clear();
+            process.command = None;
+            node.evidence.clear();
+            node.attribution = None;
+        } else if process.tag_report.is_none() {
+            process.tag_report = Some(crate::extensions::tags::Report {
+                diagnostics: vec![Diagnostic::new(
+                    "unavailable",
+                    "tags",
+                    "Tag evidence was not collected for this process",
+                )],
+                ..Default::default()
+            });
+        }
+    } else if node.container.is_none() && node.runtime.is_none() && node.resource.is_none() {
+        let path = node.attribution.as_ref().and_then(|a| a.path.clone());
+        let external = node
+            .attribution
+            .as_ref()
+            .is_some_and(|a| matches!(a.source, AttributionSource::Extension));
+        node.evidence.retain(|value| {
+            [
+                "Application bundle: ",
+                "Git root from working directory: ",
+                "project ",
+                "exe ",
+                "repo ",
+                "bundle ",
+                "compose ",
+                "Repository metadata unavailable: ",
+                "System executable location",
+            ]
+            .iter()
+            .any(|prefix| value.starts_with(prefix))
+        });
+        if node.evidence.is_empty()
+            && let Some(path) = path
+        {
+            node.evidence.push(format!("project {}", path.display()));
+        }
+        if external {
+            node.attribution = None;
+        }
+    }
+    for child in &mut node.children {
+        project_node(child, detail_pid);
+    }
+}
+
+impl Serialize for Snapshot {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut root = self.root.clone();
+        let detail_pid = self
+            .scope
+            .strip_prefix("pid:")
+            .and_then(|pid| pid.parse().ok());
+        project_node(&mut root, detail_pid);
+        let mut state = serializer.serialize_struct("Snapshot", 9)?;
+        state.serialize_field("extensions", &self.extensions)?;
+        state.serialize_field("schema", &self.schema)?;
+        state.serialize_field("captured_unix_ms", &self.captured_unix_ms)?;
+        state.serialize_field("sample_ms", &self.sample_ms)?;
+        state.serialize_field("collection_ms", &self.collection_ms)?;
+        state.serialize_field("system", &self.system)?;
+        state.serialize_field("scope", &self.scope)?;
+        state.serialize_field("warnings", &self.warnings)?;
+        state.serialize_field("root", &root)?;
+        state.end()
+    }
 }

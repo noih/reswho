@@ -1,25 +1,30 @@
-use super::stable_ref;
 use crate::model::{Attribution, AttributionSource, Grouping, Node};
-use std::{collections::BTreeMap, path::PathBuf};
+use std::collections::BTreeMap;
 
 pub(super) fn group(mut remainder: Node) -> Vec<Node> {
-    let mut executables: BTreeMap<PathBuf, Node> = BTreeMap::new();
+    let mut executables: BTreeMap<String, Node> = BTreeMap::new();
     let children = std::mem::take(&mut remainder.children);
     remainder.totals = Default::default();
     for child in children {
-        let path = child
+        let tag = child
             .process
             .as_ref()
-            .and_then(|process| process.executable.as_ref())
+            .and_then(|process| process.tag_report.as_ref())
+            .and_then(|report| {
+                report
+                    .effective
+                    .iter()
+                    .find(|entry| entry.tag.dimension == "bin")
+            });
+        let path = tag
+            .and_then(|entry| entry.tag.path.as_ref())
             .filter(|path| path.is_absolute() && path.file_name().is_some());
-        if let Some(path) = path {
-            let group = executables.entry(path.clone()).or_insert_with(|| {
+        if let (Some(path), Some(entry)) = (path, tag) {
+            let reference = crate::extensions::tags::ownership_ref("bin", &entry.tag.id, path);
+            let group = executables.entry(reference.clone()).or_insert_with(|| {
                 let mut group = Node::group(
-                    stable_ref("executable", &path.to_string_lossy()),
-                    path.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned(),
+                    reference,
+                    entry.tag.label.clone(),
                     vec![format!("exe {}", path.display())],
                     Grouping::Bin,
                 );
@@ -54,7 +59,13 @@ pub(super) fn group(mut remainder: Node) -> Vec<Node> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    fn stable_ref(_: &str, path: &str) -> String {
+        crate::extensions::tags::ownership_ref(
+            "bin",
+            &crate::extensions::tags::path_id("bin", std::path::Path::new(path)),
+            std::path::Path::new(path),
+        )
+    }
     use crate::{model::Process, tree};
 
     fn process(pid: u32, executable: &str) -> Process {

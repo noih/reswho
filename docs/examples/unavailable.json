@@ -1,5 +1,5 @@
 {
-  "schema": "reswho/11",
+  "schema": "reswho/12",
   "captured_unix_ms": 1700000000000,
   "sample_ms": 250,
   "collection_ms": 300,
@@ -39,7 +39,20 @@
           "message": "identity before observation: Operation not permitted",
           "os_error": 1
         }
-      ]
+      ],
+      "tag_report": {
+        "effective": [],
+        "proposals": [],
+        "decisions": [],
+        "diagnostics": [
+          {
+            "code": "identity_unverified",
+            "operation": "tags",
+            "message": "Process identity unavailable; tags not observed",
+            "os_error": null
+          }
+        ]
+      }
     },
     "container": null,
     "runtime": null,

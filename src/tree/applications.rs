@@ -168,7 +168,11 @@ mod tests {
         assert!(attribution["path"].is_null());
         assert_eq!(family.totals.cpu_percent, 3.0);
         assert_eq!(family.totals.oldest_uptime_seconds, Some(90));
-        let installed_ref = stable_ref("applications", &installed.to_string_lossy());
+        let installed_ref = crate::extensions::tags::ownership_ref(
+            "app",
+            &crate::extensions::tags::path_id("app", &installed),
+            &installed,
+        );
         let installed_node = tree::select(&family, &installed_ref).unwrap();
         assert_eq!(installed_node.name, "bundle 2.0");
         assert_eq!(

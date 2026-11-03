@@ -46,6 +46,7 @@ impl Manifest {
         Ok(manifest)
     }
     pub fn validate(&mut self) -> Result<()> {
+        self.tag_contract.validate(&self.id)?;
         if self.id.is_empty()
             || self.id.len() > 64
             || self.version.len() > 64

@@ -4,7 +4,7 @@ use super::{
     view::{panel, safe},
 };
 use crate::extensions::state::Listing;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout},
@@ -14,10 +14,41 @@ use ratatui::{
 };
 
 fn providers(app: &App) -> Vec<&Listing> {
-    app.inventory
+    let mut entries: Vec<_> = app
+        .inventory
         .iter()
         .filter(|entry| !entry.descriptor.capabilities.is_empty())
-        .collect()
+        .collect();
+    if let Some(order) = app.priority_draft.as_ref().or_else(|| {
+        app.settings
+            .as_ref()
+            .map(|p| &p.context.baseline.source_priority)
+    }) {
+        entries.sort_by_key(|entry| {
+            order
+                .iter()
+                .position(|id| id == &entry.descriptor.id)
+                .unwrap_or(order.len())
+        });
+    }
+    entries
+}
+
+fn priority_changed(app: &App) -> bool {
+    let Some(draft) = &app.priority_draft else {
+        return false;
+    };
+    let mut baseline = app
+        .settings
+        .as_ref()
+        .map(|p| p.context.baseline.source_priority.clone())
+        .unwrap_or_default();
+    for entry in &app.inventory {
+        if !baseline.contains(&entry.descriptor.id) {
+            baseline.push(entry.descriptor.id.clone());
+        }
+    }
+    draft != &baseline
 }
 
 fn selected(app: &App, entries: &[&Listing]) -> usize {
@@ -28,6 +59,25 @@ fn selected(app: &App, entries: &[&Listing]) -> usize {
 }
 
 pub(super) fn key(app: &mut App, key: KeyEvent) -> bool {
+    if app.priority_draft.is_none() {
+        let mut order = app
+            .settings
+            .as_ref()
+            .map(|popup| popup.context.baseline.source_priority.clone())
+            .unwrap_or_default();
+        if let Some(popup) = app.settings.as_mut() {
+            if let Err(error) = popup.context.reload() {
+                app.priority_error = Some(error.to_string());
+            }
+            order = popup.context.baseline.source_priority.clone();
+        }
+        for entry in &app.inventory {
+            if !order.contains(&entry.descriptor.id) {
+                order.push(entry.descriptor.id.clone());
+            }
+        }
+        app.priority_draft = Some(order);
+    }
     let entries = providers(app);
     let index = selected(app, &entries);
     if app.extension_details {
@@ -49,8 +99,50 @@ pub(super) fn key(app: &mut App, key: KeyEvent) -> bool {
         }
         return false;
     }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+        let draft = app.priority_draft.as_ref().expect("priority draft");
+        if let Some(popup) = app.settings.as_mut() {
+            match popup.context.save_priority(draft) {
+                Ok(applied) => {
+                    popup.applied = applied;
+                    app.priority_error = None;
+                    app.priority_draft = None;
+                    app.extensions_page = false;
+                }
+                Err(error) => app.priority_error = Some(error.to_string()),
+            }
+        } else {
+            app.priority_error = Some("No settings context; cannot save priority".into());
+        }
+        return false;
+    }
+    if key.modifiers.contains(KeyModifiers::SHIFT)
+        && matches!(key.code, KeyCode::Up | KeyCode::Down)
+    {
+        let other = if key.code == KeyCode::Up {
+            index.saturating_sub(1)
+        } else {
+            (index + 1).min(entries.len().saturating_sub(1))
+        };
+        if let (Some(current), Some(target)) = (entries.get(index), entries.get(other)) {
+            let current_id = current.descriptor.id.clone();
+            let target_id = target.descriptor.id.clone();
+            let order = app.priority_draft.as_mut().expect("priority draft");
+            if let (Some(a), Some(b)) = (
+                order.iter().position(|id| id == &current_id),
+                order.iter().position(|id| id == &target_id),
+            ) {
+                order.swap(a, b);
+            }
+            app.extension_selected = Some(current_id);
+            app.priority_error = None;
+        }
+        return false;
+    }
     let next = match key.code {
         KeyCode::Esc => {
+            app.priority_draft = None;
+            app.priority_error = None;
             app.extensions_page = false;
             return false;
         }
@@ -82,6 +174,9 @@ fn name(id: &str) -> String {
         "app_bundle" => "App bundles".into(),
         "apple" => "Apple Container".into(),
         "command" => "Process command".into(),
+        "project" => "Projects".into(),
+        "ancestor" => "Ancestor ownership".into(),
+        "bin" => "Executable fallback".into(),
         _ => readable(id),
     }
 }
@@ -202,7 +297,7 @@ pub(super) fn draw(frame: &mut Frame, app: &App) {
     let footer = Paragraph::new(if app.extension_details {
         "Esc Back"
     } else {
-        "Enter Details  Esc Back"
+        "Shift ↑/↓ Move  Ctrl-S Save  Enter Details  Esc discard"
     })
     .wrap(Wrap { trim: false })
     .style(Style::default().fg(Color::Gray));
@@ -219,7 +314,7 @@ pub(super) fn draw(frame: &mut Frame, app: &App) {
                 + footer_height
         })
     } else {
-        (entries.len() as u16).saturating_add(4 + footer_height + diagnostic_height)
+        (entries.len() as u16).saturating_add(5 + footer_height + diagnostic_height)
     };
     let popup = panel(frame.area(), 98, desired.max(10));
     frame.render_widget(Clear, popup);
@@ -231,8 +326,23 @@ pub(super) fn draw(frame: &mut Frame, app: &App) {
     let block = block.padding(Padding::horizontal(1));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    let [body, footer_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(footer_height)]).areas(inner);
+    let [priority_area, body, footer_area] = Layout::vertical([
+        Constraint::Length(if app.extension_details { 0 } else { 1 }),
+        Constraint::Min(1),
+        Constraint::Length(footer_height),
+    ])
+    .areas(inner);
+    if !app.extension_details {
+        frame.render_widget(
+            Paragraph::new(if priority_changed(app) {
+                "Priority · highest first · draft"
+            } else {
+                "Priority · highest first"
+            }),
+            priority_area,
+        );
+    }
+
     if app.extension_details {
         if let Some(entry) = entries.get(index) {
             let paragraph = Paragraph::new(details(app, entry)).wrap(Wrap { trim: false });
@@ -311,14 +421,25 @@ pub(super) fn draw(frame: &mut Frame, app: &App) {
             &mut TableState::default().with_selected(Some(index)),
         );
         frame.render_widget(
-            Paragraph::new(entries.get(index).map_or("No providers".into(), |entry| {
-                format!(
-                    "{} · {}",
-                    name(&entry.descriptor.id),
-                    entry.descriptor.source
-                )
+            Paragraph::new(app.priority_error.clone().unwrap_or_else(|| {
+                entries.get(index).map_or("No providers".into(), |entry| {
+                    format!(
+                        "{} · {} · {}",
+                        name(&entry.descriptor.id),
+                        entry.descriptor.source,
+                        if priority_changed(app) {
+                            "draft"
+                        } else {
+                            "saved"
+                        }
+                    )
+                })
             }))
-            .style(Style::default().fg(Color::Gray)),
+            .style(Style::default().fg(if app.priority_error.is_some() {
+                Color::Yellow
+            } else {
+                Color::Gray
+            })),
             summary,
         );
         if !system.is_empty() {

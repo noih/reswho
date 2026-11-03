@@ -1,6 +1,6 @@
 # 容器採集
 
-已實作 Docker 與 Apple Container 唯讀 adapter。Tenqo：rw-9、rw-26。Markdown `reswho-md/18`，JSON `reswho/8`。Podman 尚未接入。
+已實作 Docker 與 Apple Container 唯讀 adapter。Tenqo：rw-9、rw-26。Markdown `reswho-md/19`，JSON `reswho/12`。Podman 尚未接入。
 
 ## 連線與範圍
 

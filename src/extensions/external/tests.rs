@@ -542,3 +542,123 @@ fn resource_only_requests_reject_unapproved_scopes_and_required_response_feature
     );
     dir.close().unwrap();
 }
+
+#[test]
+fn native_tag_operations_validate_declarations_features_and_isolate_failed_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let response = |source: &str, feature: bool, stale: bool| json!({"protocol_version":1,"provider":source,"version":"1.0.0","required_features":if feature {vec!["tags"]} else {vec![]},"contribution":{"capability":"classify","proposals":[{"identity":{"pid":42,"started_unix_us":123},"evidence":{"kind":"tags","proposal":{"id":"test","identity":{"pid":42,"started_unix_us":if stale {124} else {123}},"change":{"operation":"add","tag":{"dimension":"role","id":"role:test","label":"Native test","path":null,"basis":"observed"}}}}}]}});
+    let mut good = fixture(
+        dir.path(),
+        "good",
+        &format!(
+            "puts({})",
+            serde_json::to_string(&response("good", true, false).to_string()).unwrap()
+        ),
+    );
+    good.manifest.tag_contract.produces = vec!["role".into()];
+    let missing = fixture(
+        dir.path(),
+        "missing",
+        &format!(
+            "puts({})",
+            serde_json::to_string(&response("missing", true, false).to_string()).unwrap()
+        ),
+    );
+    let mut unfeatured = fixture(
+        dir.path(),
+        "unfeatured",
+        &format!(
+            "puts({})",
+            serde_json::to_string(&response("unfeatured", false, false).to_string()).unwrap()
+        ),
+    );
+    unfeatured.manifest.tag_contract.produces = vec!["role".into()];
+    let mut stale = fixture(
+        dir.path(),
+        "stale",
+        &format!(
+            "puts({})",
+            serde_json::to_string(&response("stale", true, true).to_string()).unwrap()
+        ),
+    );
+    stale.manifest.tag_contract.produces = vec!["role".into()];
+    let settings = super::super::default_settings().unwrap();
+    let cancel = Cancellation::default();
+    let context = Context::new(&settings, &cancel);
+    let (reports, diagnostics) = super::super::tags::classify(
+        &[&missing, &unfeatured, &stale, &good],
+        &context,
+        &[process(dir.path())],
+    );
+    assert_eq!(diagnostics.len(), 3);
+    assert_eq!(reports[&42].effective.len(), 1);
+    assert_eq!(reports[&42].effective[0].source, "good");
+    assert_eq!(reports[&42].effective[0].tag.id, "role:test");
+    dir.close().unwrap();
+}
+
+#[test]
+fn review_native_alias_canonicalization_cannot_publish_sensitive_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let secret = "registered-sensitive-root";
+    let root = dir.path().join(secret);
+    fs::create_dir(&root).unwrap();
+    let alias = dir.path().join("alias");
+    std::os::unix::fs::symlink(&root, &alias).unwrap();
+    let response = json!({"protocol_version":1,"provider":"native_echo","version":"1.0.0","required_features":["tags"],"contribution":{"capability":"classify","proposals":[{"identity":{"pid":42,"started_unix_us":123},"evidence":{"kind":"tags","proposal":{"id":"root","identity":{"pid":42,"started_unix_us":123},"change":{"operation":"add","tag":{"dimension":"project","id":"extensions.native_echo.root","label":"Workspace","path":alias,"basis":"cwd"}}}}}]}});
+    let mut external = fixture(
+        dir.path(),
+        "native_echo",
+        &format!(
+            "puts({})",
+            serde_json::to_string(&response.to_string()).unwrap()
+        ),
+    );
+    external.manifest.tag_contract.produces = vec!["project".into()];
+    let mut definition: crate::settings::Definition = serde_json::from_value(json!({"key":"extensions.native_echo.token","type":"string","default":secret,"description":"fixture","sensitive":true})).unwrap();
+    definition.provider = "native_echo".into();
+    definition.version = "1".into();
+    let mut registry = super::super::settings_registry().unwrap();
+    registry
+        .register_extension("native_echo", vec![definition], vec![])
+        .unwrap();
+    let settings = registry
+        .resolve(&Config::default(), &BTreeMap::new())
+        .unwrap();
+    let cancel = Cancellation::default();
+    let context = Context::new(&settings, &cancel);
+    let tree =
+        crate::tree::build_with_providers(vec![process(&alias)], &context, &[&external]).unwrap();
+    assert!(
+        tree.diagnostics
+            .iter()
+            .any(|d| d.operation == "extensions.native_echo.classify")
+    );
+    let selected = crate::tree::select(&tree, "pid:42").unwrap();
+    assert!(
+        selected
+            .process
+            .as_ref()
+            .unwrap()
+            .tag_report
+            .as_ref()
+            .unwrap()
+            .proposals
+            .iter()
+            .all(|p| p.source != "native_echo")
+    );
+    let snapshot = Snapshot {
+        schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: vec![],
+        captured_unix_ms: 0,
+        sample_ms: 1,
+        collection_ms: 1,
+        system: SystemSummary::default(),
+        scope: "pid:42".into(),
+        root: selected,
+        warnings: vec![],
+    };
+    assert!(!serde_json::to_string(&snapshot).unwrap().contains(secret));
+    assert!(!crate::output::markdown(&snapshot).contains(secret));
+    dir.close().unwrap();
+}

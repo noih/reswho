@@ -13,7 +13,7 @@ mod project_tests;
 pub(crate) mod projects;
 
 #[derive(Clone, Debug)]
-struct Assignment {
+pub(crate) struct Assignment {
     category: &'static str,
     category_name: &'static str,
     key: String,
@@ -126,6 +126,175 @@ fn ancestor_assignment<'a>(
     None
 }
 
+fn unknown_assignment() -> Assignment {
+    Assignment {
+        category: "unclassified",
+        category_name: "Unclassified",
+        key: "unknown".into(),
+        name: "Unknown ownership".into(),
+        evidence: "No effective ownership tag".into(),
+        project: None,
+        attribution: None,
+    }
+}
+
+fn builtin_label(value: &str) -> String {
+    let mut label = String::new();
+    for character in value.chars().filter(|c| !c.is_control()) {
+        if label.len() + character.len_utf8() > 128 {
+            break;
+        }
+        label.push(character);
+    }
+    if label.is_empty() {
+        "Unknown".into()
+    } else {
+        label
+    }
+}
+
+pub(crate) fn app_tag(path: PathBuf) -> crate::extensions::tags::Tag {
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .trim_end_matches(".bundle")
+        .trim_end_matches(".app")
+        .to_owned();
+    crate::extensions::tags::Tag {
+        dimension: "app".into(),
+        id: crate::extensions::tags::path_id("app", &path),
+        label: builtin_label(&name),
+        path: Some(path),
+        basis: "app_bundle".into(),
+        assignment: None,
+    }
+}
+
+fn assignment_from_tag(tag: &crate::extensions::tags::Tag, source: &str) -> Assignment {
+    if tag.dimension == "bin" {
+        let system = tag.path.as_deref().is_some_and(|path| {
+            ["/System", "/usr/libexec", "/usr/sbin", "/sbin"]
+                .iter()
+                .any(|root| path.starts_with(root))
+        });
+        return if system {
+            Assignment {
+                category: "system",
+                category_name: "System",
+                key: "services".into(),
+                name: "System services".into(),
+                evidence: "Effective system executable tag".into(),
+                project: None,
+                attribution: None,
+            }
+        } else {
+            unknown_assignment()
+        };
+    }
+    let path = tag.path.clone();
+    let key = tag
+        .path
+        .as_deref()
+        .map(|path| crate::extensions::tags::ownership_key(&tag.dimension, &tag.id, path))
+        .unwrap_or_default();
+    if let Some(metadata) = &tag.assignment {
+        let mut assignment = (**metadata).clone();
+        assignment.key = key;
+        assignment.name = tag.label.clone();
+        return assignment;
+    }
+    let project = if tag.dimension == "project" {
+        path.as_deref()
+            .and_then(|root| projects::Discovery::default().find(root))
+            .filter(|project| Some(&project.root) == path.as_ref())
+    } else {
+        None
+    };
+    let mut attribution = Attribution::new(AttributionSource::Extension, path.clone());
+    if let Some(project) = &project {
+        let metadata = project.attribution();
+        attribution.checkout_path = metadata.checkout_path;
+        attribution.manifest = metadata.manifest;
+    }
+    attribution.extension = Some(crate::model::ExtensionAttribution {
+        provider: source.into(),
+        version: String::new(),
+        key: tag.id.clone(),
+        label: tag.label.clone(),
+        basis: tag.basis.clone(),
+    });
+    Assignment {
+        category: if tag.dimension == "app" {
+            "applications"
+        } else {
+            "projects"
+        },
+        category_name: if tag.dimension == "app" {
+            "Applications"
+        } else {
+            "Projects"
+        },
+        key,
+        name: tag.label.clone(),
+        evidence: format!("Tag {} from {}", tag.id, source),
+        project,
+        attribution: Some(attribution),
+    }
+}
+
+pub(crate) fn builtin_tags(
+    processes: &[Process],
+    source: &str,
+) -> Vec<crate::extensions::ClassificationProposal> {
+    use crate::extensions::{
+        ClassificationEvidence, ClassificationProposal, ProcessIdentity,
+        tags::{Operation, Proposal, Tag, path_id},
+    };
+    let mut cache = projects::Discovery::default();
+    let bundles: BTreeMap<_, _> = processes
+        .iter()
+        .filter_map(|p| {
+            Some((
+                p.pid,
+                crate::extensions::app_bundle(p.executable.as_deref()?)?,
+            ))
+        })
+        .collect();
+    let direct: HashMap<_, _> = processes
+        .iter()
+        .map(|p| (p.pid, assignment(p, &mut cache, &bundles)))
+        .collect();
+    let by_pid = processes.iter().map(|p| (p.pid, p)).collect();
+    processes.iter().filter_map(|process| {
+        let identity = ProcessIdentity::observed(process)?;
+        let (dimension, mut assigned) = match source {
+            "app_bundle" if direct[&process.pid].category == "applications" => ("app", direct[&process.pid].clone()),
+            "project" => {
+                let _root = process.cwd.as_deref().and_then(|cwd| cache.find(cwd))?;
+                let assigned = assignment(process, &mut cache, &BTreeMap::new());
+
+                ("project", assigned)
+            }
+            "ancestor" if direct[&process.pid].category == "unclassified" => {
+                let (pid, inherited) = ancestor_assignment(process, &by_pid, &direct)?;
+                let mut inherited = inherited.clone();
+                if let Some(attribution) = &mut inherited.attribution { attribution.inferred = true; attribution.via_pid = Some(pid); }
+                inherited.evidence = format!("Inferred from ancestor pid:{pid}: {}; same UID and working directory along observed parent chain", inherited.evidence);
+                (if inherited.category == "applications" { "app" } else { "project" }, inherited)
+            }
+            "bin" => ("bin", assignment(process, &mut cache, &BTreeMap::new())),
+            _ => return None,
+        };
+        if source == "bin" { assigned = if process.executable.as_deref().is_some_and(|path| ["/System", "/usr/libexec", "/usr/sbin", "/sbin"].iter().any(|root| path.starts_with(root))) {
+            Assignment { category: "system", category_name: "System", key: "services".into(), name: "System services".into(), evidence: "System executable location".into(), project: None, attribution: None }
+        } else { unknown_assignment() }; }
+        let path = if source == "bin" { process.executable.clone().filter(|p| p.is_absolute()) } else { assigned.attribution.as_ref().and_then(|a| a.path.clone()) }?;
+        let tag = Tag { dimension: dimension.into(), id: path_id(dimension, &path), label: builtin_label(&if source == "bin" { path.file_name().unwrap_or_default().to_string_lossy().into_owned() } else { assigned.name.clone() }), path: Some(path), basis: source.into(), assignment: Some(Box::new(assigned)) };
+        Some(ClassificationProposal { identity, evidence: ClassificationEvidence::Tags { proposal: Proposal { id: format!("{source}-{}", process.pid), identity, operation: Operation::Add { tag } } } })
+    }).collect()
+}
+
 pub fn build(processes: Vec<Process>) -> Result<Node> {
     let settings = crate::extensions::default_settings()?;
     let cancel = crate::snapshot::Cancellation::default();
@@ -151,106 +320,70 @@ pub fn build_with_providers(
     context: &crate::extensions::Context<'_>,
     providers: &[&dyn crate::extensions::Extension],
 ) -> Result<Node> {
-    let (app_bundles, custom, diagnostics, mut roles) =
-        crate::extensions::classify_with_roles(providers, context, &processes);
+    use crate::extensions::Builtin;
+    let mut all_providers: Vec<&dyn crate::extensions::Extension> =
+        vec![&Builtin::Project, &Builtin::Ancestor, &Builtin::Bin];
+    all_providers.extend_from_slice(providers);
+    let (mut reports, diagnostics) =
+        crate::extensions::tags::classify(&all_providers, context, &processes);
+    let mut seen = HashSet::new();
+    let mut buckets: BTreeMap<String, (Assignment, Vec<Process>)> = BTreeMap::new();
+    let mut evidence = HashMap::new();
+    let mut attributions = HashMap::new();
+    let mut assignments = HashMap::new();
     let processes: Vec<_> = processes
         .into_iter()
         .map(|mut process| {
-            process.roles = roles.remove(&process.pid).unwrap_or_default();
+            process.roles.clear();
+            process.tag_report = Some(reports.remove(&process.pid).unwrap_or_default());
             process
         })
         .collect();
-    let mut seen = HashSet::new();
-    let mut cache = projects::Discovery::default();
-    let mut buckets: BTreeMap<String, (Assignment, Vec<Process>)> = BTreeMap::new();
     for process in &processes {
         if !seen.insert(process.pid) {
             bail!("duplicate PID {} in snapshot", process.pid);
         }
-    }
-    let direct: HashMap<_, _> = processes
-        .iter()
-        .map(|process| (process.pid, assignment(process, &mut cache, &app_bundles)))
-        .collect();
-    let by_pid: HashMap<_, _> = processes
-        .iter()
-        .map(|process| (process.pid, process))
-        .collect();
-    let mut assignments = HashMap::new();
-    let mut evidence = HashMap::new();
-    let mut attributions = HashMap::new();
-    for process in &processes {
-        let mut selected = direct[&process.pid].clone();
-        let mut reasons = vec![selected.evidence.clone()];
-        if selected.category == "unclassified" {
-            if let Some((ancestor, inferred)) = ancestor_assignment(process, &by_pid, &direct) {
-                selected = inferred.clone();
-                if let Some(attribution) = &mut selected.attribution {
-                    attribution.inferred = true;
-                    attribution.via_pid = Some(ancestor);
-                }
-                reasons = vec![format!(
-                    "Inferred from ancestor pid:{ancestor}: {}; same UID and working directory along observed parent chain",
-                    inferred.evidence
-                )];
-            }
-        } else if selected.category == "applications"
-            && let Some(root) = process.cwd.as_deref().and_then(|cwd| cache.find(cwd))
+        let report = process.tag_report.as_ref().expect("tag report");
+        let selected = ["app", "project", "bin"].iter().find_map(|dimension| {
+            report
+                .effective
+                .iter()
+                .find(|entry| &entry.tag.dimension == dimension)
+        });
+        let mut assignment = selected
+            .map(|entry| assignment_from_tag(&entry.tag, &entry.source))
+            .unwrap_or_else(unknown_assignment);
+        if let Some(extension) = assignment
+            .attribution
+            .as_mut()
+            .and_then(|a| a.extension.as_mut())
         {
-            reasons.push(format!(
-                "Working-directory project candidate: {}; application grouping retained",
-                root.root.display()
-            ));
+            extension.version = report
+                .proposals
+                .iter()
+                .find(|p| p.source == extension.provider)
+                .map(|p| p.version.clone())
+                .unwrap_or_default();
         }
-        if selected.category == "unclassified"
-            && let Some((path, extension)) = custom.get(&process.pid)
-        {
-            let mut attribution =
-                Attribution::new(AttributionSource::Extension, Some(path.clone()));
-            attribution.extension = Some(extension.clone());
-            let reason = format!(
-                "Extension {}/{}: {} ({})",
-                extension.provider,
-                extension.version,
-                extension.label,
-                path.display()
+        let mut reasons = vec![assignment.evidence.clone()];
+        if assignment.category == "applications" {
+            reasons.extend(
+                report
+                    .effective
+                    .iter()
+                    .filter(|e| e.tag.dimension == "project")
+                    .filter_map(|e| e.tag.path.as_ref().map(|path| format!("Working-directory project candidate: {}; application grouping retained", path.display()))),
             );
-            selected = Assignment {
-                category: "extensions",
-                category_name: "Extensions",
-                key: format!(
-                    "{}\0{}\0{}",
-                    extension.provider,
-                    extension.key,
-                    path.display()
-                ),
-                name: extension.label.clone(),
-                evidence: reason.clone(),
-                project: None,
-                attribution: Some(attribution),
-            };
-            reasons = vec![reason];
         }
-        attributions.insert(
-            process.pid,
-            selected.attribution.clone().or_else(|| {
-                process
-                    .executable
-                    .clone()
-                    .map(|path| Attribution::new(AttributionSource::Executable, Some(path)))
-            }),
-        );
-        assignments.insert(process.pid, selected);
         evidence.insert(process.pid, reasons);
+        attributions.insert(process.pid, assignment.attribution.clone());
+        assignments.insert(process.pid, assignment);
     }
     for process in processes {
         let assignment = assignments
             .remove(&process.pid)
             .expect("assignment for every process");
-        let reference = assignment.project.as_ref().map_or_else(
-            || stable_ref(assignment.category, &assignment.key),
-            projects::Project::reference,
-        );
+        let reference = stable_ref(assignment.category, &assignment.key);
         let bucket = buckets
             .entry(reference)
             .or_insert_with(|| (assignment.clone(), Vec::new()));
@@ -268,10 +401,8 @@ pub fn build_with_providers(
             "projects" => assignment
                 .project
                 .as_ref()
-                .expect("project assignment")
-                .grouping(),
+                .map_or(Grouping::Project, projects::Project::grouping),
             "system" => Grouping::System,
-            "extensions" => Grouping::Project,
             _ => Grouping::Unknown,
         };
         let mut group = Node::group(
@@ -301,7 +432,14 @@ pub fn build_with_providers(
         if let Some(project) = assignment.project {
             project_groups.push((project, group));
         } else if assignment.category == "applications" {
-            bundles.push((PathBuf::from(assignment.key), group));
+            bundles.push((
+                group
+                    .attribution
+                    .as_ref()
+                    .and_then(|a| a.path.clone())
+                    .unwrap_or_else(|| PathBuf::from(assignment.key)),
+                group,
+            ));
         } else if assignment.category == "unclassified" {
             category.children.extend(executables::group(group));
         } else if assignment.category == "system" {
@@ -319,7 +457,7 @@ pub fn build_with_providers(
         }
     }
     if let Some(category) = categories.get_mut("projects") {
-        category.children = projects::group(project_groups);
+        category.children.extend(projects::group(project_groups));
     }
     if let Some(applications) = categories.get_mut("applications") {
         applications.children = applications::group(bundles);
@@ -639,7 +777,11 @@ mod tests {
         assert_eq!(repository.totals.memory_unknown, 1);
         assert_eq!(repository.totals.oldest_uptime_seconds, Some(500));
         assert_eq!(repository.totals.uptime_unknown, 1);
-        let old_ref = stable_ref("development", &a.canonicalize().unwrap().to_string_lossy());
+        let old_ref = crate::extensions::tags::ownership_ref(
+            "project",
+            &crate::extensions::tags::path_id("project", &a),
+            &a,
+        );
         let checkout = select(&tree, &old_ref).unwrap();
         assert_eq!(checkout.name, "worktree a");
         assert_eq!(checkout.totals.processes, 1);
@@ -686,9 +828,10 @@ mod tests {
         b.cwd = Some(worktree.clone());
         let tree = build(vec![a, b]).unwrap();
         assert_eq!(select(&tree, "group:projects").unwrap().children.len(), 2);
-        let reference = stable_ref(
-            "development",
-            &worktree.canonicalize().unwrap().to_string_lossy(),
+        let reference = crate::extensions::tags::ownership_ref(
+            "project",
+            &crate::extensions::tags::path_id("project", &worktree),
+            &worktree,
         );
         assert!(
             select(&tree, &reference)

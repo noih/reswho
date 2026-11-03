@@ -124,7 +124,10 @@ mod tests {
             Arc::new(
                 Registry::core()
                     .resolve(
-                        &Config::default(),
+                        &Config {
+                            source_priority: vec![format!("source_{interval}")],
+                            ..Default::default()
+                        },
                         &BTreeMap::from([(
                             "sampling.interval_ms".into(),
                             serde_json::json!(interval),
@@ -137,24 +140,30 @@ mod tests {
         let (release, wait) = mpsc::channel();
         let worker = Worker::with_settings_collector(resolved(250), move |_, _, settings| {
             entered
-                .send(settings.interval("sampling.interval_ms"))
+                .send((
+                    settings.interval("sampling.interval_ms"),
+                    settings.source_priority.clone(),
+                ))
                 .unwrap();
             wait.recv_timeout(Duration::from_secs(2)).unwrap();
             entered
-                .send(settings.interval("sampling.interval_ms"))
+                .send((
+                    settings.interval("sampling.interval_ms"),
+                    settings.source_priority.clone(),
+                ))
                 .unwrap();
             Err("fixture".into())
         });
         assert!(worker.request(None));
         assert_eq!(
             started.recv_timeout(Duration::from_secs(2)).unwrap(),
-            Duration::from_millis(250)
+            (Duration::from_millis(250), vec!["source_250".into()])
         );
         worker.set_settings(resolved(500));
         release.send(()).unwrap();
         assert_eq!(
             started.recv_timeout(Duration::from_secs(2)).unwrap(),
-            Duration::from_millis(250)
+            (Duration::from_millis(250), vec!["source_250".into()])
         );
         assert!(
             worker
@@ -166,12 +175,12 @@ mod tests {
         assert!(worker.request(None));
         assert_eq!(
             started.recv_timeout(Duration::from_secs(2)).unwrap(),
-            Duration::from_millis(500)
+            (Duration::from_millis(500), vec!["source_500".into()])
         );
         release.send(()).unwrap();
         assert_eq!(
             started.recv_timeout(Duration::from_secs(2)).unwrap(),
-            Duration::from_millis(500)
+            (Duration::from_millis(500), vec!["source_500".into()])
         );
         assert!(
             worker

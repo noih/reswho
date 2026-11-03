@@ -23,7 +23,14 @@ fn manifest(root: &Path, name: &str) {
 }
 
 fn reference(namespace: &str, root: &Path) -> String {
-    stable_ref(namespace, &root.canonicalize().unwrap().to_string_lossy())
+    if namespace == "repository" {
+        return stable_ref(namespace, &root.canonicalize().unwrap().to_string_lossy());
+    }
+    crate::extensions::tags::ownership_ref(
+        "project",
+        &crate::extensions::tags::path_id("project", root),
+        root,
+    )
 }
 
 #[test]

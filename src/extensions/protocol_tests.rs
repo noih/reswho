@@ -382,3 +382,28 @@ fn repair_resource_group_scope_survives_selection_and_depth_zero() {
         Some(crate::model::Grouping::Resource)
     ));
 }
+
+#[test]
+fn tags_wire_shapes_are_strict_bounded_and_exact_for_all_operations() {
+    let identity = json!({"pid":42,"started_unix_us":18446744073709551615u64});
+    for change in [
+        json!({"operation":"add","tag":{"dimension":"role","id":"role:test","label":"Test","path":null,"basis":"observed"}}),
+        json!({"operation":"exclude","selector":{"dimension":"role","tag_id":"role:test","source":"other"}}),
+        json!({"operation":"withdraw","proposal_id":"add-test"}),
+    ] {
+        let value = json!({"protocol_version":1,"provider":"fixture","version":"1.0.0","required_features":["tags"],"contribution":{"capability":"classify","proposals":[{"identity":identity,"evidence":{"kind":"tags","proposal":{"id":"one","identity":identity,"change":change}}}]}});
+        assert!(schema("response").is_valid(&value), "{value}");
+        let parsed: Response = serde_json::from_value(value.clone()).unwrap();
+        assert!(schema("response").is_valid(&serde_json::to_value(parsed).unwrap()));
+        let mut invalid = value;
+        invalid["contribution"]["proposals"][0]["evidence"]["proposal"]["priority"] = json!(999);
+        assert!(serde_json::from_value::<Response>(invalid.clone()).is_err());
+        assert!(!schema("response").is_valid(&invalid));
+    }
+    let manifest = json!({"id":"fixture","version":"1.0.0","engines":{"reswho":"^0.1.0"},"protocol_version":1,"platforms":["macos"],"capabilities":["classify"],"executable":"/tmp/native","required_features":["tags"],"tag_contract":{"produces":["role"],"overrides":[{"dimension":"role","sources":["other"]}]}});
+    assert!(schema("manifest").is_valid(&manifest));
+    let mut parsed: Manifest = serde_json::from_value(manifest).unwrap();
+    parsed.validate().unwrap();
+    parsed.tag_contract.overrides[0].sources.clear();
+    assert!(parsed.validate().is_err());
+}

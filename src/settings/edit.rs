@@ -40,7 +40,20 @@ impl Settings {
         &mut self,
         changes: &BTreeMap<String, Option<Value>>,
     ) -> Result<Option<Arc<Resolved>>> {
-        if changes.is_empty() {
+        self.save_changes(changes, None)
+    }
+
+    pub fn save_priority(&mut self, priority: &[String]) -> Result<Option<Arc<Resolved>>> {
+        super::validate_priority(priority)?;
+        self.save_changes(&BTreeMap::new(), Some(priority))
+    }
+
+    fn save_changes(
+        &mut self,
+        changes: &BTreeMap<String, Option<Value>>,
+        priority: Option<&[String]>,
+    ) -> Result<Option<Arc<Resolved>>> {
+        if changes.is_empty() && priority.is_none_or(|ids| ids == self.baseline.source_priority) {
             return Ok(None);
         }
         for (key, value) in changes {
@@ -77,6 +90,13 @@ impl Settings {
             bail!("Config is being saved elsewhere; retry Save");
         }
         let mut fresh = read_at(&parent, &name)?;
+        if let Some(priority) = priority {
+            if fresh.source_priority != self.baseline.source_priority {
+                bail!("Priority changed on disk; Esc and reopen Extensions before retrying");
+            }
+            fresh.source_priority = priority.to_vec();
+        }
+
         for (key, value) in changes {
             if fresh.settings.get(key) != self.baseline.settings.get(key) {
                 bail!("Setting changed on disk; Esc and reopen Settings before retrying");

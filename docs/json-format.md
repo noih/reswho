@@ -1,6 +1,6 @@
 # JSON 資料契約
 
-目前版本：`reswho/11`。規格檔：[reswho-11.schema.json](../schemas/reswho-11.schema.json)，使用 JSON Schema Draft 2020-12。它是 reswho 的資料契約，並非跨監控工具共用的資料模型。
+目前版本：`reswho/12`。規格檔：[reswho-12.schema.json](../schemas/reswho-12.schema.json)，使用 JSON Schema Draft 2020-12。它是 reswho 的資料契約，並非跨監控工具共用的資料模型。
 
 ```sh
 reswho --json --depth all > snapshot.json
@@ -293,7 +293,7 @@ Attribution source 的封閉 enum 新增 `extension`；其 `extension` 物件保
 
 ## reswho/10：目前 extension report
 
-Extension report 於 reswho/10 加入；目前為 reswho/11，Schema8／9／10 保留供舊資料使用。新增頂層 `extensions` 陣列，最多2048筆，每筆有 provider、nullable version、phase（read／validate／register／collect／classify／details）、result（success／failed／skipped／never_invoked）、nullable safe reason code 與 nullable duration_ms。實際嘗試使用非負數毫秒（可含小數），skipped／never_invoked 固定 null。Result 包含核心驗證，非單純 child exit。collection_ms 仍為整輪 wall time；重疊／平行 phase 不可加總。Report 只含 startup 與本輪資料，不保留跨輪執行歷史；不包含 raw stderr／panic／設定值或未要求的 command 資料。
+Extension report 於 reswho/10 加入；目前為 reswho/12，Schema8／9／10／11 保留供舊資料使用。新增頂層 `extensions` 陣列，最多2048筆，每筆有 provider、nullable version、phase（read／validate／register／collect／classify／details）、result（success／failed／skipped／never_invoked）、nullable safe reason code 與 nullable duration_ms。實際嘗試使用非負數毫秒（可含小數），skipped／never_invoked 固定 null。Result 包含核心驗證，非單純 child exit。collection_ms 仍為整輪 wall time；重疊／平行 phase 不可加總。Report 只含 startup 與本輪資料，不保留跨輪執行歷史；不包含 raw stderr／panic／設定值或未要求的 command 資料。
 
 
 ## reswho/11：補充角色與一般資源
@@ -303,3 +303,16 @@ Extension report 於 reswho/10 加入；目前為 reswho/11，Schema8／9／10 �
 Node 新增 nullable `resource`，`kind: "resource"` 的 leaf 使用非空 resource，process／container／runtime／container_totals 為 null，grouping 為 null。它位於 `group:resources` 的 provider 下；category／provider group 使用 `grouping: "resource"` 保存 metric scope，與 children 是否省略無關。Resource 包含 provider／version／id／kind／label／nullable path／metrics；metrics 是 key／label／unit／value。Number 保留精確 JSON，null 是未知，缺少整個 metric 是未觀測。Unit 是有界 identifier 字串，可擴充，不自動換算或聚合。Resource node 的 totals 固定為零／unknown uptime，不代表量到零個硬體程序；其語意是不屬於 PID 計量。Host 與 container totals 維持既有規則，完全不加 resource 指標。CPU／RAM／uptime sorting 不對 generic metrics 猜測映射。
 
 外部 wire protocol 的版本與 DTO 不受 snapshot schema 版本綁定，見 [extension protocol](extension-protocol.md)。
+
+
+## reswho/12：共同摘要／PID detail 投影
+
+內部分類可保存完整 tags 與裁決，但公開 Snapshot 在 renderer 前以同一投影控制 scope。一般樹只有分類／路徑／資源摘要，所有 process 的 tag_report 欄位省略，也沒有舊 process.roles 或 process evidence／attribution 的旁路。TUI、Markdown、JSON 相同。
+
+明確 `--from pid:N` 或 TUI 開啟指定程序 details，才取得該 PID 的 `tag_report: {effective, proposals, decisions, diagnostics}`；effective 保存 source＋tag，proposals 保存 source／version／原提案，decisions 保存 source／proposal_id／status／by_source／reason。Status 為 effective／excluded／superseded／withdrawn／recorded／rejected。同來源矛盾保留 rejected 原提案及安全診斷；未通過界限驗證的 payload 不回傳。資料僅當輪，無持久歷史。
+
+未要求詳情是 field absent；已要求且無提案則有四個 typed 空陣列。Identity 不可用、來源失敗／停用／未採集時有 diagnostics，不假稱完整空集合。子程序不論 depth 都用摘要，Schema 也拒絕 child tag_report。Tag 完整身分與 root／宣告／優先序見 extension-protocol.md。
+
+Schema11 的 process.roles 是歷史契約；Schema12 將它移入 tag_report，有效標籤不造成 PID／CPU／RAM 重複計數。Generic resource 及 host/container 計量範圍不變。
+
+Ownership group ref 統一由 dimension／id／canonical root 決定，不包含勝出來源或顯示名稱；內建與外部同身分可合併，不同 ID／root 保持分離。App／Git metadata 僅裝飾及組織階層，不另選主要 ownership 身分。此修正會改變早期原型的 ownership group refs；PID refs 不變，請從目前 snapshot 重新取得 group ref。

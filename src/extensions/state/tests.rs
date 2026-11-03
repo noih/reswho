@@ -71,6 +71,39 @@ fn lifecycle_keeps_order_canonical_definitions_and_is_atomic() {
             .collect::<Vec<_>>(),
         ["a", "b"]
     );
+    let config = crate::settings::Config {
+        source_priority: vec![
+            "b".into(),
+            "missing".into(),
+            "a".into(),
+            "app_bundle".into(),
+        ],
+        ..Default::default()
+    };
+    a.version = "1.0.1".into();
+    State::mutate(&path, |state| state.install(a.clone())).unwrap();
+    State::mutate(&path, |state| state.install(manifest("c"))).unwrap();
+    let updated = State::load(&path).unwrap();
+    let resolved = updated
+        .registry()
+        .unwrap()
+        .resolve(&config, &BTreeMap::new())
+        .unwrap();
+    let order = resolved.source_order(
+        updated
+            .list(&resolved, false)
+            .into_iter()
+            .map(|entry| entry.descriptor.id),
+    );
+    assert_eq!(&order[..4], ["b", "missing", "a", "app_bundle"]);
+    assert_eq!(order.last().map(String::as_str), Some("c"));
+    assert_eq!(
+        resolved.report().settings["shared.example"]
+            .definition
+            .provider,
+        "a"
+    );
+    assert_eq!(resolved.get("shared.example"), Some(&json!(100)));
     let before = fs::read(&path).unwrap();
     b.definitions[0].contract.unit = None;
     assert!(State::mutate(&path, |state| state.install(b)).is_err());

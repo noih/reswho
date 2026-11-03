@@ -860,3 +860,56 @@ fn private_repairs_save_real_sensitive_values_and_keep_prior_effective_on_failur
     );
     owner.close().unwrap();
 }
+
+#[test]
+fn source_priority_persists_atomically_conflicts_and_does_not_change_definitions() {
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let path = root.path().join("config.json");
+    let mut registry = Registry::core();
+    registry
+        .register_extension("a", vec![definition("a", "shared.test", 100)], vec![])
+        .unwrap();
+    registry
+        .register_extension("b", vec![definition("b", "shared.test", 200)], vec![])
+        .unwrap();
+    let mut editor = edit::Settings::new(
+        registry,
+        Config::default(),
+        BTreeMap::new(),
+        Some(path.clone()),
+    );
+    let initial = editor
+        .registry
+        .resolve(&Config::default(), &BTreeMap::new())
+        .unwrap();
+    let saved = editor
+        .save_priority(&[
+            "b".into(),
+            "missing".into(),
+            "a".into(),
+            "app_bundle".into(),
+        ])
+        .unwrap()
+        .unwrap();
+    assert!(initial.source_priority.is_empty());
+    assert_eq!(saved.get("shared.test"), Some(&json!(100)));
+    assert_eq!(
+        saved.report().settings["shared.test"].definition.provider,
+        "a"
+    );
+    let config = Config::load_path(Some(&path), true).unwrap();
+    let restarted = editor.registry.resolve(&config, &BTreeMap::new()).unwrap();
+    assert_eq!(
+        restarted.source_order(["a", "b", "app_bundle", "new"].map(String::from)),
+        ["b", "missing", "a", "app_bundle", "new"]
+    );
+    let mut disk = config.clone();
+    disk.source_priority.reverse();
+    std::fs::write(&path, serde_json::to_vec(&disk).unwrap()).unwrap();
+    assert!(editor.save_priority(&["a".into(), "b".into()]).is_err());
+    assert_eq!(editor.baseline.source_priority, config.source_priority);
+    std::fs::write(&path, b"malformed").unwrap();
+    assert!(editor.save_priority(&["a".into()]).is_err());
+    assert_eq!(saved.source_priority, config.source_priority);
+    root.close().unwrap();
+}

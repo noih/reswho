@@ -5,6 +5,7 @@ pub mod protocol;
 pub mod report;
 mod resources;
 pub mod state;
+pub mod tags;
 use crate::{
     containers::{self, Container, Runtime},
     model::{Diagnostic, Process, ProcessCommand},
@@ -135,7 +136,9 @@ impl<'a> Context<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessIdentity {
+    #[serde(deserialize_with = "protocol::integer")]
     pub pid: u32,
+    #[serde(deserialize_with = "protocol::integer")]
     pub started_unix_us: u64,
 }
 
@@ -151,6 +154,9 @@ impl ProcessIdentity {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ClassificationEvidence {
+    Tags {
+        proposal: tags::Proposal,
+    },
     AppBundle {
         path: PathBuf,
     },
@@ -375,13 +381,19 @@ pub enum Builtin {
     Apple,
     AppBundle,
     Command,
+    Project,
+    Ancestor,
+    Bin,
 }
 
-pub const BUILTINS: [Builtin; 4] = [
+pub const BUILTINS: [Builtin; 7] = [
     Builtin::Docker,
     Builtin::Apple,
     Builtin::AppBundle,
     Builtin::Command,
+    Builtin::Project,
+    Builtin::Ancestor,
+    Builtin::Bin,
 ];
 
 impl Extension for Builtin {
@@ -391,6 +403,9 @@ impl Extension for Builtin {
             Self::Apple => ("apple", Capability::Collect),
             Self::AppBundle => ("app_bundle", Capability::Classify),
             Self::Command => ("command", Capability::Details),
+            Self::Project => ("project", Capability::Classify),
+            Self::Ancestor => ("ancestor", Capability::Classify),
+            Self::Bin => ("bin", Capability::Classify),
         };
         Descriptor {
             id: id.into(),
@@ -420,18 +435,11 @@ impl Extension for Builtin {
                     containers,
                 })
             }
-            (Self::AppBundle, Request::Classify(processes)) => Ok(Contribution::Classify {
-                proposals: processes
-                    .iter()
-                    .filter_map(|process| {
-                        Some(ClassificationProposal {
-                            identity: ProcessIdentity::observed(process)?,
-                            evidence: ClassificationEvidence::AppBundle {
-                                path: app_bundle(process.executable.as_deref()?)?,
-                            },
-                        })
-                    })
-                    .collect(),
+            (
+                Self::AppBundle | Self::Project | Self::Ancestor | Self::Bin,
+                Request::Classify(processes),
+            ) => Ok(Contribution::Classify {
+                proposals: crate::tree::builtin_tags(processes, &self.descriptor().id),
             }),
             (
                 Self::Command,
@@ -547,125 +555,52 @@ pub fn classify_with_roles(
     context: &Context<'_>,
     processes: &[Process],
 ) -> ClassificationFacts {
-    let mut roles: BTreeMap<u32, Vec<crate::model::Role>> = BTreeMap::new();
-    let mut accepted = BTreeMap::new();
+    let (reports, diagnostics) = tags::classify(providers, context, processes);
+    let mut apps = BTreeMap::new();
     let mut custom = BTreeMap::new();
-    let mut diagnostics = Vec::new();
-    for (index, (id, result)) in dispatch_many(providers, context, Request::Classify(processes))
-        .into_iter()
-        .enumerate()
-    {
-        let validation_started = Instant::now();
-        let label = id
-            .clone()
-            .unwrap_or_else(|| format!("unidentified-{index}"));
-        match result {
-            Ok(Response {
-                provider,
-                version,
-                contribution: Contribution::Classify { proposals },
-            }) => {
-                let mut counts = BTreeMap::new();
-                let exceeded = proposals.iter().any(|proposal| {
-                    if !matches!(proposal.evidence, ClassificationEvidence::Role { .. }) {
-                        return false;
-                    }
-                    let count = counts
-                        .entry(proposal.identity.pid)
-                        .or_insert_with(|| roles.get(&proposal.identity.pid).map_or(0, Vec::len));
-                    *count += 1;
-                    *count > MAX_ROLES_PER_PROCESS
-                });
-                if exceeded {
-                    let _ = context.finish_phase::<()>(
-                        Some(&provider),
-                        "classify",
-                        validation_started.elapsed(),
-                        Err(anyhow::anyhow!("role_limit")),
+    let mut roles = BTreeMap::new();
+    for (pid, report) in reports {
+        for entry in report.effective {
+            let Some(path) = entry.tag.path else {
+                continue;
+            };
+            match entry.tag.dimension.as_str() {
+                "app" => {
+                    apps.insert(pid, path);
+                }
+                "project" => {
+                    custom.insert(
+                        pid,
+                        (
+                            path,
+                            external::evidence(
+                                entry.source,
+                                String::new(),
+                                entry.tag.id,
+                                entry.tag.label,
+                                entry.tag.basis,
+                            ),
+                        ),
                     );
-                    diagnostics.push(invalid(&provider, "classify"));
-                    continue;
                 }
-                for proposal in proposals {
-                    let process = processes.iter().find(|process| {
-                        ProcessIdentity::observed(process) == Some(proposal.identity)
-                    });
-                    match (process, proposal.evidence) {
-                        (Some(process), ClassificationEvidence::AppBundle { path })
-                            if process.executable.as_deref().and_then(app_bundle).as_ref()
-                                == Some(&path) =>
-                        {
-                            accepted.entry(proposal.identity.pid).or_insert(path);
-                        }
-                        (
-                            Some(process),
-                            ClassificationEvidence::Custom {
-                                key,
-                                label,
-                                path,
-                                basis,
-                            },
-                        ) if external::valid_custom(process, &key, &label, &path, &basis) => {
-                            custom.entry(proposal.identity.pid).or_insert((
-                                path,
-                                external::evidence(
-                                    provider.clone(),
-                                    version.clone(),
-                                    key,
-                                    label,
-                                    basis,
-                                ),
-                            ));
-                        }
-                        (
-                            Some(process),
-                            ClassificationEvidence::Role {
-                                key,
-                                label,
-                                path,
-                                basis,
-                            },
-                        ) if external::valid_custom(process, &key, &label, &path, &basis)
-                            && !roles.get(&process.pid).is_some_and(|roles| {
-                                roles
-                                    .iter()
-                                    .any(|role| role.provider == provider && role.key == key)
-                            }) =>
-                        {
-                            roles
-                                .entry(process.pid)
-                                .or_default()
-                                .push(crate::model::Role {
-                                    provider: provider.clone(),
-                                    version: version.clone(),
-                                    key,
-                                    label,
-                                    path,
-                                    basis,
-                                });
-                        }
-                        _ => {
-                            let _ = context.finish_phase::<()>(
-                                Some(&provider),
-                                "classify",
-                                Duration::ZERO,
-                                Err(anyhow::anyhow!("invalid classification")),
-                            );
-                            diagnostics.push(invalid(&provider, "classify"));
-                        }
-                    }
+                "role" => {
+                    roles
+                        .entry(pid)
+                        .or_insert_with(Vec::new)
+                        .push(crate::model::Role {
+                            provider: entry.source,
+                            version: String::new(),
+                            key: entry.tag.id,
+                            label: entry.tag.label,
+                            path,
+                            basis: entry.tag.basis,
+                        });
                 }
-                let _ = context.finish_phase(
-                    Some(&provider),
-                    "classify",
-                    validation_started.elapsed(),
-                    Ok(()),
-                );
+                _ => {}
             }
-            _ => diagnostics.push(invalid(&label, "classify")),
         }
     }
-    (accepted, custom, diagnostics, roles)
+    (apps, custom, diagnostics, roles)
 }
 
 fn invalid(provider: &str, capability: &str) -> Diagnostic {

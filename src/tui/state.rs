@@ -29,6 +29,8 @@ pub(super) struct App {
     pub extension_details: bool,
     pub extensions_page: bool,
     pub extensions_scroll: u16,
+    pub priority_draft: Option<Vec<String>>,
+    pub priority_error: Option<String>,
     pub rows: Vec<Row>,
     pub selected: usize,
     pub expanded: HashMap<String, bool>,
@@ -104,6 +106,8 @@ impl App {
             extension_details: false,
             extensions_page: false,
             extensions_scroll: 0,
+            priority_draft: None,
+            priority_error: None,
             rows: Vec::new(),
             selected: 0,
             expanded: HashMap::new(),
@@ -145,6 +149,8 @@ impl App {
         if let Some(snapshot) = &self.snapshot
             && let Ok(node) = tree::select(&snapshot.root, &node.reference)
         {
+            let mut node = node;
+            crate::model::project_node(&mut node, None);
             self.details = Some(super::details::Details::new(node));
         }
     }
@@ -254,6 +260,7 @@ impl App {
         let chain = self.selection_chain();
         self.pinned_scope = Some(key);
         snapshot.root = root;
+        snapshot.project(None);
         snapshot.scope = self.scope.clone();
         self.snapshot = Some(snapshot);
         self.generation = next_generation;

@@ -500,9 +500,12 @@ impl Registry {
     }
 
     pub fn resolve(&self, user: &Config, cli: &BTreeMap<String, Value>) -> Result<Resolved> {
+        validate_priority(&user.source_priority)?;
         let mut resolved = Resolved {
+            source_priority: user.source_priority.clone(),
             values: BTreeMap::new(),
             report: Report {
+                source_priority: user.source_priority.clone(),
                 settings: BTreeMap::new(),
                 unknown_keys: user
                     .settings
@@ -590,6 +593,8 @@ impl Default for Registry {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
+    pub source_priority: Vec<String>,
     pub version: u32,
     pub settings: BTreeMap<String, Value>,
 }
@@ -665,17 +670,46 @@ pub struct Effective {
 
 #[derive(Serialize)]
 pub struct Report {
+    pub source_priority: Vec<String>,
     pub settings: BTreeMap<String, Effective>,
     pub unknown_keys: Vec<String>,
     pub disabled_extensions: BTreeMap<String, Vec<String>>,
 }
 
 pub struct Resolved {
+    pub source_priority: Vec<String>,
     values: BTreeMap<String, Value>,
     report: Report,
 }
 
+pub fn validate_priority(ids: &[String]) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    if ids.len() > 1024
+        || ids.iter().any(|id| {
+            id.is_empty()
+                || id.len() > 64
+                || !id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+                || !seen.insert(id)
+        })
+    {
+        bail!("invalid_source_priority");
+    }
+    Ok(())
+}
+
 impl Resolved {
+    pub fn source_order(&self, ids: impl IntoIterator<Item = String>) -> Vec<String> {
+        let mut order = self.source_priority.clone();
+        for id in ids {
+            if !order.contains(&id) {
+                order.push(id);
+            }
+        }
+        order
+    }
+
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.values.get(key)
     }

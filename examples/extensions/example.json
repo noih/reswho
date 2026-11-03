@@ -30,6 +30,14 @@
   "required_features": [
     "roles",
     "resources",
-    "collect_scopes"
-  ]
+    "collect_scopes",
+    "tags"
+  ],
+  "tag_contract": {
+    "produces": [
+      "project",
+      "role"
+    ],
+    "overrides": []
+  }
 }

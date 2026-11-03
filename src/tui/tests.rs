@@ -709,6 +709,7 @@ fn overview_skips_redundant_wrappers_without_changing_data_or_scoped_roots() {
     .unwrap();
     source.system.cpu_percent = Some(30.0);
     let wrapper = source.root.children[0].children[0].reference.clone();
+    source.project(None);
     let original = serde_json::to_value(&source.root).unwrap();
     let mut app = App::new("group:all".into(), 2);
     app.update(Ok(source.clone()));
@@ -1811,14 +1812,14 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
                 && !text.contains("q Quit")
                 && !text.contains("Enter for details")
         );
-        assert!(!text.contains("Move") && !text.contains("j/k"));
-        for hint in ["Enter Details", "Esc Back"] {
+        assert!(text.contains("Shift") && text.contains("Save") && !text.contains("j/k"));
+        for hint in ["Enter Details", "Esc discard"] {
             assert!(text.contains(hint), "missing {hint}: {text}");
         }
         if width >= 100 {
             assert!(
                 text.lines()
-                    .any(|line| line.contains("Enter Details") && line.contains("Esc Back"))
+                    .any(|line| line.contains("Enter Details") && line.contains("Esc discard"))
             );
         }
         if width >= 100 {
@@ -2291,4 +2292,126 @@ fn repair_empty_resource_provider_keeps_metric_scope_in_the_table() {
         !row.contains("0 proc") && !row.contains("0 B") && !row.contains("0.0%"),
         "{row}"
     );
+}
+
+#[test]
+fn priority_dialog_reorders_builtins_saves_and_keeps_failures_as_draft() {
+    use crate::settings::{Config, edit::Settings};
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let path = root.path().join("config.json");
+    let resolved = crate::extensions::default_settings().unwrap();
+    let mut app = App::new("group:all".into(), 2);
+    app.inventory = crate::extensions::state::State::default().list(&resolved, false);
+    app.settings = Some(settings::Popup::new(Settings::new(
+        crate::extensions::settings_registry().unwrap(),
+        Config::default(),
+        Default::default(),
+        Some(path.clone()),
+    )));
+    app.extensions_page = true;
+    app.extension_selected = Some("app_bundle".into());
+    extensions::key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+    assert_eq!(
+        &app.priority_draft.as_ref().unwrap()[..3],
+        ["docker", "app_bundle", "apple"]
+    );
+    extensions::key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    extensions::key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.priority_draft.is_some());
+    extensions::key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+    );
+    assert!(app.extensions_page);
+    extensions::key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    );
+    assert!(!app.extensions_page);
+    let saved = Config::load_path(Some(&path), true).unwrap();
+    assert_eq!(saved.source_priority[1], "app_bundle");
+    assert!(app.settings.as_mut().unwrap().applied.take().is_some());
+    app.extensions_page = true;
+    extensions::key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+    std::fs::write(&path, "malformed").unwrap();
+    extensions::key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    );
+    assert!(app.extensions_page && app.priority_error.is_some() && app.priority_draft.is_some());
+    assert!(app.settings.as_ref().unwrap().applied.is_none());
+    for (width, height) in [(100, 30), (36, 10)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| extensions::draw(frame, &app))
+            .unwrap();
+        if let Some(path) = std::env::var_os("RESWHO_UI_EVIDENCE") {
+            std::fs::create_dir_all(&path).unwrap();
+            let buffer = terminal.backend().buffer();
+            let text = (0..height)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::write(
+                std::path::Path::new(&path)
+                    .join(format!("priority-save-error-{width}x{height}.txt")),
+                text,
+            )
+            .unwrap();
+        }
+    }
+    extensions::key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!app.extensions_page && app.priority_draft.is_none());
+    root.close().unwrap();
+}
+
+#[test]
+fn tag_payload_is_absent_from_tree_and_only_selected_pid_is_rendered_in_details() {
+    use crate::extensions::tags::{Effective, Tag};
+    let render = |app: &App| {
+        let mut terminal = Terminal::new(TestBackend::new(160, 80)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, app, &mut TableState::default()))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    let mut source = snapshot();
+    for pid in [10, 11] {
+        change(&mut source.root, pid, |process| {
+            let tag: Tag = serde_json::from_value(serde_json::json!({"dimension":"role","id":"role:test","label":format!("private-tag-{pid}"),"path":null,"basis":"observed"})).unwrap();
+            process
+                .tag_report
+                .as_mut()
+                .unwrap()
+                .effective
+                .push(Effective {
+                    source: "fixture".into(),
+                    tag,
+                });
+        });
+    }
+    let mut app = App::new("group:all".into(), 4);
+    app.update(Ok(source.clone()));
+    let text = render(&app);
+    assert!(!text.contains("private-tag"));
+    assert!(
+        !serde_json::to_string(&app.snapshot.as_ref().unwrap().root)
+            .unwrap()
+            .contains("tag_report")
+    );
+    select(&mut app, "pid:10");
+    app.open_details();
+    app.update(Ok(source));
+    let text = render(&app);
+    assert!(text.contains("private-tag-10") && !text.contains("private-tag-11"));
 }

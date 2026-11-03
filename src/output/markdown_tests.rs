@@ -54,7 +54,7 @@ fn report_categories_quotes_and_process_lists_have_distinct_structure() {
     let snapshot = fixture_snapshot();
     let md = markdown(&snapshot);
     assert!(md.starts_with("# reswho\n\n"));
-    assert!(md.contains("reswho-md/18"));
+    assert!(md.contains("reswho-md/19"));
     assert!(!md.contains("Collection prototype:"));
     assert_eq!(md.matches("> ! Host swap:").count(), 1);
     assert!(!md.contains("Resources group:all"));
@@ -107,6 +107,7 @@ fn markdown_flattens_system_before_depth_without_changing_json_or_refs() {
     snapshot.system.cpu_percent = Some(30.0);
     snapshot.root = tree::build(vec![Process {
         pid: 99,
+        started_unix_us: Some(99),
         name: "agent".into(),
         executable: Some("/usr/libexec/agent".into()),
         cpu_percent: Some(240.0),
@@ -294,6 +295,7 @@ fn diagnostic_markers_do_not_guess_permission_or_mark_idle_processes() {
     let mut snapshot = fixture_snapshot();
     snapshot.warnings.clear();
     snapshot.root = tree::select(&snapshot.root, "pid:10").unwrap();
+    snapshot.scope = "pid:10".into();
     let process = snapshot.root.process.as_mut().unwrap();
     process.cpu_percent = Some(0.0);
     process.uptime_seconds = Some(86400 * 100);

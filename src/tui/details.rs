@@ -180,12 +180,6 @@ impl Details {
                 return rows;
             }
             let process = node.process.as_ref().expect("detail process");
-            rows.extend(
-                process
-                    .roles
-                    .iter()
-                    .map(|role| DetailRow::text(output::role_text(role))),
-            );
             rows.push(DetailRow::heading(&node.name));
             rows.push(DetailRow::text(format!(
                 "CPU/core {}  RAM {}  Uptime {}  PPID {}  UID {}",
@@ -260,6 +254,13 @@ impl Details {
                 );
             } else {
                 rows.push(DetailRow::text("TCP/UDP sockets ?"));
+            }
+            if let Some(report) = &process.tag_report {
+                rows.extend(
+                    output::tag_report_lines(report)
+                        .into_iter()
+                        .map(DetailRow::text),
+                );
             }
             if !node.evidence.is_empty() {
                 rows.push(DetailRow::text(""));

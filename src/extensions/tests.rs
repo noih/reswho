@@ -8,7 +8,15 @@ fn builtin_list_is_deterministic_and_does_not_probe_sources() {
         list.iter()
             .map(|entry| entry.id.as_str())
             .collect::<Vec<_>>(),
-        ["docker", "apple", "app_bundle", "command"]
+        [
+            "docker",
+            "apple",
+            "app_bundle",
+            "command",
+            "project",
+            "ancestor",
+            "bin"
+        ]
     );
     assert!(list.iter().all(|entry| entry.availability == "unknown"));
     assert!(!list[0].enabled && !list[1].enabled);
@@ -219,7 +227,7 @@ fn classification_rejects_stale_missing_and_wrong_path_proposals_without_duplica
         crate::tree::build_with_providers(vec![process.clone()], &context, &[&bad, &good]).unwrap();
     assert_eq!(tree.totals.processes, 1);
     assert_eq!(tree.totals.resident_bytes, 100);
-    assert_eq!(tree.diagnostics.len(), 3);
+    assert_eq!(tree.diagnostics.len(), 1);
     assert_eq!(
         crate::tree::select(&tree, "group:applications")
             .unwrap()
@@ -232,7 +240,7 @@ fn classification_rejects_stale_missing_and_wrong_path_proposals_without_duplica
     unknown.started_unix_us = None;
     let tree = crate::tree::build_with_providers(vec![unknown], &context, &[&good]).unwrap();
     assert!(crate::tree::select(&tree, "group:applications").is_err());
-    assert_eq!(tree.diagnostics.len(), 2);
+    assert_eq!(tree.diagnostics.len(), 1);
 }
 
 #[test]
@@ -1052,15 +1060,25 @@ fn supplemental_roles_coexist_on_apps_projects_without_reparenting_or_new_totals
             serde_json::to_value(&selected.attribution).unwrap(),
             serde_json::to_value(&old.attribution).unwrap()
         );
-        let roles = &selected.process.as_ref().unwrap().roles;
+        let roles: Vec<_> = selected
+            .process
+            .as_ref()
+            .unwrap()
+            .tag_report
+            .as_ref()
+            .unwrap()
+            .effective
+            .iter()
+            .filter(|entry| entry.tag.dimension == "role")
+            .collect();
         assert_eq!(
             roles
                 .iter()
-                .map(|role| role.provider.as_str())
+                .map(|role| role.source.as_str())
                 .collect::<Vec<_>>(),
             ["first", "second"]
         );
-        assert_eq!(roles[0].path, dir.path());
+        assert_eq!(roles[0].tag.path.as_deref(), Some(dir.path()));
         let snapshot = Snapshot {
             schema: crate::model::JSON_SCHEMA_VERSION,
             extensions: vec![],

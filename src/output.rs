@@ -6,9 +6,9 @@ pub(crate) mod containers;
 #[cfg(test)]
 mod markdown_tests;
 
-pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-11.schema.json");
+pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-12.schema.json");
 
-pub const FORMAT_HELP: &str = "reswho-md/18 (collection prototype)\n\n\
+pub const FORMAT_HELP: &str = "reswho-md/19 (collection prototype)\n\n\
 | Row | Fields, in order |\n\
 | --- | --- |\n\
 | Process | name pid:REF · CPU/core  RSS  uptime  ports |\n\
@@ -56,14 +56,14 @@ A trailing + ? means partial socket coverage. Details show local/remote endpoint
 Sockets count unique observed TCP/UDP sockets per process, not descriptors; no cross-process sum.\n\
 Socket snapshots are non-atomic; no traffic, Unix sockets or inactivity history is reported.\n\
 Nested groups represent attribution; nested processes represent observed parenthood.\n\
-Process rows are summaries; --from pid:N shows details for the selected PID only.\n\
+Process rows are summaries; --from pid:N shows commands and tag decisions for the selected PID only; children remain summaries.\n\
 cmd preserves argument order; quotes delimit empty/whitespace arguments, not a runnable shell command.\n\
 [filtered] replaces detected sensitive values, assignments, URLs and inline code; other positional values may still be sensitive.\n\
 entry is a supported script/JAR launch argument, not verified ownership; relative paths are not resolved against current cwd.\n\
 Unreadable rows combine processes with no readable details; they cannot be expanded.\n\
 JSON retains individual processes and diagnostics, including unreadable entries.\n\
 PPID is preserved even when a parent belongs to a different group.\n\
-Attribution: direct App > Project; validated ancestor inference > Bin > Unknown.\n\
+Grouping uses effective app > project > bin > unknown after highest-first source adjudication.\n\
 Evidence: app PATH = app bundle; git PATH = checkout root; repo PATH = shared Git directory.\n\
 Matching declared bundle IDs share an app parent across paths; single-path apps stay flat.\n\
 Bundle path refs remain stable; app parents exist only while multiple paths are present.\n\
@@ -102,7 +102,7 @@ Group refs are deterministic, not display positions. PID refs query the current 
 JSON retains the original root and System services nodes; depth counts original tree edges.\n\
 JSON system.cpu_percent is whole-host 0-100%; process.cpu_percent and totals.known_cpu_percent use one-core 100%.\n\
 JSON totals are subtree aggregates, not extra usage; do not add parent totals to children.\n\
-JSON schema reswho/11 includes structured attribution and diagnostics, raw byte counts, unknown counts and sample timing.\n\
+JSON schema reswho/12 includes structured attribution and diagnostics, raw byte counts, unknown counts and sample timing.\n\
 Use --json-schema for the offline JSON Schema; see docs/json-format.md for version and identity rules.\n\
 Command arguments, environment, container-internal processes and review rules are not collected.\n";
 
@@ -112,6 +112,11 @@ pub fn markdown(snapshot: &Snapshot) -> String {
 
 pub fn markdown_with_depth(snapshot: &Snapshot, depth: usize) -> String {
     let mut snapshot = snapshot.clone();
+    let detail_pid = snapshot
+        .scope
+        .strip_prefix("pid:")
+        .and_then(|pid| pid.parse().ok());
+    snapshot.project(detail_pid);
     flatten_system(&mut snapshot.root);
     crate::tree::limit_depth(&mut snapshot.root, depth);
     render_markdown(&snapshot)
@@ -139,7 +144,7 @@ fn render_markdown(snapshot: &Snapshot) -> String {
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "# reswho\n\nFormat: reswho-md/18 · help: reswho --help-format  "
+        "# reswho\n\nFormat: reswho-md/19 · help: reswho --help-format  "
     );
     let _ = writeln!(
         text,
@@ -269,18 +274,6 @@ pub(crate) fn metric_text(metric: &crate::model::ResourceMetric) -> String {
     )
 }
 
-pub(crate) fn role_text(role: &crate::model::Role) -> String {
-    format!(
-        "Role {}/{} · {} [{}] · {} {}",
-        role.provider,
-        role.version,
-        role.label,
-        role.key,
-        role.basis,
-        role.path.display()
-    )
-}
-
 fn write_node(text: &mut String, node: &Node, level: usize) {
     let indent = "    ".repeat(level.saturating_sub(1));
     let bullet = if level == 0 { "" } else { "- " };
@@ -352,8 +345,10 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
             );
         }
     }
-    if let Some(process) = &node.process {
-        notes.extend(process.roles.iter().map(|role| escaped(&role_text(role))));
+    if let Some(process) = &node.process
+        && let Some(report) = &process.tag_report
+    {
+        notes.extend(tag_report_lines(report).iter().map(|line| escaped(line)));
     }
     if level == 0
         && let Some(process) = &node.process
@@ -717,6 +712,61 @@ pub fn extension_profile(records: &[crate::extensions::report::Record]) -> Strin
         );
     }
     text
+}
+
+pub fn tag_report_lines(report: &crate::extensions::tags::Report) -> Vec<String> {
+    let mut lines = vec![format!("Tags: {} effective", report.effective.len())];
+    for entry in &report.effective {
+        lines.push(format!(
+            "{} {} · {} · {}",
+            entry.tag.dimension, entry.tag.label, entry.tag.id, entry.source
+        ));
+    }
+    for record in &report.proposals {
+        use crate::extensions::tags::Operation;
+        let operation = match &record.proposal.operation {
+            Operation::Add { tag } => format!(
+                "add {} {} · {} · basis {}{}",
+                tag.dimension,
+                tag.label,
+                tag.id,
+                tag.basis,
+                tag.path
+                    .as_ref()
+                    .map(|p| format!(" · {}", p.display()))
+                    .unwrap_or_default()
+            ),
+            Operation::Exclude { selector } => format!(
+                "exclude {} · tag {} · source {}",
+                selector.dimension,
+                selector.tag_id.as_deref().unwrap_or("all"),
+                selector.source.as_deref().unwrap_or("declared sources")
+            ),
+            Operation::Withdraw { proposal_id } => format!("withdraw {proposal_id}"),
+        };
+        lines.push(format!(
+            "Proposal {}/{} / {}: {}",
+            record.source, record.version, record.proposal.id, operation
+        ));
+    }
+    for decision in &report.decisions {
+        lines.push(format!(
+            "{} / {}: {} · {}{}",
+            decision.source,
+            decision.proposal_id,
+            decision.status,
+            decision.reason,
+            decision
+                .by_source
+                .as_ref()
+                .map(|s| format!(" · {s}"))
+                .unwrap_or_default()
+        ));
+    }
+    if !report.diagnostics.is_empty() {
+        lines.push("Tag evidence incomplete; see classification diagnostics".into());
+    }
+    lines
 }
 
 #[cfg(test)]

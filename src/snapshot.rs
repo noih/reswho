@@ -108,6 +108,7 @@ pub fn capture_reported(
                 .is_some_and(|old| old.pid == process.pid)
             {
                 let mut updated = process.clone();
+                updated.tag_report = node.process.as_ref().and_then(|old| old.tag_report.clone());
                 updated.roles = node
                     .process
                     .as_ref()
@@ -172,7 +173,7 @@ pub fn capture_reported(
     }
     cancel.check()?;
     tree::validate_references(&root)?;
-    Ok(Snapshot {
+    let mut snapshot = Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
         extensions: report.lock().expect("report lock").clone(),
         captured_unix_ms: SystemTime::now()
@@ -185,7 +186,9 @@ pub fn capture_reported(
         scope: "group:all".into(),
         warnings: collection.warnings,
         root,
-    })
+    };
+    snapshot.project(options.command_pid);
+    Ok(snapshot)
 }
 
 fn validate_external_details(

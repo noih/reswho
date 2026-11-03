@@ -60,15 +60,6 @@ impl Project {
         }
     }
 
-    pub fn reference(&self) -> String {
-        let namespace = if self.checkout.as_ref() == Some(&self.root) {
-            "development"
-        } else {
-            "project"
-        };
-        stable_ref(namespace, &self.root.to_string_lossy())
-    }
-
     pub fn evidence(&self) -> String {
         if self.checkout.as_ref() == Some(&self.root) {
             format!("Git root from working directory: {}", self.root.display())
@@ -214,14 +205,27 @@ pub(super) fn group(projects: Vec<(Project, Node)>) -> Vec<Node> {
     }
     let mut checkouts = Vec::new();
     for (path, mut projects) in by_checkout {
+        let root_count = projects
+            .iter()
+            .filter(|(project, _)| project.root == path)
+            .count();
         let mut checkout = if let Some(index) = projects
             .iter()
             .position(|(project, _)| project.root == path)
+            .filter(|_| root_count == 1)
         {
             projects.remove(index).1
         } else {
             Node::group(
-                stable_ref("development", &path.to_string_lossy()),
+                if root_count > 1 {
+                    stable_ref("checkout", &path.to_string_lossy())
+                } else {
+                    crate::extensions::tags::ownership_ref(
+                        "project",
+                        &crate::extensions::tags::path_id("project", &path),
+                        &path,
+                    )
+                },
                 path.file_name()
                     .unwrap_or_default()
                     .to_string_lossy()

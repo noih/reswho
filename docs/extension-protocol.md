@@ -1,6 +1,6 @@
 # 外部 extension 開發契約
 
-CLI 版本為 package SemVer；目前0.1.0。外部協定版本為整數1，與 snapshot `reswho/11` 分開。內建與外部來源共用設定、取消、deadline、核心裁決與 rendering；extension 不直接輸出 Markdown／TUI，也不新增既有 PID metrics。
+CLI 版本為 package SemVer；目前0.1.0。外部協定版本為整數1，與 snapshot `reswho/12` 分開。內建與外部來源共用設定、取消、deadline、核心裁決與 rendering；extension 不直接輸出 Markdown／TUI，也不新增既有 PID metrics。
 
 ## 安裝與版本
 
@@ -42,7 +42,7 @@ Manifest [Schema](../schemas/reswho-extension-manifest-1.schema.json) 與 `defin
 
 同 major 可新增「缺少時仍維持原意」的可選 metadata。Envelope、observed process、resource、metric、classification evidence、parsed field 與 manifest 根物件忽略未知 metadata 欄位；未知欄位不會被轉成核心行為。Settings definitions／uses 的 constraint 欄位仍嚴格驗證，未知 constraint 拒絕；本機 config 與安裝 state 的版本／未知欄位規則維持原契約，不能以 wire 的寬鬆規則套用。必要欄位／型別／單位意義／既有語意的改動都是 breaking，須新 protocol major。新 unit identifier 本身可新增，但不能改變已使用 unit 的意義。
 
-Manifest 可宣告 `required_features`（省略為空；最多64項），request 的 `host.features` 列出 host 理解的 `roles`、`resources`、`collect_scopes`。未知必要 feature 在執行前使來源不相容，不注入 definitions。Response 同樣可宣告 `required_features`；未知值拒絕整個 response。未宣告的額外 metadata 不能帶必要的 privacy／validation semantics；新必要限制須 feature gate，或新 major。遮蔽、PID identity、namespace、bounds 與 native-only 限制始終強制，不是 optional feature。
+Manifest 可宣告 `required_features`（省略為空；最多64項），request 的 `host.features` 列出 host 理解的 `roles`、`resources`、`collect_scopes`、`tags`。未知必要 feature 在執行前使來源不相容，不注入 definitions。Response 同樣可宣告 `required_features`；未知值拒絕整個 response。未宣告的額外 metadata 不能帶必要的 privacy／validation semantics；新必要限制須 feature gate，或新 major。遮蔽、PID identity、namespace、bounds 與 native-only 限制始終強制，不是 optional feature。
 
 Manifest 的未知 capability 保留原始字串於 state，來源以 `unsupported_capability` 停用；不可降級後執行剩餘能力。離線清單的 `declared_capabilities` 保留完整宣告，`capabilities` 是 host 已知的投影，另列 `collect_scopes`／`required_features`。未來 host 可重新理解原始宣告。Response 未知或錯置 capability 一律拒絕。
 
@@ -57,7 +57,7 @@ Request 範例：
 ```json
 {
   "protocol_version": 1,
-  "host": {"version": "0.1.0", "protocol_version": 1, "features": ["roles", "resources", "collect_scopes"]},
+  "host": {"version": "0.1.0", "protocol_version": 1, "features": ["roles", "resources", "collect_scopes", "tags"]},
   "provider": "example",
   "version": "1.0.0",
   "capability": "classify",
@@ -79,7 +79,7 @@ Response 共通 envelope：
 }
 ```
 
-provider／version／protocol 必須與登記及 request 相符。能力不得錯置。每輪最多4個 provider 同時執行，按登記序採納結果；所有外部能力及 runtime collection 共用 host 採樣後的10秒 deadline，逾時結果拒絕。來源本輪一旦失敗，不再呼叫其剩餘能力；下一輪可重試，不保存失敗歷史。取消／逾時會終止自有 process group、wait child 並關閉有界 pipe。
+provider／version／protocol 必須與登記及 request 相符。能力不得錯置。每輪最多4個 provider 同時執行，固定批次收齊後按使用者來源優先序裁決分類結果；所有外部能力及 runtime collection 共用 host 採樣後的10秒 deadline，逾時結果拒絕。來源本輪一旦失敗，不再呼叫其剩餘能力；下一輪可重試，不保存失敗歷史。取消／逾時會終止自有 process group、wait child 並關閉有界 pipe。
 
 Bounds：metadata／state 各1MiB、最多128個安裝序號（含 tombstone）、每個 manifest 最多256 definitions＋uses、空 args；request／stdout／stderr 各8MiB；每批最多16384 processes／proposals，collect 每 scope 最多4096 containers／resources，每 resource 最多64 metrics，details 最多64 fields。核心不把裁切的資料假裝完整；超限拒絕該來源。
 
@@ -89,23 +89,42 @@ Host 正常退出、Ctrl-C／SIGTERM、crash／SIGKILL 或取消／deadline 關�
 
 Extension 契約禁止 daemonize、setsid／setpgid 逃逸與持久 helper；保證涵蓋正常／合作 extension 及仍在管理 group 的所有子孫。刻意逃逸、外部惡意直接殺 guard、OS-wide failure 或不可中斷 kernel wait 不在保證內；這不是任意 native code containment 或 OS sandbox。
 
-## Classify：作者自有證據
+## Classify：tags 驅動歸屬
+
+Wire 保持 version1。新操作的 response 必須宣告 `required_features: ["tags"]`；manifest 的 `tag_contract` 宣告 `produces` 維度及 `overrides: [{"dimension":"role","sources":["other"]}]`。這是來源／維度範圍宣告，不是逐 tag 授權；來源不能自設 priority。未支援必要 feature 不執行，未宣告維度或越界覆寫拒絕整個 classify batch。
 
 ```json
 {
   "capability": "classify",
   "proposals": [{
     "identity": {"pid": 42, "started_unix_us": 123},
-    "evidence": {"kind": "custom", "key": "workspace", "label": "Example workspace", "path": "/tmp/work", "basis": "cwd"}
+    "evidence": {"kind": "tags", "proposal": {
+      "id": "test-proposal",
+      "identity": {"pid": 42, "started_unix_us": 123},
+      "change": {"operation": "add", "tag": {
+        "dimension": "role", "id": "role:test", "label": "Test worker",
+        "path": null, "basis": "observed"
+      }}
+    }}
   }]
 }
 ```
 
-作者可自行檢查 marker、解析本機 metadata，再提出 namespaced key／label。核心要求 PID＋start 與本輪觀測一致，basis 為 cwd 或 executable，path 必須等於相應 observed absolute path。這是可追溯的 extension 證據，不等同核心已驗證作者所有推論。Key／label 各最多128 bytes。核心保留直接 app、project 與已驗證 ancestor 的優先序；只有原本 unclassified 的程序可依 custom evidence 歸類，無任意 priority，也不增加／複製 PID metrics。
+共通維度：app／project／bin 各最多一個有效歸屬；runtime／role 是集合。自訂維度用 `extensions.<provider>.<name>`，自訂 ID 用 `extensions.<provider>.<key>`；共通 ID 用 `<dimension>:<key>`（例如 runtime:java、role:daemon）。名稱不參與身分。Ownership tag 的完整身分是 `(dimension, id, canonical root)`；id 單獨不代表跨路徑唯一。Host 產生 refs，作者不須重現 hash。相同 root、id 的子目錄程序可合併；同名／同 id 但不同 root 不合併。
 
-補充角色使用同樣 evidence 欄位但 `kind: "role"`。它可附在已有 app／project／ancestor／fallback 歸屬的程序上，snapshot `process.roles` 保存 provider／version／key／label／basis／path。角色只附於該 PID，不傳給子程序、不改樹、不建立 subgroup、不改 owner 或 metrics。每 PID 最多64個角色（跨來源總計）。按登記序預檢整個來源；任何 PID 超限時，拒絕該來源整份 classify contribution、記錄安全失敗並抑制本輪剩餘能力，保留先前健康來源；不靜默裁切。相同 PID 的 `(provider,key)` 不可重複；外部重複 role 拒絕整個 response。不同 provider 的同名 key 並存，依原登記序顯示，不以任意 plugin priority 裁決。MD 在原程序旁顯示 role provenance，TUI 列與 process details 可見，JSON 保留原始結構。Selected PID 再取得 details 時保留本輪 roles。
+app／project 的 path 是歸屬 root，basis 指定 cwd 或 executable 觀測。Root 與觀測須可 canonicalize；root 必須為現存非 filesystem-root 目錄，以 component-aware containment 包含觀測，最多相距128層。app 限 executable basis，且必須符合觀測 executable 的外層 .app／.app.bundle＋Contents lineage；同 bundle 不同 helper 可以同組。bin 限 executable basis，path 必須等於觀測 executable。其他集合標籤可用 observed＋null path，或 cwd／executable＋相等的 observed path。這驗證觀測邊界，不代表核心驗證 extension 的所有推論。
 
-Primary fallback 的 snapshot attribution source 為 `extension`，`extension` 物件保存 provider／version／key／label／basis，path 沿用 attribution.path。不同 provider 的 key 不互相覆寫。
+`change` 也可為 `{"operation":"exclude","selector":{"dimension":"role","tag_id":"role:test","source":"other"}}`，或 `{"operation":"withdraw","proposal_id":"test-proposal"}`。Selector 至少指定 tag_id 或 source；tag-only selector 在選定 PID 上涵蓋同 id 的所有 roots，但只作用於 manifest 明確宣告的來源。source-only selector 排除該 PID／維度的指定來源。自訂維度的覆寫也須明確宣告來源。Withdraw 只引用同來源、同 PID/start、同批次的 add／exclude，不可撤回 withdrawal；它不排除其他來源。Replacement 用同批 exclude A＋add B，distinct selector 不視為矛盾。
+
+流程固定為 facts → 全部來源提案 → 核心裁決 → effective tags → tree。內建來源 app_bundle／project／ancestor／bin 走相同契約；ancestor 只由 frozen direct facts 推導，保留 UID／cwd／start 與128層限制，不讀其他 extension 的即時結果。可明確排除 ancestor 來源的該 PID 提案，不引入回饋。既有 bundle ID lineage、Git checkout／worktree 階層仍由有效 ownership 的 metadata 建立。
+
+優先序 highest-first，逐 tag／互斥歸屬裁決。高來源 abstain 時保留低來源；同 tag 不同來源的 add 可被來源限定的 exclude 分別處理。排除是固定批次意見，不依賴另一排除是否勝出，mutual excludes 不循環。不同 namespace ID 不衝突。單一來源相反意見、不同互斥歸屬、同身分不同 label/path 明確診斷並拒絕整份來源 batch；健康來源保留。撤回先正規化，再檢查矛盾。每輪重算，不保留停用／失敗／消失來源的舊標籤。
+
+App 與 project 可共存，預設主要位置依有效 app → project → bin → unknown；app 被排除後 project 可接手，system 僅從有效 bin 路徑建立。每個 PID 只出現一次，metrics／identity 不可由提案修改；tags 不代表 forgotten 或 safe-to-kill。
+
+界限：每來源每 PID 最多256提案、每維度跨來源最多64個 add、每 PID 當輪最多4096個通過驗證的批次提案；超限拒絕整個來源，不靜默裁切。ID 最多256 bytes、label/basis 最多128 bytes、path 最多4096 bytes，拒絕控制字元；manifest 最多32個 produces／overrides，每 override 最多128個具名來源。設定中已知敏感字串不得帶入 tag payload；錯誤不回傳原始 payload。公開 report 僅為當輪 typed proposals／effective／decisions／diagnostics，不是持久 log。Report 另保留合法但矛盾的拒絕批次；安裝來源上限128，Schema 的 proposals／decisions 各最多65536項，涵蓋所有當輪拒絕證據。
+
+舊 `kind: custom`／`kind: role` 作為小型相容 adapter，轉成同一路徑的 project／role add，不另有舊分類引擎；原有 observed path 檢查與 role 重複檢查保留。舊 custom 轉為 project 後也進入 Projects；不保留平行的 Extensions 主要分類。內建／外部共同裁決後才分組。Schema12 不再公開 process.roles；列表沒有 tags 或完整證據，明確 PID details 才有 tag_report，子程序仍是摘要。
 
 ## Details：parsed typed fields
 
@@ -186,7 +205,7 @@ Drop-in 資料夾刪除、manifest／binary 失效或壞更新時，原登記與
 
 ## 本次錯誤與 profiling（rw-32）
 
-TUI 用 `e` 開啟獨立 Extensions 頁，Esc 返回原頁（e 不切換頁面），保留主樹選取與 scroll；開頁不要求採集。主頁有錯誤時顯示精簡 issue count＋e 提示。頁面顯示本次 provider／version／phase／result／reason／duration_ms；不將完整 diagnostic 重複塞進主樹。Markdown 一般輸出顯示每來源的精簡錯誤；`reswho --md --profile` 加計時表。JSON snapshot `reswho/11` 保留 extensions report 並新增 roles／resources；Schema8／9／10 保留。`extensions --json` 保留 metadata array，新增各 entry 的 report（drop-in read／validate／register，以及能力 never_invoked／skipped）；全 registry read scope 同時保留在 snapshot report。離線清單不呼叫 collect／classify／details、不探測服務。
+TUI 用 `e` 開啟獨立 Extensions 頁，Esc 返回原頁（e 不切換頁面），保留主樹選取與 scroll；開頁不要求採集。主頁有錯誤時顯示精簡 issue count＋e 提示。頁面顯示本次 provider／version／phase／result／reason／duration_ms；不將完整 diagnostic 重複塞進主樹。Markdown 一般輸出顯示每來源的精簡錯誤；`reswho --md --profile` 加計時表。JSON snapshot `reswho/12` 保留 extensions report／resources，tag_report 依 PID detail scope 提供；Schema8／9／10／11 保留。`extensions --json` 保留 metadata array，新增各 entry 的 report（drop-in read／validate／register，以及能力 never_invoked／skipped）；全 registry read scope 同時保留在 snapshot report。離線清單不呼叫 collect／classify／details、不探測服務。
 
 每輪重新建立 report，startup read／validate／register 資料與本輪實際能力分開 phase。只用 Instant 量測實際執行，duration_ms 為可含小數的非負數；skipped／never_invoked 為 null，0 不代表未呼叫。失敗嘗試也保留 duration；核心拒絕 contribution 時標記失敗，不能只以 provider return 當成功。Native command details 及 external details 都只沿用真實按需查詢，不為 profiling 多跑一次。collection_ms 是整輪 wall time；startup、共享批次驗證及平行 provider durations 有重疊，不可加總當總耗時。Worker 失敗時 TUI 保留本次 report，舊 snapshot 僅作 stale 資源畫面。
 

@@ -254,15 +254,40 @@ impl Extension for External {
                     resources,
                 })
             }
-            Contribution::Classify { proposals } => {
+            Contribution::Classify { mut proposals } => {
                 let Request::Classify(processes) = request else {
                     bail!("unexpected classify response");
                 };
                 if proposals.len() > 16384 {
                     bail!("classification proposal limit exceeded");
                 }
+                let tags: Vec<_> = proposals
+                    .iter()
+                    .filter_map(|p| {
+                        if let ClassificationEvidence::Tags { proposal } = &p.evidence {
+                            Some(proposal.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                super::tags::validate(
+                    &tags,
+                    processes,
+                    &self.manifest.id,
+                    Some(&self.manifest.tag_contract),
+                )?;
                 let mut roles = HashSet::new();
                 for proposal in &proposals {
+                    if let ClassificationEvidence::Tags { proposal: tag } = &proposal.evidence {
+                        if !response.required_features.iter().any(|f| f == "tags")
+                            || tag.identity != proposal.identity
+                        {
+                            bail!("tag_feature_or_identity_mismatch");
+                        }
+
+                        continue;
+                    }
                     if let ClassificationEvidence::Role { key, .. } = &proposal.evidence
                         && !roles.insert((proposal.identity.pid, key.clone()))
                     {
@@ -288,6 +313,21 @@ impl Extension for External {
                             basis,
                         } if valid_custom(process, key, label, path, basis) => {}
                         _ => bail!("external classification requires observed custom evidence"),
+                    }
+                }
+                for proposal in &mut proposals {
+                    if let ClassificationEvidence::Tags { proposal } = &mut proposal.evidence
+                        && let super::tags::Operation::Exclude { selector } =
+                            &mut proposal.operation
+                    {
+                        selector.allowed_sources = self
+                            .manifest
+                            .tag_contract
+                            .overrides
+                            .iter()
+                            .filter(|rule| rule.dimension == selector.dimension)
+                            .flat_map(|rule| rule.sources.clone())
+                            .collect();
                     }
                 }
                 Ok(Contribution::Classify { proposals })

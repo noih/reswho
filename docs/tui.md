@@ -53,3 +53,6 @@ stdin 與 stdout 都是 TTY 時，`reswho` 自動開啟 TUI；其他情況預設
 詳情頁固定 PID 與啟動時間。程序消失、身分未知或 PID 重用時停止該詳情頁的命令查詢並顯示原因，不轉向新程序；需關閉並重新選取。列表自身仍依原規則刷新。初始身分無法確認的程序只顯示已知資料與原因，不查詢命令。
 
 詳情內 ↑/↓、j/k、PgUp/PgDn 捲動，Home/End 到首尾。長命令與路徑依終端機寬度折行，續行縮排；底部行數範圍依折行後的畫面列計算。歸類層級合併為 `Applications → App → …`，其他路徑、bundle 與依據另列；完整 group ref 保留於 Markdown／JSON。Esc/d 返回原選取與列表捲動位置；刷新或 resize 仍以維持選取可見為準，已消失的列無法保留。Enter、左右鍵、排序、搜尋等列表按鍵不作用於詳情頁，q／s／e 不作用於詳情或說明頁；Ctrl-C 仍可直接退出並還原終端機。
+
+
+Extensions 的 Priority · highest first 為分類裁決來源序，不是顯示 Sort。Shift-Up/Down 移動、Ctrl-S 保存至下一輪、外層 Esc 放棄；Enter 詳情／Esc 返回保留 draft。內建 app_bundle、project、ancestor、bin 可排序且不可移除。儲存錯誤在 dialog 顯示。一般樹不顯示 tags；選定 PID details 才提供當輪有效標籤與裁決，子程序不擴大 scope。

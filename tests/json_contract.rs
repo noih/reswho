@@ -288,13 +288,13 @@ fn schema_cli_is_offline_and_never_collects_resources() {
 }
 
 #[test]
-fn schema8_9_10_remain_available_while_current_output_is_schema11() {
+fn schema8_9_10_11_remain_available_while_current_output_is_schema12() {
     let legacy_schema: Value =
         serde_json::from_str(include_str!("../schemas/reswho-8.schema.json")).unwrap();
     let legacy = jsonschema::validator_for(&legacy_schema).unwrap();
     let mut example: Value =
         serde_json::from_str(include_str!("../docs/examples/host.json")).unwrap();
-    assert_eq!(example["schema"], "reswho/11");
+    assert_eq!(example["schema"], "reswho/12");
     assert!(validator().is_valid(&example));
     assert!(!legacy.is_valid(&example));
     example["schema"] = json!("reswho/10");
@@ -308,4 +308,71 @@ fn schema8_9_10_remain_available_while_current_output_is_schema11() {
     example["schema"] = json!("reswho/8");
     assert!(legacy.is_valid(&example));
     assert!(!validator().is_valid(&example));
+}
+
+#[test]
+fn tag_details_are_projected_before_rendering_and_children_always_remain_summary() {
+    use reswho::extensions::tags::{Effective, Tag};
+    let mut parent = process(71, Path::new("/tmp"));
+    parent.executable = Some("/tmp/tool".into());
+    let mut child = parent.clone();
+    child.pid = 72;
+    child.ppid = Some(71);
+    child.started_unix_us = Some(72);
+    let mut root = tree::build(vec![parent, child]).unwrap();
+    fn attach(node: &mut Node) {
+        if let Some(p) = &mut node.process {
+            let mut tag: Tag = serde_json::from_value(json!({"dimension":"role","id":"role:test","label":format!("private-tag-{}", p.pid),"path":null,"basis":"observed"})).unwrap();
+            tag.label = format!("private-tag-{}", p.pid);
+            p.tag_report.as_mut().unwrap().effective.push(Effective {
+                source: "fixture".into(),
+                tag,
+            });
+            node.evidence.push(format!("private-evidence-{}", p.pid));
+        }
+        for child in &mut node.children {
+            attach(child);
+        }
+    }
+    attach(&mut root);
+    let summary = snapshot(root.clone());
+    let value = serde_json::to_value(&summary).unwrap();
+    validate(&value);
+    let encoded = serde_json::to_string(&value).unwrap();
+    assert!(
+        !encoded.contains("tag_report")
+            && !encoded.contains("private-tag")
+            && !encoded.contains("private-evidence")
+            && !encoded.contains("\"roles\"")
+    );
+    assert!(!output::markdown(&summary).contains("private-tag"));
+    let selected = snapshot(tree::select(&root, "pid:71").unwrap());
+    let value = serde_json::to_value(&selected).unwrap();
+    validate(&value);
+    assert!(value["root"]["process"]["tag_report"].is_object());
+    assert!(
+        value["root"]["children"][0]["process"]
+            .get("tag_report")
+            .is_none()
+    );
+    let encoded = serde_json::to_string(&value).unwrap();
+    assert!(
+        encoded.contains("private-tag-71")
+            && !encoded.contains("private-tag-72")
+            && !encoded.contains("private-evidence-72")
+    );
+    let md = output::markdown_with_depth(&selected, usize::MAX);
+    assert!(md.contains("private-tag-71") && !md.contains("private-tag-72"));
+    let mut empty = tree::select(&root, "pid:71").unwrap();
+    empty.process.as_mut().unwrap().tag_report = Some(Default::default());
+    let value = serde_json::to_value(snapshot(empty)).unwrap();
+    validate(&value);
+    assert_eq!(
+        value["root"]["process"]["tag_report"]["effective"],
+        json!([])
+    );
+    let mut leaked = value.clone();
+    leaked["root"]["children"][0]["process"]["tag_report"] =
+        value["root"]["process"]["tag_report"].clone();
+    assert!(!validator().is_valid(&leaked));
 }

@@ -245,46 +245,66 @@
       "additionalProperties": true
     },
     "evidence": {
-      "type": "object",
-      "properties": {
-        "kind": {
-          "enum": [
-            "custom",
-            "role"
-          ]
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "custom",
+                "role"
+              ]
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_.-]+$"
+            },
+            "label": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384,
+              "pattern": "^/"
+            },
+            "basis": {
+              "enum": [
+                "cwd",
+                "executable"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "key",
+            "label",
+            "path",
+            "basis"
+          ],
+          "additionalProperties": true
         },
-        "key": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[A-Za-z0-9_.-]+$"
-        },
-        "label": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128
-        },
-        "path": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 16384,
-          "pattern": "^/"
-        },
-        "basis": {
-          "enum": [
-            "cwd",
-            "executable"
-          ]
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "tags"
+            },
+            "proposal": {
+              "$ref": "#/$defs/tagProposal"
+            }
+          },
+          "required": [
+            "kind",
+            "proposal"
+          ],
+          "additionalProperties": false
         }
-      },
-      "required": [
-        "kind",
-        "key",
-        "label",
-        "path",
-        "basis"
-      ],
-      "additionalProperties": true
+      ]
     },
     "proposal": {
       "type": "object",
@@ -720,6 +740,213 @@
         "unavailable"
       ],
       "additionalProperties": true
+    },
+    "tag": {
+      "type": "object",
+      "properties": {
+        "dimension": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.:/-]+$"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_.:/-]+$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 4096
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "basis": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "dimension",
+        "id",
+        "label",
+        "path",
+        "basis"
+      ],
+      "additionalProperties": false
+    },
+    "tagSelector": {
+      "type": "object",
+      "properties": {
+        "dimension": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.:/-]+$"
+        },
+        "tag_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9_.:/-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9_-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "dimension"
+      ],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "tag_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9_.:/-]+$"
+            }
+          },
+          "required": [
+            "tag_id"
+          ]
+        },
+        {
+          "properties": {
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9_-]+$"
+            }
+          },
+          "required": [
+            "source"
+          ]
+        }
+      ]
+    },
+    "tagProposal": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_.:/-]+$"
+        },
+        "identity": {
+          "type": "object",
+          "properties": {
+            "pid": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4294967295
+            },
+            "started_unix_us": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            }
+          },
+          "required": [
+            "pid",
+            "started_unix_us"
+          ],
+          "additionalProperties": false
+        },
+        "change": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "operation": {
+                  "const": "add"
+                },
+                "tag": {
+                  "$ref": "#/$defs/tag"
+                }
+              },
+              "required": [
+                "operation",
+                "tag"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "operation": {
+                  "const": "exclude"
+                },
+                "selector": {
+                  "$ref": "#/$defs/tagSelector"
+                }
+              },
+              "required": [
+                "operation",
+                "selector"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "operation": {
+                  "const": "withdraw"
+                },
+                "proposal_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$"
+                }
+              },
+              "required": [
+                "operation",
+                "proposal_id"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "identity",
+        "change"
+      ],
+      "additionalProperties": false
     }
   }
 }

@@ -9,7 +9,7 @@ fn help_is_available_without_resource_collection() {
     assert!(result.status.success());
     assert!(result.stderr.is_empty());
     let text = String::from_utf8(result.stdout).unwrap();
-    assert!(text.contains("reswho-md/18"));
+    assert!(text.contains("reswho-md/19"));
     assert!(text.contains("root=0"));
     assert!(text.contains("Group ⏱︎ is the longest known member uptime"));
     assert!(text.contains("ΣN is the total host process count"));
@@ -187,7 +187,15 @@ fn extensions_list_is_offline_and_distinguishes_enabled_from_availability() {
                 .iter()
                 .map(|entry| entry["id"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            ["docker", "apple", "app_bundle", "command"]
+            [
+                "docker",
+                "apple",
+                "app_bundle",
+                "command",
+                "project",
+                "ancestor",
+                "bin"
+            ]
         );
         assert!(
             entries
@@ -258,7 +266,7 @@ fn lifecycle_commands_are_offline_and_updates_preserve_state_on_failure() {
     }
     let result = run(&["extensions", "--json"]);
     let entries: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
-    assert_eq!(entries.as_array().unwrap().len(), 4);
+    assert_eq!(entries.as_array().unwrap().len(), 7);
     assert_eq!(
         std::fs::read_to_string(&config).unwrap(),
         r#"{"version":1,"settings":{}}"#

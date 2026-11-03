@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use std::{collections::BTreeMap, path::PathBuf};
 
-pub const FEATURES: &[&str] = &["roles", "resources", "collect_scopes"];
+pub const FEATURES: &[&str] = &["roles", "resources", "collect_scopes", "tags"];
 
 pub fn supported(features: &[String]) -> bool {
     features.len() <= 64
@@ -13,6 +13,8 @@ pub fn supported(features: &[String]) -> bool {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Manifest {
+    #[serde(default)]
+    pub tag_contract: super::tags::Contract,
     pub id: String,
     pub version: String,
     pub engines: BTreeMap<String, String>,
@@ -121,6 +123,9 @@ pub struct ClassificationProposal {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ClassificationEvidence {
+    Tags {
+        proposal: super::tags::Proposal,
+    },
     Custom {
         key: String,
         label: String,
@@ -262,6 +267,9 @@ impl From<Identity> for super::ProcessIdentity {
 impl From<ClassificationProposal> for super::ClassificationProposal {
     fn from(value: ClassificationProposal) -> Self {
         let evidence = match value.evidence {
+            ClassificationEvidence::Tags { proposal } => {
+                super::ClassificationEvidence::Tags { proposal }
+            }
             ClassificationEvidence::Custom {
                 key,
                 label,
@@ -450,7 +458,7 @@ fn exact_integer<T: TryFrom<i128>>(number: Number) -> Result<T, &'static str> {
     T::try_from(value).map_err(|_| "integer_out_of_range")
 }
 
-fn integer<'de, D: serde::Deserializer<'de>, T: TryFrom<i128>>(
+pub(super) fn integer<'de, D: serde::Deserializer<'de>, T: TryFrom<i128>>(
     deserializer: D,
 ) -> Result<T, D::Error> {
     exact_integer(Number::deserialize(deserializer)?).map_err(serde::de::Error::custom)
