@@ -82,19 +82,22 @@ pub(super) fn key(app: &mut App, key: KeyEvent) -> bool {
     let index = selected(app, &entries);
     if app.extension_details {
         match key.code {
-            KeyCode::Esc | KeyCode::Enter => {
+            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
                 app.extension_details = false;
-                app.extensions_scroll = 0;
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                app.extensions_scroll = app.extensions_scroll.saturating_add(1)
+                app.extension_details_scroll = app.extension_details_scroll.saturating_add(1)
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                app.extensions_scroll = app.extensions_scroll.saturating_sub(1)
+                app.extension_details_scroll = app.extension_details_scroll.saturating_sub(1)
             }
-            KeyCode::PageDown => app.extensions_scroll = app.extensions_scroll.saturating_add(4),
-            KeyCode::PageUp => app.extensions_scroll = app.extensions_scroll.saturating_sub(4),
-            KeyCode::Home => app.extensions_scroll = 0,
+            KeyCode::PageDown => {
+                app.extension_details_scroll = app.extension_details_scroll.saturating_add(4)
+            }
+            KeyCode::PageUp => {
+                app.extension_details_scroll = app.extension_details_scroll.saturating_sub(4)
+            }
+            KeyCode::Home => app.extension_details_scroll = 0,
             _ => {}
         }
         return false;
@@ -140,7 +143,7 @@ pub(super) fn key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
     let next = match key.code {
-        KeyCode::Esc => {
+        KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
             app.priority_draft = None;
             app.priority_error = None;
             app.extensions_page = false;
@@ -150,9 +153,9 @@ pub(super) fn key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Up | KeyCode::Char('k') => index.saturating_sub(1),
         KeyCode::Home => 0,
         KeyCode::End => entries.len().saturating_sub(1),
-        KeyCode::Enter => {
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('d') if !entries.is_empty() => {
             app.extension_details = true;
-            app.extensions_scroll = 0;
+            app.extension_details_scroll = 0;
             return false;
         }
         KeyCode::PageDown => {
@@ -295,9 +298,11 @@ pub(super) fn draw(frame: &mut Frame, app: &App) {
         (system.len() as u16 + 1).min(3)
     };
     let footer = Paragraph::new(if app.extension_details {
-        "Esc Back"
+        "←/Esc Back"
+    } else if frame.area().width < 60 {
+        "Shift ↑/↓  Ctrl-S Save\n→ Details  ←/Esc discard"
     } else {
-        "Shift ↑/↓ Move  Ctrl-S Save  Enter Details  Esc discard"
+        "Shift ↑/↓ Move  Ctrl-S Save  → Details  ←/Esc discard"
     })
     .wrap(Wrap { trim: false })
     .style(Style::default().fg(Color::Gray));
@@ -351,7 +356,7 @@ pub(super) fn draw(frame: &mut Frame, app: &App) {
                 .saturating_sub(usize::from(body.height))
                 .min(usize::from(u16::MAX)) as u16;
             frame.render_widget(
-                paragraph.scroll((app.extensions_scroll.min(max_scroll), 0)),
+                paragraph.scroll((app.extension_details_scroll.min(max_scroll), 0)),
                 body,
             );
         }

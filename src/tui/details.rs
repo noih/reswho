@@ -189,6 +189,10 @@ impl Details {
                 process.ppid.map_or("?".into(), |v| v.to_string()),
                 process.uid.map_or("?".into(), |v| v.to_string())
             )));
+            rows.push(DetailRow::field(
+                "Tags",
+                output::effective_tags_text(process.tag_report.as_ref()),
+            ));
             rows.push(DetailRow::text(""));
             if let Some(command) = &process.command {
                 if let Some(argv) = &command.argv {
@@ -256,6 +260,8 @@ impl Details {
                 rows.push(DetailRow::text("TCP/UDP sockets ?"));
             }
             if let Some(report) = &process.tag_report {
+                rows.push(DetailRow::text(""));
+                rows.push(DetailRow::heading("Classification"));
                 rows.extend(
                     output::tag_report_lines(report)
                         .into_iter()
@@ -381,7 +387,7 @@ impl Details {
         } else {
             format!("{refresh_hint}  ")
         };
-        let keys = format!("{refresh}p pause  Esc back");
+        let keys = format!("{refresh}p pause  ←/Esc back");
         frame.render_widget(Paragraph::new(keys), controls);
     }
 }

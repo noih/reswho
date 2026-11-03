@@ -126,3 +126,5 @@ rw-38 的 tags fixtures 共用內建／原生外部分類路徑，涵蓋 source 
 `cargo build --bins --examples` 後可用 `python3 tests/pty_smoke.py --priority-only` 單獨驗證真實 Extensions 排序／保存／離線重載／錯誤／36×10／導航；`--extensions-only` 保留 native pipeline，`--settings-only` 保留設定 transaction journey。視覺斷言採既有 SIGWINCH 強制完整重繪後移除 CSI 的方式，不把差異輸出字串當完整畫面；無新 terminal emulator 或依賴。所有設定使用自有實體 temp 路徑，NOFOLLOW 保護不放寬；children／PTY／temp root 在 finally 清理並確認。
 
 rw-38 review repair fixtures 另涵蓋：同 ID 不同 bin roots 與 System／Unclassified 不碰撞；內外建共同 app／project／bin 身分合併、不同 ID 保持分離且保留 checkout metadata；native symlink alias 正規化後仍檢查敏感設定，selected JSON／MD 不洩漏；內建 app／project／bin／ancestor 顯示名稱以 UTF-8 邊界限制128 bytes，長 Unicode 路徑保留真實身分且不排除健康 sibling。外部超長 label 仍拒絕整份來源。這些修正沿用既有 runner，未重跑未受影響 PTY 或 guard／live／stress。
+
+UI12 focused TUI fixtures 直接走 production key handlers，覆蓋主樹分支／leaf、父程序 d、Left 返回 selection／TableState offset／path scroll、resource 無程序查詢、Extensions 兩層返回保留／放棄 priority draft，以及 Settings choices／文字輸入與搜尋的路由優先序。既有 `RESWHO_UI_EVIDENCE` hook 輸出實際 TestBackend frames；執行前先建立指定 evidence 目錄，部分既有 fixtures 只負責寫檔。PTY journey 改用 Right／Left 的預期按鍵，沒有增加 provider 執行。

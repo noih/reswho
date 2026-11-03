@@ -236,7 +236,7 @@ P2 窄版36×10固定保留一行欄位、至少兩行說明、兩行輸入／�
 | --- | --- | --- | --- |
 | UI-1 | 全畫面與大空隙 → Settings 最大76欄、Extensions 最大98欄，置中且依內容定高、受 viewport 上限約束；背景 resource view 保留並 dim，返回 selection／scroll 不變 | stay／fixed | verified：30個 TUI／worker tests，160×45、100×30、36×10 actual TestBackend frames |
 | UI-2 | raw-key／重複資訊表 → General／Shared／provider 分組，友善核心 labels／描述、對齊值與 unit、changed／CLI locked 標示，Tab／Shift-Tab 操作 Cancel／Save。乾淨表單沒有固定 Draft 提示；編輯資訊不重複描述，完整 key／constraints 經 PgDn 查看，refresh 編輯只顯 Minimum:1ms。敏感預覽／輸入遮蔽，draft／save／reset 與安全儲存邏輯沿用 | stay／fixed | verified：TUI input／mask／grouping／controls tests；settings-only production PTY |
-| UI-3 | raw phase report → 每個 provider 一列的 Name／Version／State／Collect／Classify／Details inventory；enabled、availability 與 error 分別表達，不聲稱 Ready。以 provider ID 保留選取；Enter 開 metadata／來源／path／compatibility／各 phase timing／安全 reason 詳情。未執行是無 timing，沒有相加或假0ms；candidate／registry errors 另列可捲動 diagnostics | stay／fixed | verified：provider selection／refresh／failed-report tests；extensions-only production PTY（native counter 證明開啟與返回無額外執行） |
+| UI-3 | raw phase report → 每個 provider 一列的 Name／Version／State／Collect／Classify／Details inventory；enabled、availability 與 error 分別表達，不聲稱 Ready。以 provider ID 保留選取；Enter（UI11 起改為 d）開 metadata／來源／path／compatibility／各 phase timing／安全 reason 詳情。未執行是無 timing，沒有相加或假0ms；candidate／registry errors 另列可捲動 diagnostics | stay／fixed | verified：provider selection／refresh／failed-report tests；extensions-only production PTY（native counter 證明開啟與返回無額外執行） |
 | UI-4 | 全 cyan／內容貼邊／footer 遙遠 → 一致 border、水平內距1、灰白層級、選取背景與黃色錯誤；footer 固定面板底部。長 key／value／error 於 info／details／diagnostics 依實際換行捲動，36×10 保留必要控制 | stay／fixed | verified：三尺寸 frames、invalid／disabled／failed-provider frames、PTY resize／errors |
 
 | UI-5 | 選取描述插入選項列、切換時後續列移動 → 清單維持連續列；描述固定在按鈕下、快捷提示正上方，正常最多2列、compact最多1列，完整文字由既有 Info 捲動。footer 高度納入內容定高，保留編輯錯誤、遮蔽與36×10控制 | stay／fixed | verified：選取首／次項 y 不變、描述位置／唯一性、完整長描述可達、compact input/error／Info 回歸與 actual frames |
@@ -281,7 +281,7 @@ UI7 scoped P2 修復（基於fe8de40；stay／fixed）：review 的37×10 synthe
 新增 actual frames 與既有證據同在 parent `ui7-8-evidence`，總計約124KiB；正式 core frame 為 `settings-unit-core-masked-false-37x10.txt`，長 unit fixture 明確命名為 `settings-unit-long-masked-false-37x10.txt`，另含 Unicode 與 masked variants。由 leader 保留至檢視結束。本輪沒有建立 PTY／child／temp root，TestBackend 僅記憶體資源；target 約9.9GiB仍保留。僅本地 commit、不 push、不寫 Tenqo，完成後停寫供 leader actual-frame inspection；依裁定不另派 independent recheck。
 
 
-UI9 Current（基於d1f698d；stay／fixed）：依使用者最新裁定，footer 僅留必要操作，不再列通用 Move／Scroll 或導航別名。主頁寬版顯示 Enter Toggle、/ Search、s Settings、e Extensions、? Help、q Quit 與 refresh／retry／進行中回饋；窄版保留 Help、Quit 與刷新提示。方向鍵及 hjkl 導航保留於 Help，process details 的方向鍵捲動也補入 Help。Extensions list 僅 Enter Details／Esc Back，extension details 僅 Esc Back；process details 保留 refresh／pause／Esc。Settings browse 移除 Move，保留 Edit／Controls／Save／Reset／Discard／Info；編輯提示維持情境。modal 背景隱藏無法作用的主頁快捷提示。
+UI9 Current（基於d1f698d；stay／fixed）：依使用者最新裁定，footer 僅留必要操作，不再列通用 Move／Scroll 或導航別名。主頁寬版顯示 Enter Toggle、/ Search、s Settings、e Extensions、? Help、q Quit 與 refresh／retry／進行中回饋；窄版保留 Help、Quit 與刷新提示。方向鍵及 hjkl 導航保留於 Help，process details 的方向鍵捲動也補入 Help。Extensions list 當時僅 Enter Details／Esc Back（UI11 起改為 d Details），extension details 僅 Esc Back；process details 保留 refresh／pause／Esc。Settings browse 移除 Move，保留 Edit／Controls／Save／Reset／Discard／Info；編輯提示維持情境。modal 背景隱藏無法作用的主頁快捷提示。
 
 驗證：8個受影響既有 renderer／refresh／navigation tests 通過，`cargo fmt --check` 與 `git diff --check` 通過。既有 renderer assertions 擴充檢查主頁與 process details，100×30、36×10 actual TestBackend frames 均檢視；Settings 編輯、invalid、focus／description 與 Extensions diagnostics／metadata 斷言保留。初輪發現 modal 背景殘留主頁提示，修正後重驗通過。僅提示／局部 render 分支變更，按鍵路由與既有 key-behavior 證據沿用，無新依賴、設定或 wire 變更。
 
@@ -290,6 +290,9 @@ UI9 Current（基於d1f698d；stay／fixed）：依使用者最新裁定，foote
 
 ## 分類來源優先序（rw-38）
 
-使用者 config version1 新增頂層 `source_priority: ["app_bundle", "project", "ancestor", "bin", "example"]`，與 settings definitions、安裝序及 shared canonical owner 分開；`settings --json` 可離線檢視已保存 ID。Extensions dialog 明示 Priority · highest first，Shift-Up/Down 改 draft，Ctrl-S 保存，Esc 放棄；Enter 詳情、內層 Esc 返回 draft 列表，s／q 不新增導航或離開程序。小終端保留快捷鍵。內建來源參與排序但不可移除。
+使用者 config version1 新增頂層 `source_priority: ["app_bundle", "project", "ancestor", "bin", "example"]`，與 settings definitions、安裝序及 shared canonical owner 分開；`settings --json` 可離線檢視已保存 ID。Extensions dialog 明示 Priority · highest first，Shift-Up/Down 改 draft，Ctrl-S 保存，Esc 放棄；d 詳情、內層 Esc 返回 draft 列表，s／q 不新增導航或離開程序。小終端保留快捷鍵。內建來源參與排序但不可移除。
 
 沿用 Settings 安全 transaction：no-follow path、鎖、baseline 衝突檢查、獨立 key merge、0600 temp 與 atomic rename。Malformed／衝突／寫入錯誤保留 draft 並顯示錯誤，沒有假的 applied 狀態。成功才發佈新的 immutable Resolved；採集中保留既有 Arc，下一輪生效。缺席 ID 保留位置，新的 provider 依既有 inventory 附加底部，更新不重排；首次保存記錄完整現有順序。
+
+
+UI12 Current（基於2432756；stay／fixed）：依使用者裁定，主樹 Right／l 展開收合分支、進入已展開分支的首個子列，或開啟程序／resource leaf 詳情。Left／h 先收合，否則回父層；詳情以 Left／h 或 Esc 返回原樹位置。d 保留父程序直接開詳情的用途，主 footer 改用簡短 → Open。Extensions Right／l 開詳情，Left／h 或 Esc 分兩層返回；內層保留 priority draft／選取／scroll，外層放棄 draft。Enter 不開詳情。Settings、搜尋、q／s 隔離及 Shift-Up／Down、Ctrl-S 行為保留。詳情原有折行／垂直捲動沒有水平平移；[／] 繼續捲動主樹底部路徑。

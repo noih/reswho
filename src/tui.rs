@@ -212,7 +212,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     }
     if let Some(details) = &mut app.details {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('d') => app.details = None,
+            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('d') => {
+                app.details = None
+            }
             KeyCode::Down | KeyCode::Char('j') => details.scroll(1),
             KeyCode::Up | KeyCode::Char('k') => details.scroll(-1),
             KeyCode::PageDown => details.scroll(10),
@@ -273,7 +275,17 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::PageUp => app.move_selection(-10),
         KeyCode::Home => app.move_selection(isize::MIN),
         KeyCode::End => app.move_selection(isize::MAX),
-        KeyCode::Right | KeyCode::Char('l') => app.expand(),
+        KeyCode::Right | KeyCode::Char('l') => {
+            if app
+                .rows
+                .get(app.selected)
+                .is_some_and(|row| row.has_children)
+            {
+                app.expand();
+            } else {
+                app.open_details();
+            }
+        }
         KeyCode::Left | KeyCode::Char('h') => app.collapse(),
         KeyCode::Enter | KeyCode::Char(' ') => app.toggle(),
         KeyCode::Char('c') => {

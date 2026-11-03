@@ -514,7 +514,7 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
     } else if area.width < 80 {
         format!("? Help  q Quit  {refresh}")
     } else {
-        format!("Enter Toggle / Search s Settings e Extensions ? Help q Quit  {refresh}")
+        format!("→ Open / Search s Settings e Extensions ? Help q Quit  {refresh}")
     };
     frame.render_widget(
         Paragraph::new(vec![
@@ -536,7 +536,7 @@ fn help(frame: &mut Frame, area: Rect, app: &App) {
         area.height.saturating_sub(2),
     );
     frame.render_widget(Clear, popup);
-    let mut text = "reswho controls\n\nUp/Down or k/j: move    Left/h: collapse or parent\nRight/l: expand or child    Enter/Space: toggle\ns: Settings from main (Enter accept, Esc undo field / discard popup)\ne: Extensions from main (Enter details, Esc back)\nd: process details    Esc: back to list\nDetails: Up/Down, j/k, PgUp/PgDn scroll, r refresh, p pause\nc: CPU    m: memory    u: uptime (descending within siblings)\nn: name (natural order, case-insensitive; node2 before node10)\n/: search name, PID, ref or path    Enter: accept    Esc: clear\na: all / active containers (unknown retained)\n[ / ]: scroll path    PgUp/PgDn: move 10 rows\nr: refresh once (keeps pause); reuse pending collection\np: pause automatic refresh\nq: quit from main    Ctrl-C: quit anywhere    ? / Esc: close help\n\nRefresh: configured wait after each result; one query at a time.\nHost CPU: whole-machine usage (0-100%). CPU/core: 100% = one core.\nRows can exceed 100%; >= means a partial total with unreadable values.\nAge is process uptime or oldest group member, including idle time.\nHost RSS and container memory are separate scopes; never add both.\nFilters affect visible rows, not aggregate totals. Unknown is not zero.\nSearch reveals matching branches without changing saved expansion.\n".to_owned();
+    let mut text = "reswho controls\n\nUp/Down or k/j: move    Left/h: collapse or parent\nRight/l: expand, child or leaf details    Enter/Space: toggle\ns: Settings from main (Enter accept, Esc undo field / discard popup)\nSettings: PgUp/PgDn scroll selected-option info (key, default, bounds, value)\ne: Extensions from main (Right/l details, Left/h or Esc back)\nd: process / resource / extension details (also parent processes)\nDetails: Left/h or Esc back; Right/l has no next level\nDetails: Up/Down, j/k, PgUp/PgDn scroll, r refresh, p pause\nc: CPU    m: memory    u: uptime (descending within siblings)\nn: name (natural order, case-insensitive; node2 before node10)\n/: search name, PID, ref or path    Enter: accept    Esc: clear\na: all / active containers (unknown retained)\n[ / ]: scroll path    PgUp/PgDn: move 10 rows\nr: refresh once (keeps pause); reuse pending collection\np: pause automatic refresh\nq: quit from main    Ctrl-C: quit anywhere    ? / Esc: close help\n\nRefresh: configured wait after each result; one query at a time.\nHost CPU: whole-machine usage (0-100%). CPU/core: 100% = one core.\nRows can exceed 100%; >= means a partial total with unreadable values.\nAge is process uptime or oldest group member, including idle time.\nHost RSS and container memory are separate scopes; never add both.\nFilters affect visible rows, not aggregate totals. Unknown is not zero.\nSearch reveals matching branches without changing saved expansion.\n".to_owned();
     if let Some(error) = &app.error {
         text.push_str(&format!("\nSTALE: {}\n", safe(error)));
     }

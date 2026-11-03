@@ -329,3 +329,47 @@ fn diagnostic_markers_do_not_guess_permission_or_mark_idle_processes() {
     assert!(!md.contains("permission"));
     assert!(!md.contains("[+"));
 }
+
+#[test]
+fn effective_hashtags_preserve_labels_and_markdown_keeps_selected_pid_scope() {
+    use crate::extensions::tags::{Effective, Report};
+    let mut report = Report::default();
+    for (dimension, label) in [
+        ("bin", "deleted"),
+        ("runtime", "node"),
+        ("role", "worker"),
+        ("app", "Demo App"),
+        ("project", "Demo App"),
+        ("extensions.fixture.kind", "batch job"),
+    ] {
+        report.effective.push(Effective {
+            source: "fixture".into(),
+            tag: serde_json::from_value(serde_json::json!({
+                "dimension":dimension,"id":format!("{dimension}:hash"),
+                "label":label,"path":null,"basis":"observed"
+            }))
+            .unwrap(),
+        });
+    }
+    assert_eq!(
+        effective_tags_text(Some(&report)),
+        "#executable #node #worker #app:Demo-App #project:Demo-App #batch-job"
+    );
+    assert_eq!(effective_tags_text(None), "Unavailable");
+    assert_eq!(effective_tags_text(Some(&Report::default())), "None");
+    let mut snapshot = fixture_snapshot();
+    snapshot.root = tree::select(&snapshot.root, "pid:10").unwrap();
+    snapshot.scope = "pid:10".into();
+    snapshot.root.process.as_mut().unwrap().tag_report = Some(report.clone());
+    snapshot.root.children[0]
+        .process
+        .as_mut()
+        .unwrap()
+        .tag_report = Some(report);
+    let md = markdown(&snapshot);
+    assert_eq!(md.matches("Tags #executable").count(), 1, "{md}");
+    assert_eq!(md.matches("Classification").count(), 1, "{md}");
+    assert!(!md.contains("runtime:hash"));
+    snapshot.scope = "group:all".into();
+    assert!(!markdown(&snapshot).contains("#executable"));
+}

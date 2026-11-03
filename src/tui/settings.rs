@@ -312,7 +312,7 @@ impl Popup {
     pub fn draw(&self, frame: &mut Frame) {
         let definitions = self.definitions();
         let compact = frame.area().width < 60 || frame.area().height < 16;
-        let width = frame.area().width.min(76);
+        let width = frame.area().width.min(88);
         let mut lines = Vec::new();
         let mut cursor_column = None;
         let mut group = String::new();
@@ -468,14 +468,32 @@ impl Popup {
         }))
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(Color::Gray));
-        let footer_height = if compact { 3 } else { 2 };
+        let controls = if self.focus != 0 {
+            "Enter Choose  Tab/Shift-Tab Focus  Ctrl-S Save  Esc Back"
+        } else if self.input.is_some() {
+            if width < 60 {
+                "Enter Accept  Esc Undo field\nTab Controls  Ctrl-U Clear\nCtrl-S Save"
+            } else {
+                "Enter Accept  Esc Undo field  Ctrl-U Clear  Tab Controls  Ctrl-S Save  Ctrl-R Reset"
+            }
+        } else if width < 60 {
+            "Enter Edit\nCtrl-S Save  Ctrl-R Reset\nEsc discard  Tab Controls"
+        } else {
+            "Enter Edit  Tab Controls  Ctrl-S Save  Ctrl-R Reset  Esc discard"
+        };
+        let footer = Paragraph::new(controls)
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(Color::Gray));
+        let footer_height = footer
+            .line_count(width.saturating_sub(4))
+            .min(usize::from(u16::MAX)) as u16;
         let desired = lines.len() as u16
             + info_height
             + status_height
             + description_height
             + footer_height
             + 3;
-        let popup = super::view::panel(frame.area(), 76, desired);
+        let popup = super::view::panel(frame.area(), width, desired);
         frame.render_widget(Clear, popup);
         let title = if self.changes.is_empty() {
             " Settings ".into()
@@ -487,7 +505,7 @@ impl Popup {
             .padding(Padding::horizontal(1));
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
-        let [list, detail, status, buttons, explanation, footer] = Layout::vertical([
+        let [list, detail, status, buttons, explanation, footer_area] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(info_height),
             Constraint::Length(status_height),
@@ -571,23 +589,7 @@ impl Popup {
                 height,
             ),
         );
-        let controls = if self.focus != 0 {
-            "Enter Choose  Tab/Shift-Tab Focus\nCtrl-S Save  Esc Back"
-        } else if self.input.is_some() {
-            if compact {
-                "Enter Accept  Esc Undo field\nTab Controls  Ctrl-U Clear\nCtrl-S Save  PgDn Info"
-            } else {
-                "Enter Accept  Esc Undo field  Ctrl-U Clear  Tab Controls\nCtrl-S Save  Ctrl-R Reset  PgUp/PgDn Info"
-            }
-        } else if compact {
-            "Enter Edit  PgDn Info\nCtrl-S Save  Ctrl-R Reset\nEsc discard  Tab Controls"
-        } else {
-            "Enter Edit  Tab Controls  PgUp/PgDn Info\nCtrl-S Save  Ctrl-R Reset  Esc discard"
-        };
-        frame.render_widget(
-            Paragraph::new(controls).style(Style::default().fg(Color::Gray)),
-            footer,
-        );
+        frame.render_widget(footer, footer_area);
     }
 }
 

@@ -348,6 +348,11 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
     if let Some(process) = &node.process
         && let Some(report) = &process.tag_report
     {
+        notes.push(escaped(&format!(
+            "Tags {}",
+            effective_tags_text(Some(report))
+        )));
+        notes.push("Classification".into());
         notes.extend(tag_report_lines(report).iter().map(|line| escaped(line)));
     }
     if level == 0
@@ -714,14 +719,35 @@ pub fn extension_profile(records: &[crate::extensions::report::Record]) -> Strin
     text
 }
 
-pub fn tag_report_lines(report: &crate::extensions::tags::Report) -> Vec<String> {
-    let mut lines = vec![format!("Tags: {} effective", report.effective.len())];
-    for entry in &report.effective {
-        lines.push(format!(
-            "{} {} · {} · {}",
-            entry.tag.dimension, entry.tag.label, entry.tag.id, entry.source
-        ));
+pub fn effective_tags_text(report: Option<&crate::extensions::tags::Report>) -> String {
+    let Some(report) = report else {
+        return "Unavailable".into();
+    };
+    if report.effective.is_empty() {
+        return "None".into();
     }
+    report
+        .effective
+        .iter()
+        .map(|entry| {
+            let label = entry
+                .tag
+                .label
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join("-");
+            match entry.tag.dimension.as_str() {
+                "bin" => "#executable".into(),
+                "app" | "project" => format!("#{}:{label}", entry.tag.dimension),
+                _ => format!("#{label}"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn tag_report_lines(report: &crate::extensions::tags::Report) -> Vec<String> {
+    let mut lines = Vec::new();
     for record in &report.proposals {
         use crate::extensions::tags::Operation;
         let operation = match &record.proposal.operation {
@@ -745,26 +771,32 @@ pub fn tag_report_lines(report: &crate::extensions::tags::Report) -> Vec<String>
             Operation::Withdraw { proposal_id } => format!("withdraw {proposal_id}"),
         };
         lines.push(format!(
-            "Proposal {}/{} / {}: {}",
-            record.source, record.version, record.proposal.id, operation
+            "{} · source {}/{} · proposal {}",
+            operation, record.source, record.version, record.proposal.id
         ));
     }
     for decision in &report.decisions {
         lines.push(format!(
-            "{} / {}: {} · {}{}",
+            "{}: {} · source {} · proposal {}{}",
+            decision.status,
+            decision.reason.replace('_', " "),
             decision.source,
             decision.proposal_id,
-            decision.status,
-            decision.reason,
             decision
                 .by_source
                 .as_ref()
-                .map(|s| format!(" · {s}"))
+                .map(|s| format!(" · by {s}"))
                 .unwrap_or_default()
         ));
     }
     if !report.diagnostics.is_empty() {
-        lines.push("Tag evidence incomplete; see classification diagnostics".into());
+        lines.push("Tag evidence incomplete".into());
+        lines.extend(report.diagnostics.iter().map(|diagnostic| {
+            format!(
+                "{} · {} · {}",
+                diagnostic.code, diagnostic.operation, diagnostic.message
+            )
+        }));
     }
     lines
 }

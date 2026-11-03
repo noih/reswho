@@ -9,9 +9,9 @@ stdin 與 stdout 都是 TTY 時，`reswho` 自動開啟 TUI；其他情況預設
 | 按鍵 | 操作 |
 | --- | --- |
 | ↑／↓、k／j | 選取上一／下一列 |
-| ←／h、→／l | 收合或父層、展開或子層 |
+| ←／h、→／l | 收合或父層、展開或子層；程序／resource leaf 的 → 開詳情 |
 | Enter／Space | 展開／收合 |
-| d | 選取程序時開啟詳情頁；Esc 或 d 返回列表 |
+| d | 主樹的程序／resource 或 Extensions inventory 開啟詳情；←／h 或 Esc 返回上一層 |
 | Home／End、PgUp／PgDn | 首尾列、移動十列 |
 | c／m／u | 同層 CPU／RAM／uptime 降序排列 |
 | n | 同層名稱自然升序排列 |
@@ -52,7 +52,11 @@ stdin 與 stdout 都是 TTY 時，`reswho` 自動開啟 TUI；其他情況預設
 
 詳情頁固定 PID 與啟動時間。程序消失、身分未知或 PID 重用時停止該詳情頁的命令查詢並顯示原因，不轉向新程序；需關閉並重新選取。列表自身仍依原規則刷新。初始身分無法確認的程序只顯示已知資料與原因，不查詢命令。
 
-詳情內 ↑/↓、j/k、PgUp/PgDn 捲動，Home/End 到首尾。長命令與路徑依終端機寬度折行，續行縮排；底部行數範圍依折行後的畫面列計算。歸類層級合併為 `Applications → App → …`，其他路徑、bundle 與依據另列；完整 group ref 保留於 Markdown／JSON。Esc/d 返回原選取與列表捲動位置；刷新或 resize 仍以維持選取可見為準，已消失的列無法保留。Enter、左右鍵、排序、搜尋等列表按鍵不作用於詳情頁，q／s／e 不作用於詳情或說明頁；Ctrl-C 仍可直接退出並還原終端機。
+詳情內 ↑/↓、j/k、PgUp/PgDn 捲動，Home/End 到首尾。長命令與路徑依終端機寬度折行，續行縮排；底部行數範圍依折行後的畫面列計算。歸類層級合併為 `Applications → App → …`，其他路徑、bundle 與依據另列；完整 group ref 保留於 Markdown／JSON。←／h、Esc/d 返回原選取與列表捲動位置；刷新或 resize 仍以維持選取可見為準，已消失的列無法保留。→／l 沒有下一層，不執行動作。Enter、排序、搜尋等列表按鍵不作用於詳情頁，q／s／e 不作用於詳情或說明頁；Ctrl-C 仍可直接退出並還原終端機。
 
 
-Extensions 的 Priority · highest first 為分類裁決來源序，不是顯示 Sort。Shift-Up/Down 移動、Ctrl-S 保存至下一輪、外層 Esc 放棄；Enter 詳情／Esc 返回保留 draft。內建 app_bundle、project、ancestor、bin 可排序且不可移除。儲存錯誤在 dialog 顯示。一般樹不顯示 tags；選定 PID details 才提供當輪有效標籤與裁決，子程序不擴大 scope。
+Extensions 的 Priority · highest first 為分類裁決來源序，不是顯示 Sort。Shift-Up/Down 移動、Ctrl-S 保存至下一輪、外層 ←／h 或 Esc 放棄；→／l 或 d 開詳情，Enter 不開啟或關閉詳情；內層 ←／h 或 Esc 返回保留 draft、選取與列表捲動。內建 app_bundle、project、ancestor、bin 可排序且不可移除。儲存錯誤在 dialog 顯示。一般樹不顯示 tags；選定 PID details 才提供當輪有效標籤與裁決，子程序不擴大 scope。
+
+程序詳情的 Tags 列僅顯示當輪 effective hashtags：bin 為 `#executable`，runtime／role／custom 使用實際 label，app／project 保留維度前綴與 label，label 空白轉為連字號。沒有有效標籤顯示 None，未取得 report 顯示 Unavailable；不從 System 等分組推導標籤。完整來源、proposal ID、root／basis、排除／撤回／裁決與診斷另列於 Network 之後的 Classification。Markdown 沿用相同文字 renderer；JSON 原始結構、一般樹與子程序摘要範圍不變。
+
+主樹 → 在收合分支展開，已展開分支選取第一個子列；只有程序／resource leaf 開詳情。有子程序的父程序可直接按 d 查看自身詳情。← 先收合已展開分支，否則選取父層；無父層時不動作。詳情長文字沿用折行與垂直捲動，沒有水平平移；[／] 仍只捲動主樹底部路徑。

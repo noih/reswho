@@ -110,6 +110,150 @@ fn app() -> App {
 }
 
 #[test]
+fn settings_and_extensions_keep_navigation_in_their_own_context() {
+    use crate::settings::{Config, Registry, edit::Settings};
+    use serde_json::json;
+    let mut app = app();
+    let mut registry = Registry::core();
+    registry.register_extension("fixture", vec![serde_json::from_value(json!({
+        "key":"extensions.fixture.choice", "type":"string", "options":["a","b","c"],
+        "default":"a", "description":"Choice", "provider":"fixture", "version":"1", "sensitive":false
+    })).unwrap(), serde_json::from_value(json!({
+        "key":"extensions.fixture.text", "type":"string", "default":"initial",
+        "description":"Text", "provider":"fixture", "version":"1", "sensitive":false
+    })).unwrap()], vec![]).unwrap();
+    app.settings = Some(settings::Popup::new(Settings::new(
+        registry,
+        Config::default(),
+        Default::default(),
+        None,
+    )));
+    handle_key(&mut app, KeyCode::Char('s').into());
+    handle_key(&mut app, KeyCode::End.into());
+    handle_key(&mut app, KeyCode::Up.into());
+    handle_key(&mut app, KeyCode::Right.into());
+    assert_eq!(
+        app.settings.as_ref().unwrap().changes["extensions.fixture.choice"],
+        Some(json!("b"))
+    );
+    handle_key(&mut app, KeyCode::Left.into());
+    assert_eq!(
+        app.settings.as_ref().unwrap().changes["extensions.fixture.choice"],
+        Some(json!("a"))
+    );
+    handle_key(&mut app, KeyCode::End.into());
+    handle_key(&mut app, KeyCode::Enter.into());
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+    );
+    for key in [
+        KeyCode::Char('h'),
+        KeyCode::Left,
+        KeyCode::Char('l'),
+        KeyCode::Right,
+    ] {
+        handle_key(&mut app, key.into());
+        assert!(app.settings.as_ref().unwrap().open);
+    }
+    handle_key(&mut app, KeyCode::Enter.into());
+    assert_eq!(
+        app.settings.as_ref().unwrap().changes["extensions.fixture.text"],
+        Some(json!("hl"))
+    );
+    assert!(app.settings.as_ref().unwrap().applied.is_none());
+    assert!(app.details.is_none() && !app.extensions_page);
+    handle_key(&mut app, KeyCode::Esc.into());
+    handle_key(&mut app, KeyCode::Esc.into());
+    app.inventory = crate::extensions::state::State::default()
+        .list(&crate::extensions::default_settings().unwrap(), true);
+    for (right, left) in [
+        (KeyCode::Right, KeyCode::Left),
+        (KeyCode::Char('l'), KeyCode::Char('h')),
+        (KeyCode::Char('d'), KeyCode::Esc),
+    ] {
+        handle_key(&mut app, KeyCode::Char('e').into());
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+        let draft = app.priority_draft.clone();
+        let selected = app.extension_selected.clone();
+        app.extensions_scroll = 2;
+        handle_key(&mut app, right.into());
+        assert!(app.extension_details);
+        handle_key(&mut app, left.into());
+        assert!(app.extensions_page && !app.extension_details);
+        assert_eq!(app.priority_draft, draft);
+        assert_eq!(app.extension_selected, selected);
+        assert_eq!(app.extensions_scroll, 2);
+        handle_key(&mut app, left.into());
+        assert!(!app.extensions_page);
+        assert!(app.priority_draft.is_none() && app.manual_refresh.is_none());
+    }
+}
+
+#[test]
+fn hierarchy_keys_open_leaves_and_restore_the_tree() {
+    for (right, left) in [
+        (KeyCode::Right, KeyCode::Left),
+        (KeyCode::Char('l'), KeyCode::Char('h')),
+    ] {
+        let mut app = app();
+        select(&mut app, "pid:11");
+        let selected = app.selected;
+        app.path_scroll = 16;
+        let mut table = TableState::default().with_offset(1);
+        handle_key(&mut app, right.into());
+        assert!(app.details.is_some());
+        handle_key(&mut app, right.into());
+        assert!(app.details.is_some());
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, &app, &mut table))
+            .unwrap();
+        assert_eq!(table.offset(), 1);
+        handle_key(&mut app, left.into());
+        assert!(app.details.is_none());
+        assert_eq!(app.selected, selected);
+        assert_eq!(table.offset(), 1);
+        assert_eq!(app.path_scroll, 16);
+        handle_key(&mut app, KeyCode::Char(']').into());
+        assert_eq!(app.path_scroll, 32);
+        handle_key(&mut app, KeyCode::Char('[').into());
+        assert_eq!(app.path_scroll, 16);
+        handle_key(&mut app, left.into());
+        let parent = app.selected;
+        assert!(app.rows[parent].has_children);
+        handle_key(&mut app, left.into());
+        assert!(!app.is_open(&app.rows[parent]));
+        handle_key(&mut app, right.into());
+        assert_eq!(app.selected, parent);
+        assert!(app.is_open(&app.rows[parent]));
+        handle_key(&mut app, right.into());
+        assert_eq!(app.selected, parent + 1);
+        assert!(app.details.is_none());
+    }
+    let mut source = snapshot();
+    source.root = tree::select(&source.root, "pid:11").unwrap();
+    source
+        .root
+        .children
+        .push(tree::select(&snapshot().root, "pid:10").unwrap());
+    let mut app = App::new("pid:11".into(), usize::MAX);
+    app.update(Ok(source));
+    handle_key(&mut app, KeyCode::Right.into());
+    assert_eq!(app.node(app.selected).unwrap().reference, "pid:10");
+    assert!(app.details.is_none());
+    handle_key(&mut app, KeyCode::Left.into());
+    assert_eq!(app.node(app.selected).unwrap().reference, "pid:11");
+    handle_key(&mut app, KeyCode::Char('d').into());
+    assert_eq!(app.details.as_ref().unwrap().query_pid(), Some(11));
+    handle_key(&mut app, KeyCode::Left.into());
+    handle_key(&mut app, KeyCode::Left.into());
+    handle_key(&mut app, KeyCode::Left.into());
+    assert_eq!(app.selected, 0);
+    assert!(app.details.is_none());
+}
+
+#[test]
 fn d_opens_selected_process_details_without_moving_the_list() {
     let mut app = app();
     select(&mut app, "pid:11");
@@ -956,7 +1100,7 @@ fn layouts_and_untrusted_strings_render_without_terminal_controls() {
         assert!(!text.contains(['\u{1b}', '\u{202e}']));
         assert!(text.contains(if width >= 36 { "Host CPU" } else { "reswho" }));
         if width >= 80 {
-            assert!(!text.contains("Details"));
+            assert!(!text.contains("Process details"));
             assert!(text.contains("Path —"));
             assert!(text.contains("Memory"));
         }
@@ -1627,7 +1771,9 @@ fn settings_panel_is_centered_and_content_sized() {
         .position(|row| row.contains("Settings"))
         .unwrap();
     assert!(title > 5, "panel should be vertically centered");
-    assert!(rows[title].find('┌').unwrap() >= 40);
+    let left = rows[title].chars().position(|ch| ch == '┌').unwrap();
+    let right = rows[title].chars().rev().position(|ch| ch == '┐').unwrap();
+    assert_eq!(left, right);
     assert!(rows.iter().any(|row| row.contains("Refresh interval")));
     assert!(!rows.join("\n").contains("18446744073709551615"));
 }
@@ -1684,11 +1830,18 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
         }
         assert!(!text.contains("j/k move"));
         if width == 100 {
-            for hint in ["Enter Toggle", "/ Search", "s Settings", "e Extensions"] {
+            for hint in ["→ Open", "/ Search", "s Settings", "e Extensions"] {
                 assert!(text.contains(hint), "missing {hint}: {text}");
             }
         }
     }
+    app.help = true;
+    dump(&app, 36, 10, "help");
+    let text = dump(&app, 100, 30, "help");
+    assert!(text.contains("d: process / resource / extension details"));
+    assert!(text.contains("Settings: PgUp/PgDn"));
+    assert!(!text.contains("Enter details"));
+    app.help = false;
     select(&mut app, "pid:11");
     app.open_details();
     for (width, height) in [(100, 30), (36, 10)] {
@@ -1709,6 +1862,16 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
         assert!(!text.contains("Move"));
         if width >= 100 {
             assert_eq!(text.matches("General").count(), 1);
+            let hints = text
+                .lines()
+                .find(|line| line.contains("Enter Edit"))
+                .unwrap();
+            assert!(hints.contains("Esc discard"), "footer should fit: {text}");
+            let hint_row = text
+                .lines()
+                .position(|line| line.contains("Enter Edit"))
+                .unwrap();
+            assert!(text.lines().nth(hint_row + 1).unwrap().contains('└'));
         }
     }
     let first = dump(&app, 100, 30, "settings-first");
@@ -1735,7 +1898,7 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
         KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
     );
     handle_key(&mut app, KeyCode::Char('0').into());
-    for (width, height) in [(100, 30), (36, 10)] {
+    for (width, height) in [(160, 45), (100, 30), (36, 10)] {
         let text = dump(&app, width, height, "settings-edit");
         assert!(
             text.contains("[0_]")
@@ -1745,6 +1908,13 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
         assert!(
             !text.contains("Edit:") && !text.contains("Default:") && !text.contains("Constraints:")
         );
+        if width >= 100 {
+            let hints = text
+                .lines()
+                .find(|line| line.contains("Enter Accept"))
+                .unwrap();
+            assert!(hints.contains("Ctrl-R Reset"), "footer should fit: {text}");
+        }
         if width == 100 {
             assert_eq!(
                 row(&first, "Refresh interval"),
@@ -1753,13 +1923,49 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
         }
     }
     handle_key(&mut app, KeyCode::Enter.into());
-    assert!(dump(&app, 100, 30, "settings-invalid").contains("Invalid value"));
-    assert!(dump(&app, 36, 10, "settings-invalid").contains("Invalid value"));
+    for (width, height) in [(160, 45), (100, 30), (36, 10)] {
+        let text = dump(&app, width, height, "settings-invalid");
+        for label in [
+            "Invalid value",
+            "[Cancel]",
+            "[Save]",
+            "Enter Accept",
+            "Ctrl-S Save",
+        ] {
+            assert!(text.contains(label), "missing {label}: {text}");
+        }
+        assert!(!text.contains("PgDn Info"));
+    }
     handle_key(&mut app, KeyCode::Esc.into());
     assert!(app.settings.as_ref().unwrap().open);
     handle_key(&mut app, KeyCode::Esc.into());
     handle_key(&mut app, KeyCode::Char('s').into());
     handle_key(&mut app, KeyCode::Tab.into());
+    for (width, height) in [(160, 45), (100, 30), (36, 10)] {
+        let text = dump(&app, width, height, "settings-controls");
+        for label in [
+            "Enter Choose",
+            "Ctrl-S Save",
+            "Esc Back",
+            "[Cancel]",
+            "[Save]",
+        ] {
+            assert!(text.contains(label), "missing {label}: {text}");
+        }
+        if width >= 100 {
+            let hints = text
+                .lines()
+                .find(|line| line.contains("Enter Choose"))
+                .unwrap();
+            assert!(hints.contains("Esc Back"));
+            assert!(
+                text.lines()
+                    .nth(row(&text, "Enter Choose") + 1)
+                    .unwrap()
+                    .contains('└')
+            );
+        }
+    }
     handle_key(&mut app, KeyCode::Enter.into());
     assert!(!app.settings.as_ref().unwrap().open);
     handle_key(&mut app, KeyCode::Char('s').into());
@@ -1813,13 +2019,13 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
                 && !text.contains("Enter for details")
         );
         assert!(text.contains("Shift") && text.contains("Save") && !text.contains("j/k"));
-        for hint in ["Enter Details", "Esc discard"] {
+        for hint in ["→ Details", "←/Esc discard"] {
             assert!(text.contains(hint), "missing {hint}: {text}");
         }
         if width >= 100 {
             assert!(
                 text.lines()
-                    .any(|line| line.contains("Enter Details") && line.contains("Esc discard"))
+                    .any(|line| line.contains("→ Details") && line.contains("←/Esc discard"))
             );
         }
         if width >= 100 {
@@ -1829,13 +2035,13 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
         }
     }
     app.extension_selected = Some("command".into());
-    handle_key(&mut app, KeyCode::Enter.into());
+    handle_key(&mut app, KeyCode::Char('d').into());
     let text = dump(&app, 100, 30, "extension-details");
     assert!(text.contains("Availability: unknown") && text.contains("No invocation timing"));
     for (width, height) in [(100, 30), (36, 10)] {
         let text = dump(&app, width, height, "extension-details");
         assert!(!text.contains("Scroll") && !text.contains("j/k"));
-        assert_eq!(text.matches("Esc Back").count(), 1, "{text}");
+        assert_eq!(text.matches("←/Esc Back").count(), 1, "{text}");
         assert!(text.contains("Process command"));
     }
     handle_key(&mut app, KeyCode::Esc.into());
@@ -1985,6 +2191,8 @@ fn modal_keys_stay_local_and_search_keeps_text() {
         for details in [false, true] {
             if modal == 'e' && details {
                 handle_key(&mut app, KeyCode::Enter.into());
+                assert!(!app.extension_details);
+                handle_key(&mut app, KeyCode::Char('d').into());
                 assert!(app.extension_details);
             }
             for ch in ['s', 'e', 'q'] {
@@ -2002,10 +2210,13 @@ fn modal_keys_stay_local_and_search_keeps_text() {
         assert!(app.paused && app.manual_refresh.is_none() && !app.collecting);
     }
     handle_key(&mut app, KeyCode::Char('/').into());
-    for ch in "seq".chars() {
+    for ch in "seqdhl".chars() {
         assert!(!handle_key(&mut app, KeyCode::Char(ch).into()));
     }
-    assert_eq!(app.query, "seq");
+    handle_key(&mut app, KeyCode::Left.into());
+    handle_key(&mut app, KeyCode::Right.into());
+    assert_eq!(app.query, "seqdhl");
+    assert!(app.details.is_none());
     handle_key(&mut app, KeyCode::Esc.into());
     assert!(handle_key(&mut app, KeyCode::Char('q').into()));
     app.help = true;
@@ -2085,7 +2296,7 @@ fn inline_input_keeps_unicode_tail_cursor_visible_and_masks_secrets() {
             &mut app,
             KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
         );
-        for ch in "專案內容很長很長很長尾端".chars() {
+        for ch in "專案內容很長很長很長尾端d".chars() {
             handle_key(&mut app, KeyCode::Char(ch).into());
         }
         for (width, height) in [(100, 30), (36, 10)] {
@@ -2093,6 +2304,7 @@ fn inline_input_keeps_unicode_tail_cursor_visible_and_masks_secrets() {
             terminal
                 .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
                 .unwrap();
+            assert!(app.details.is_none() && app.settings.as_ref().unwrap().open);
             let cursor = terminal.get_cursor_position().unwrap();
             assert!(cursor.x < width - 2 && cursor.y < height - 1);
             let buffer = terminal.backend().buffer();
@@ -2102,7 +2314,7 @@ fn inline_input_keeps_unicode_tail_cursor_visible_and_masks_secrets() {
             if sensitive {
                 assert!(!visible.contains("尾端") && visible.contains("***_"));
             } else {
-                assert!(visible.contains("尾端_]"), "{text}");
+                assert!(visible.contains("尾端d_]"), "{text}");
             }
         }
     }
@@ -2245,7 +2457,7 @@ fn generic_resource_list_and_details_show_units_without_process_queries() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(text.contains("Capacity: 9007199254740993 bytes"), "{text}");
-    app.open_details();
+    handle_key(&mut app, KeyCode::Right.into());
     let details = app.details.as_ref().unwrap();
     assert_eq!(details.query_pid(), None);
     assert!(!details.needs_query);
@@ -2253,6 +2465,12 @@ fn generic_resource_list_and_details_show_units_without_process_queries() {
     assert!(lines.contains("Temperature: ? vendor.celsius"));
     assert!(lines.contains("/Volumes/Data"));
     assert!(lines.contains("fixture/1.0.0"));
+    handle_key(&mut app, KeyCode::Left.into());
+    assert!(app.details.is_none());
+    assert_eq!(
+        app.node(app.selected).unwrap().reference,
+        "group:fixturevolume"
+    );
 }
 
 #[test]
@@ -2315,9 +2533,21 @@ fn priority_dialog_reorders_builtins_saves_and_keeps_failures_as_draft() {
         &app.priority_draft.as_ref().unwrap()[..3],
         ["docker", "app_bundle", "apple"]
     );
-    extensions::key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    extensions::key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(app.priority_draft.is_some());
+    app.extensions_scroll = 2;
+    let draft = app.priority_draft.clone();
+    extensions::key(&mut app, KeyCode::Enter.into());
+    assert!(!app.extension_details);
+    handle_key(&mut app, KeyCode::Right.into());
+    assert!(app.extension_details);
+    handle_key(&mut app, KeyCode::Right.into());
+    assert!(app.extension_details);
+    extensions::key(&mut app, KeyCode::Down.into());
+    extensions::key(&mut app, KeyCode::Enter.into());
+    assert!(app.extension_details);
+    handle_key(&mut app, KeyCode::Left.into());
+    assert_eq!(app.priority_draft, draft);
+    assert_eq!(app.extension_selected.as_deref(), Some("app_bundle"));
+    assert_eq!(app.extensions_scroll, 2);
     extensions::key(
         &mut app,
         KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
@@ -2414,4 +2644,116 @@ fn tag_payload_is_absent_from_tree_and_only_selected_pid_is_rendered_in_details(
     app.update(Ok(source));
     let text = render(&app);
     assert!(text.contains("private-tag-10") && !text.contains("private-tag-11"));
+}
+
+#[test]
+fn ui10_effective_tags_and_classification_trace_are_separate_and_wrapped() {
+    use crate::extensions::tags::Report;
+    use serde_json::json;
+    for conflict in [false, true] {
+        let tag = json!({"dimension":"bin","id":"bin:hash","label":"deleted","path":"/usr/local/bin/demo","basis":"executable"});
+        let mut report = json!({
+            "effective":[{"source":"bin","tag":tag}],
+            "proposals":[{"source":"bin","version":"1.0.0","proposal":{"id":"bin-add","identity":{"pid":10,"started_unix_us":100},"change":{"operation":"add","tag":tag}}}],
+            "decisions":[{"source":"bin","proposal_id":"bin-add","status":"effective","by_source":null,"reason":"source_priority"}],
+            "diagnostics":[]
+        });
+        if conflict {
+            report["effective"] = json!([]);
+            report["proposals"].as_array_mut().unwrap().push(json!({
+                "source":"fixture","version":"1.0.0",
+                "proposal":{"id":"exclude-bin","identity":{"pid":10,"started_unix_us":100},
+                    "change":{"operation":"exclude","selector":{"dimension":"bin","tag_id":null,"source":"bin"}}}
+            }));
+            report["decisions"][0]["status"] = json!("excluded");
+            report["decisions"][0]["reason"] = json!("higher_priority_exclusion");
+            report["decisions"][0]["by_source"] = json!("fixture");
+        }
+        let report: Report = serde_json::from_value(report).unwrap();
+        let mut source = snapshot();
+        change(&mut source.root, 10, |process| {
+            process.tag_report = Some(report.clone());
+            process.command = Some(Default::default());
+        });
+        let mut app = App::new("group:all".into(), 4);
+        app.update(Ok(source.clone()));
+        select(&mut app, "pid:10");
+        handle_key(&mut app, KeyCode::Char('d').into());
+        app.update(Ok(source));
+        let lines = app.details.as_ref().unwrap().lines();
+        let tags = lines.iter().find(|line| line.starts_with("Tags ")).unwrap();
+        assert_eq!(
+            tags.trim(),
+            if conflict {
+                "Tags  None"
+            } else {
+                "Tags  #executable"
+            }
+        );
+        let network = lines.iter().position(|line| line == "Network").unwrap();
+        let classification = lines
+            .iter()
+            .position(|line| line == "Classification")
+            .unwrap();
+        assert!(network < classification);
+        assert!(!lines[..classification].join("\n").contains("bin:hash"));
+        let trace = lines[classification..].join("\n");
+        for fact in ["bin:hash", "bin-add", "/usr/local/bin/demo", "deleted"] {
+            assert!(trace.contains(fact), "{trace}");
+        }
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("Tags "))
+                .count(),
+            1
+        );
+        for (width, height) in [(100, 30), (36, 10)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for page in 0..3 {
+                terminal
+                    .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let text = (0..height)
+                    .map(|y| {
+                        (0..width)
+                            .map(|x| buffer[(x, y)].symbol())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if let Some(path) = std::env::var_os("RESWHO_UI_EVIDENCE") {
+                    std::fs::create_dir_all(&path).unwrap();
+                    std::fs::write(
+                        std::path::Path::new(&path).join(format!(
+                            "ui10-{}-{width}x{height}-page{page}.txt",
+                            if conflict { "conflict" } else { "normal" }
+                        )),
+                        &text,
+                    )
+                    .unwrap();
+                }
+                if width == 100 {
+                    assert!(
+                        text.contains("Classification") && text.contains("bin:hash"),
+                        "{text}"
+                    );
+                }
+                handle_key(&mut app, KeyCode::PageDown.into());
+            }
+        }
+        let mut node = tree::select(&app.snapshot.as_ref().unwrap().root, "pid:10").unwrap();
+        node.process.as_mut().unwrap().tag_report = None;
+        let details = details::Details::new(node.clone());
+        assert!(
+            details
+                .lines()
+                .iter()
+                .any(|line| line == "Tags  Unavailable")
+        );
+        node.process.as_mut().unwrap().tag_report = Some(Default::default());
+        let details = details::Details::new(node);
+        assert!(details.lines().iter().any(|line| line == "Tags  None"));
+    }
 }

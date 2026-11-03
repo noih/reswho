@@ -75,14 +75,14 @@ def verify(arguments, exit_key, marker, details=False, external=False, resource=
             assert any(glyph in animation for glyph in [b"/", b"-", b"\\"]), "spinner did not advance"
             assert b"sample" not in transcript, "long sample should still be pending"
         if resource:
-            os.write(master, b"pd")
+            os.write(master, b"p\x1b[C")
             drain(0.4)
             assert b"Resource details" in transcript and b"Capacity" in transcript and b"bytes" in transcript, "resource typed details missing"
             assert b"Temperature" in transcript and b"celsius" in transcript, "unknown resource metric missing"
             os.write(master, b"\x1b")
             drain(0.2)
         if marker == b"sample" and details:
-            os.write(master, b"pd")
+            os.write(master, b"p\x1b[C")
             opened = len(transcript)
             deadline = time.monotonic() + 5
             while b"[filtered]" not in transcript[opened:] and time.monotonic() < deadline:
@@ -108,7 +108,7 @@ def verify(arguments, exit_key, marker, details=False, external=False, resource=
                 os.write(master, b"sqe")
                 drain(0.2)
                 assert process.poll() is None, "inventory q quit"
-                os.write(master, b"j\r")
+                os.write(master, b"j\x1b[C")
                 drain(0.3)
                 frame = full_frame(slave, process, transcript, drain)
                 assert re.search(rb"Extension\s+details", frame) and b"Availability:" in frame, "provider details missing"
@@ -225,8 +225,11 @@ def verify_priority(config):
         assert re.search(rb"Priority\s+.*highest\s+first", frame), f"priority reopen frame: {frame!r}"
         send(b"\r")
         frame = full_frame(slave, process, transcript, drain)
+        assert not re.search(rb"Extension\s+details", frame), frame
+        send(b"\x1b[C")
+        frame = full_frame(slave, process, transcript, drain)
         assert re.search(rb"Extension\s+details", frame), f"priority details frame: {frame!r}"
-        send(b"\x1b")
+        send(b"\x1b[D")
         frame = full_frame(slave, process, transcript, drain)
         assert b"Priority" in frame, f"priority details back frame: {frame!r}"
         send(b"\x1b[1;2B")
@@ -464,6 +467,8 @@ def verify_settings():
         inventory = frame_text()
         assert b"Extensions" in inventory and b"Settings" not in inventory, inventory
         send(b"\r")
+        assert not re.search(rb"Extension\s+details", frame_text())
+        send(b"d")
         assert re.search(rb"Extension\s+details", frame_text())
         send(b"sqe")
         assert re.search(rb"Extension\s+details", frame_text())
