@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 fn manifest(id: &str) -> Manifest {
-    let mut value: Manifest = serde_json::from_value(json!({"id":id,"version":"1.0.0","engines":{"reswho":">=0.1.0 <0.2.0"},"protocol_version":1,"platforms":[std::env::consts::OS],"capabilities":["classify"],"executable":"/usr/bin/false"})).unwrap();
+    let mut value: Manifest = serde_json::from_value(json!({"id":id,"version":"1.0.0","engines":{"reswho":env!("CARGO_PKG_VERSION")},"protocol_version":1,"platforms":[std::env::consts::OS],"capabilities":["classify"],"executable":"/usr/bin/false"})).unwrap();
     value.validate().unwrap();
     value
 }
@@ -192,7 +192,7 @@ fn incompatible_installs_do_not_inject_definitions_and_disabled_updates_stay_dis
     );
     value
         .engines
-        .insert("reswho".into(), ">=0.1.0 <0.2.0".into());
+        .insert("reswho".into(), env!("CARGO_PKG_VERSION").into());
     State::mutate(&path, |state| state.install(value.clone())).unwrap();
     assert!(
         State::load(&path)

@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+version=${1:-}
+[[ $# == 1 && $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+  echo 'usage: scripts/release X.Y.Z' >&2
+  exit 2
+}
+tag=v$version
+repo=noih/reswho
+tap_repo=noih/homebrew-tap
+phase=preflight
+temporary=$(mktemp -d "${TMPDIR:-/tmp}/reswho-release.XXXXXX")
+trap 'rm -rf "$temporary"' EXIT
+trap 'echo "Release stopped during $phase. Do not rerun blindly or move an existing tag. See docs/releasing.md for recovery; no rollback of public state was attempted." >&2' ERR
+die() { echo "release: $*" >&2; exit 1; }
+
+for tool in git gh cargo python3 brew curl ruby shasum; do
+  command -v "$tool" >/dev/null || die "missing $tool; install it before releasing"
+done
+cd "$(git rev-parse --show-toplevel)"
+[[ $(git branch --show-current) == main ]] || die 'run on main'
+[[ -z $(git status --porcelain) ]] || die 'reswho checkout must be clean'
+[[ $(git remote get-url --push origin) == git@github.com:noih/reswho.git ]] || die 'origin push URL must be the intended SSH repository'
+gh auth status >/dev/null 2>&1 || die 'gh authentication is required'
+remote_main=$(gh api "repos/$repo/git/ref/heads/main" --jq .object.sha)
+git merge-base --is-ancestor "$remote_main" HEAD || die 'remote main is not an ancestor of local HEAD; reconcile the checkout yourself before releasing'
+if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+  die "$tag already exists locally; inspect prior progress, do not recreate it"
+fi
+absent() {
+  if gh api "$1" > "$temporary/response" 2> "$temporary/error"; then
+    die "$tag already exists remotely; use recovery instructions or a new version"
+  fi
+  grep -q 'HTTP 404' "$temporary/error" || { cat "$temporary/error" >&2; die 'cannot establish remote absence'; }
+}
+absent "repos/$repo/git/ref/tags/$tag"
+absent "repos/$repo/releases/tags/$tag"
+tap=$(brew --repository noih/tap 2>/dev/null) || die 'existing noih/tap checkout required; set up the tap yourself before releasing'
+[[ -d $tap/Formula ]] || die 'tap Formula directory is missing'
+tap_origin=$(git -C "$tap" remote get-url origin)
+[[ $tap_origin == git@github.com:noih/homebrew-tap.git || $tap_origin == https://github.com/noih/homebrew-tap.git ]] || die 'tap origin is not noih/homebrew-tap'
+[[ -z $(git -C "$tap" status --porcelain) ]] || die 'tap checkout must be clean'
+tap_branch=$(git -C "$tap" branch --show-current)
+[[ -n $tap_branch ]] || die 'tap checkout must be on a branch'
+tap_head=$(git -C "$tap" rev-parse HEAD)
+[[ $(gh api "repos/$tap_repo/git/ref/heads/$tap_branch" --jq .object.sha) == "$tap_head" ]] || die 'tap checkout differs from remote; reconcile it yourself before releasing'
+
+phase='local version preparation'
+python3 - "$version" <<'PY'
+import json, os, pathlib, re, sys
+version = sys.argv[1]
+paths = [pathlib.Path(p) for p in ("Cargo.toml", "Cargo.lock", "examples/extensions/example.json")]
+original = [p.read_text() for p in paths]
+current = re.search(r'(?ms)\[package\]\n.*?^version = "([^"]+)"', original[0])[1]
+assert tuple(map(int, version.split('.'))) >= tuple(map(int, current.split('.'))), "version must not go backwards"
+manifest, count = re.subn(r'(?ms)(\[package\]\n.*?^version = ")[^"]+("$)', lambda m: m[1] + version + m[2], original[0], count=1)
+assert count == 1, "package version missing"
+lock, count = re.subn(r'(\[\[package\]\]\nname = "reswho"\nversion = ")[^"]+("\n)', lambda m: m[1] + version + m[2], original[1])
+assert count == 1, "lockfile package version missing"
+example = json.loads(original[2])
+example["engines"]["reswho"] = ">=" + version + " <" + str(int(version.split('.')[0]) + 1) + ".0.0"
+updated = [manifest, lock, json.dumps(example, indent=2) + "\n"]
+try:
+    for path, content in zip(paths, updated):
+        path.with_suffix(path.suffix + ".release-tmp").write_text(content)
+    for path in paths:
+        os.replace(path.with_suffix(path.suffix + ".release-tmp"), path)
+except BaseException:
+    for path, content in zip(paths, original):
+        path.write_text(content)
+    raise
+finally:
+    for path in paths:
+        path.with_suffix(path.suffix + ".release-tmp").unlink(missing_ok=True)
+PY
+phase='local verification'
+python3 scripts/package-release "$tag"
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked -- --test-threads=1
+python3 tests/release_package.py
+python3 tests/release_script.py
+cargo publish --dry-run --locked --allow-dirty
+if ! git diff --quiet -- Cargo.toml Cargo.lock examples/extensions/example.json; then
+  git add Cargo.toml Cargo.lock examples/extensions/example.json
+  git commit -m "chore(release): prepare $version"
+fi
+[[ -z $(git status --porcelain) ]] || die 'verification left unexpected changes; inspect before tagging'
+release_commit=$(git rev-parse HEAD)
+git tag -a "$tag" -m "reswho $version"
+
+phase='push main and release tag'
+git push origin main "$tag"
+phase='crate publication (tag has been pushed)'
+cargo publish --locked
+phase='waiting for the exact tag workflow'
+run=''
+for ((attempt=0; attempt<60; attempt++)); do
+  run=$(gh run list --repo "$repo" --workflow release.yml --event push --branch "$tag" --commit "$release_commit" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+  [[ -n $run ]] && break
+  sleep 5
+done
+[[ -n $run ]] || die 'no matching Actions run within five minutes; inspect the pushed tag and Actions before resuming'
+python3 - "$run" <<'PY'
+import subprocess, sys
+subprocess.run(["gh", "run", "watch", "--repo", "noih/reswho", sys.argv[1], "--exit-status", "--interval", "10"], check=True, timeout=1800)
+PY
+
+phase='verify published assets and prepare tap'
+archive=reswho-$tag-aarch64-apple-darwin.tar.gz
+for asset in "$archive" "$archive.sha256" reswho.rb; do
+  curl --fail --silent --show-error --location --connect-timeout 10 --max-time 120 "https://github.com/$repo/releases/download/$tag/$asset" -o "$temporary/$asset"
+done
+python3 - "$temporary" "$tag" <<'PY'
+import hashlib, pathlib, string, sys, tarfile
+root, tag = pathlib.Path(sys.argv[1]), sys.argv[2]
+name = "reswho-" + tag + "-aarch64-apple-darwin.tar.gz"
+digest = hashlib.sha256((root / name).read_bytes()).hexdigest()
+assert (root / (name + ".sha256")).read_text() == digest + "  " + name + "\n", "invalid checksum or archive name"
+with tarfile.open(root / name) as archive:
+    assert sorted(archive.getnames()) == ["LICENSE", "README.md", "reswho"], "unexpected archive contents"
+expected = string.Template(pathlib.Path("packaging/reswho.rb.template").read_text()).substitute(TAG=tag, SHA256=digest)
+assert (root / "reswho.rb").read_text() == expected, "formula does not match tag, checksum and reviewed template"
+PY
+ruby -c "$temporary/reswho.rb"
+[[ $(git -C "$tap" rev-parse HEAD) == "$tap_head" && -z $(git -C "$tap" status --porcelain) ]] || die 'tap changed during release; copy the verified formula manually after reconciling'
+[[ $(gh api "repos/$tap_repo/git/ref/heads/$tap_branch" --jq .object.sha) == "$tap_head" ]] || die 'remote tap advanced during release; reconcile before copying formula'
+cp "$temporary/reswho.rb" "$tap/Formula/reswho.rb"
+HOMEBREW_NO_AUTO_UPDATE=1 brew style noih/tap/reswho
+HOMEBREW_NO_AUTO_UPDATE=1 brew readall --os=all --arch=all noih/tap
+HOMEBREW_NO_AUTO_UPDATE=1 brew audit --strict noih/tap/reswho
+git -C "$tap" add Formula/reswho.rb
+git -C "$tap" commit -m "reswho $version"
+printf 'Released %s; tap commit is local. Review and push it yourself:\n' "$tag"
+printf '  git -C %q push origin %q\n' "$tap" "$tap_branch"

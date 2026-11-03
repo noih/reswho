@@ -1,11 +1,17 @@
 # Verification
 
+Release preparation additionally uses `python3 tests/release_package.py`, `bash -n scripts/release`, `python3 tests/release_script.py`, `actionlint`, Cargo package listing and publish dry-run, and the macOS binary packager. Script orchestration tests copy the script/manifests/template into an owned temporary root and fake every git/gh/cargo/brew/curl operation; they check ordering, same-version and parameter-driven version changes, stop boundaries, asset integrity and token non-disclosure, then remove their roots. These checks never publish, update a real tap, or start runtime services. A real macOS 15 Actions run and actual Homebrew installation remain separate evidence.
+
+General tests run serially in local release gates and macOS CI/release jobs because native subprocess startup can contend under the default parallel harness. This does not remove per-test deadlines or prove the parallel suite passes. The rw-39 PID-readiness and cold-start FIFO limits remain applicable. Ordinary tests still include their existing owned native lifecycle fixtures; ignored live and stress checks remain opt-in.
+
+The Podman nested fixture separates its evidence: the running host-death case requires `cli.pid` readiness and checks every published provider/guard/CLI/descendant PID has exited. The outer 250ms timeout includes startup, so the parent also watches host exit while waiting for CLI readiness. This case requires a successful host whose child asserted the deadline diagnostic, retains the two-second total bound, and reconciles every published PID before assertions. It permits timeout before CLI readiness and therefore does not prove timeout of an already-running nested CLI. The existing cancellation branch and generic external timeout cleanup remain separate evidence. See [causal diagnosis](docs/runtime-probes.md#rw-41-release-gate-diagnosis).
+
 The collection prototype uses Rust tests for native counter calculations, classification, tree projection, output escaping, and CLI contracts. Markdown structure tests use the dev-only pulldown-cmark parser to verify headings, lists, blockquotes, hard breaks, and literal paths. Docker adapter tests use fake CLI responses for context/host selection, remote/local attribution, missing metadata, restart races, limits and partial data. Subprocess tests own and reap short-lived shell/sleep fixtures to verify timeouts and diagnostic handling. Ordinary tests never contact Docker. These are technical spike checks, not acceptance of the full planned product.
 
 ```sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo test --locked -- --test-threads=1
 ```
 
 Live macOS verification is explicit:

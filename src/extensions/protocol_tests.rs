@@ -400,7 +400,7 @@ fn tags_wire_shapes_are_strict_bounded_and_exact_for_all_operations() {
         assert!(serde_json::from_value::<Response>(invalid.clone()).is_err());
         assert!(!schema("response").is_valid(&invalid));
     }
-    let manifest = json!({"id":"fixture","version":"1.0.0","engines":{"reswho":"^0.1.0"},"protocol_version":1,"platforms":["macos"],"capabilities":["classify"],"executable":"/tmp/native","required_features":["tags"],"tag_contract":{"produces":["role"],"overrides":[{"dimension":"role","sources":["other"]}]}});
+    let manifest = json!({"id":"fixture","version":"1.0.0","engines":{"reswho":"^1.0.0"},"protocol_version":1,"platforms":["macos"],"capabilities":["classify"],"executable":"/tmp/native","required_features":["tags"],"tag_contract":{"produces":["role"],"overrides":[{"dimension":"role","sources":["other"]}]}});
     assert!(schema("manifest").is_valid(&manifest));
     let mut parsed: Manifest = serde_json::from_value(manifest).unwrap();
     parsed.validate().unwrap();

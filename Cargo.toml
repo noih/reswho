@@ -1,9 +1,18 @@
 [package]
 name = "reswho"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
-publish = false
 description = "Read-only resource attribution for macOS"
+license = "MIT"
+repository = "https://github.com/noih/reswho"
+homepage = "https://github.com/noih/reswho"
+readme = "README.md"
+keywords = ["macos", "monitor", "process", "tui", "containers"]
+categories = ["command-line-utilities"]
+include = ["/src/**", "/build.rs", "/schemas/**", "/tests/**", "/examples/**", "/scripts/package-release", "/scripts/release", "/packaging/reswho.rb.template", "/Cargo.lock", "/README.md", "/LICENSE", "/CHANGELOG.md", "/docs/**"]
+
+[lib]
+doc = false
 
 [dependencies]
 anyhow = "1"

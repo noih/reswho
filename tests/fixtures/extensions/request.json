@@ -1,7 +1,7 @@
 {
   "protocol_version": 1,
   "host": {
-    "version": "0.1.0",
+    "version": "1.0.0",
     "protocol_version": 1,
     "features": [
       "roles",

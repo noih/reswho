@@ -297,7 +297,11 @@ pub fn project_node(node: &mut Node, detail_pid: Option<u32>) {
                 ..Default::default()
             });
         }
-    } else if node.container.is_none() && node.runtime.is_none() && node.resource.is_none() {
+    } else if node.container.is_none()
+        && node.container_totals.is_none()
+        && node.runtime.is_none()
+        && node.resource.is_none()
+    {
         let path = node.attribution.as_ref().and_then(|a| a.path.clone());
         let external = node
             .attribution

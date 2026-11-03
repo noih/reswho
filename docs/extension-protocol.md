@@ -1,6 +1,6 @@
 # 外部 extension 開發契約
 
-CLI 版本為 package SemVer；目前0.1.0。外部協定版本為整數1，與 snapshot `reswho/12` 分開。內建與外部來源共用設定、取消、deadline、核心裁決與 rendering；extension 不直接輸出 Markdown／TUI，也不新增既有 PID metrics。
+CLI 版本為 package SemVer；目前1.0.0。外部協定版本為整數1，與 snapshot `reswho/12` 分開。內建與外部來源共用設定、取消、deadline、核心裁決與 rendering；extension 不直接輸出 Markdown／TUI，也不新增既有 PID metrics。
 
 ## 安裝與版本
 
@@ -18,7 +18,7 @@ reswho extensions remove example
 
 這是可信 package 的入口契約，不是編譯 binary 的語言來源辨識，也不是 OS sandbox。禁止交付 interpreter＋script payload；無法可靠判定合法 binary 內部是否嵌入 runtime 或呼叫其他程式。開發者須提供目標 macOS／architecture 的 binary，使用者只需放置／安裝。不防禦同使用者在驗證與 exec 之間惡意替換檔案；安裝者須保護 package 的寫入權限。
 
-`id` 使用小寫 ASCII、數字、`_`、`-`，不可與 builtin 重複。`version` 必須是完整 canonical SemVer。`engines.reswho` 必填，使用 [node-semver 2.2.0](https://docs.rs/node-semver/2.2.0/node_semver/) 的 npm range 語意，例如 `>=0.1.0 <0.2.0`。支援 `>`／`>=`／`<`／`<=`、exact、`^`、`~`、wildcard、hyphen range、AND、`||`；不使用 Rust VersionReq，不啟用 loose 或隱含 prerelease。`^0.2.0` 不包含0.3.0；`^0.0.3` 不包含0.0.4。npm engines 通常是 advisory，reswho 則強制跳過不相容來源。
+`id` 使用小寫 ASCII、數字、`_`、`-`，不可與 builtin 重複。`version` 必須是完整 canonical SemVer。`engines.reswho` 必填，使用 [node-semver 2.2.0](https://docs.rs/node-semver/2.2.0/node_semver/) 的 npm range 語意，例如 `>=1.0.0 <2.0.0`。支援 `>`／`>=`／`<`／`<=`、exact、`^`、`~`、wildcard、hyphen range、AND、`||`；不使用 Rust VersionReq，不啟用 loose 或隱含 prerelease。`^0.2.0` 不包含0.3.0；`^0.0.3` 不包含0.0.4。npm engines 通常是 advisory，reswho 則強制跳過不相容來源。
 
 合法但 CLI range／protocol／platform 不相容的 manifest 可保存，但不注入新 definitions，也不執行。非法 JSON／SemVer／range 或不相容設定定義會拒絕整筆 install/update，保留前一狀態。清單顯示 version、requires、compatible、explicit_enabled、enabled、reason 與 unknown availability；unknown 不代表已探測到服務。
 
@@ -57,7 +57,7 @@ Request 範例：
 ```json
 {
   "protocol_version": 1,
-  "host": {"version": "0.1.0", "protocol_version": 1, "features": ["roles", "resources", "collect_scopes", "tags"]},
+  "host": {"version": "1.0.0", "protocol_version": 1, "features": ["roles", "resources", "collect_scopes", "tags"]},
   "provider": "example",
   "version": "1.0.0",
   "capability": "classify",

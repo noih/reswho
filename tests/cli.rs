@@ -298,9 +298,10 @@ fn extensions_list_is_offline_and_distinguishes_enabled_from_availability() {
         .unwrap();
     assert!(result.status.success());
     let output = String::from_utf8(result.stdout).unwrap();
-    assert!(output.contains(
-        "docker/0.1.0 source=builtin capabilities=collect enabled=false availability=unknown"
-    ));
+    assert!(output.contains(&format!(
+        "docker/{} source=builtin capabilities=collect enabled=false availability=unknown",
+        env!("CARGO_PKG_VERSION")
+    )));
     assert!(!output.contains("Loading"));
     dir.close().unwrap();
 }

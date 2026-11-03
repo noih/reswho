@@ -147,3 +147,14 @@ Review指出Schema覆蓋敘述過度：`tests/json_contract.rs`實際驗證Schem
 依裁定只分開既有CLI helper的phase budget：建立任何FIFO前的兩次正常production install使用5秒 `setup`；建立FIFO後的清單、FIFO entrypoint install、FIFO manifest install三次操作仍各限1秒 `FIFO check`。原有enabled／healthy sibling／拒絕安裝斷言、pipe capture、poll error／timeout的kill＋wait、tempdir清理全部保留，沒有State API捷徑、production hook或全域序列化。這修正setup超時被當成FIFO oracle失敗的邊界；每次FIFO CLI仍包含spawn返回後的啟動時間，不宣稱消除所有cold-start flake，更不回推歷史PID absence或OS原因。上方「未延長原期限」描述診斷階段；本次只另設setup預算，未放寬實際FIFO oracle。
 
 變更後只重驗指定FIFO案例，通過（0.67秒）；fmt／diff-check通過。自檢確認setup恰兩次5秒、FIFO check恰三次1秒，預算套用於同一poll迴圈。未重跑JSON／external／full suite，也未重跑未受邏輯影響的Clippy；先前Clippy結果適用於原診斷修正，不冒稱本次另跑。自有CLI均wait，tempdir顯式close成功，沒有新增持久資源；沿用既有target。依裁定本次小幅helper／文件修正自檢後本地提交，無第二輪獨立review。
+## rw-41 release gate diagnosis
+
+2026-11-03，本機 macOS 26.5.2、Rust/Cargo 1.99.1；release preparation 從 `c52e908` 起。首次一般平行 `cargo test --locked` 的 library suite 為221 passed／5 failed／3 ignored，沒有到達後續 integration test binaries。fmt 與 all-target clippy 通過。這次失敗不能以 scoped rerun 抹除。
+
+兩項 Markdown 失敗是實際資料遺失：`81d50cd` 引入的 `model::project_node` host evidence allowlist 也作用於 container project aggregates。它刪除 bind inference 與完整 path evidence，改成 `project /a/space and\`tick` fallback，renderer 再誤分割空白路徑；無 path 的 exact `compose` 亦被移除。修復只讓帶 `container_totals` 的 aggregate 避開 host-only projection，保留原 Markdown assertions，補 JSON evidence 原值 assertions。container module 十項 scoped 測試通過。
+
+三項 native 失敗分別為 host fixture 未啟動、nested CLI 未啟動，以及 rw-39 external provider 在2秒內沒有發布 PID（`staged=false`）。所有 compilation 停止後，三項各串行一次：host-death 通過1.98s；external timeout／cancel 通過（timeout2.002s、cancel startup23.9ms、cleanup479µs）；Podman timed branch 仍違反原2秒 elapsed assertion。這不表示所有失敗都由平行 contention 造成，也不消除 rw-39 cold-start 限制。
+
+核准的單次 Podman stage 診斷觀察：untimed readiness766ms、CLI已啟動；timed host 在721ms已成功退出，但CLI尚未啟動，父層仍等待到2.002s才檢查 elapsed。host fixture 本身確認 production `run_bounded` 回報250ms deadline。因此該次失敗是父層 readiness wait 沒有觀察 host completion，並非已證明 production timeout／cleanup 失效。
+
+裁決後保留 running host-death 的必要 readiness 與所有已知 PID cleanup；timed case 同時觀察 host exit，保留 host success／child deadline／2秒總界線並在 assertion 前檢查所有已發布 PID。明確允許 startup 階段 timeout，**不宣稱驗證已執行 nested CLI 的 timeout**。既有 running cancellation 與 generic external timeout cleanup 保留。沒有放寬 production250ms、沒有 warmup／自動 retry，也沒有新增 production test hook。CI/release 使用串行一般 gate，與此修復的證據邊界分開記錄。

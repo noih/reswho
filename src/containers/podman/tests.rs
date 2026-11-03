@@ -327,10 +327,21 @@ int main(void){const char *root=getenv("RESWHO_PODMAN_GUARD_ROOT");if(!root)retu
             .spawn()
             .unwrap();
         let start = Instant::now();
+        let mut observed_exit = None;
         while !dir.path().join("cli.pid").exists() && start.elapsed() < Duration::from_secs(2) {
+            if observed_exit.is_none()
+                && let Some(status) = host.try_wait().unwrap()
+            {
+                observed_exit = Some((start.elapsed(), status));
+                break;
+            }
             std::thread::sleep(Duration::from_millis(5));
         }
         let launched = dir.path().join("cli.pid").exists();
+        eprintln!(
+            "nested fixture: timed={timed}, readiness_elapsed={:?}, launched={launched}, host_exit={observed_exit:?}",
+            start.elapsed()
+        );
         if timed {
             while host.try_wait().unwrap().is_none() && start.elapsed() < Duration::from_secs(2) {
                 std::thread::sleep(Duration::from_millis(5));
@@ -338,15 +349,11 @@ int main(void){const char *root=getenv("RESWHO_PODMAN_GUARD_ROOT");if(!root)retu
             if host.try_wait().unwrap().is_none() {
                 host.kill().unwrap();
             }
-            assert!(
-                host.wait().unwrap().success(),
-                "outer deadline fixture failed"
-            );
-            assert!(start.elapsed() < Duration::from_secs(2));
         } else {
             host.kill().unwrap();
-            host.wait().unwrap();
         }
+        let status = host.wait().unwrap();
+        let elapsed = start.elapsed();
         let mut pids = Vec::new();
         for file in ["provider.pid", "cli.pid"] {
             if let Ok(text) = std::fs::read_to_string(dir.path().join(file)) {
@@ -360,13 +367,18 @@ int main(void){const char *root=getenv("RESWHO_PODMAN_GUARD_ROOT");if(!root)retu
         {
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(launched, "nested CLI never launched");
         for pid in pids {
             assert_eq!(
                 unsafe { libc::kill(pid, 0) },
                 -1,
                 "owned nested PID {pid} survived"
             );
+        }
+        if timed {
+            assert!(status.success(), "outer deadline fixture failed");
+            assert!(elapsed < Duration::from_secs(2));
+        } else {
+            assert!(launched, "nested CLI never launched");
         }
     }
     for canceled in [false, true] {

@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import string
+import subprocess
+import tarfile
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def validate_tag(tag, version):
+    if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
+        raise ValueError("tag must be vX.Y.Z (stable versions only)")
+    if tag != "v" + version:
+        raise ValueError("tag does not match Cargo.toml version")
+
+
+def validate_linkage(listing):
+    libraries = [line.strip().split(" (", 1)[0] for line in listing.splitlines()[1:] if line.strip()]
+    if not libraries or any(not path.startswith(("/usr/lib/", "/System/Library/")) for path in libraries):
+        raise ValueError("binary must link only macOS system libraries: " + repr(libraries))
+
+
+def run(*args, **kwargs):
+    return subprocess.check_output(args, text=True, timeout=30, **kwargs).strip()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Validate a release tag, or package a built macOS binary offline")
+    parser.add_argument("tag")
+    parser.add_argument("binary", nargs="?")
+    parser.add_argument("output", nargs="?")
+    args = parser.parse_args()
+    metadata = json.loads(run("cargo", "metadata", "--no-deps", "--format-version=1", "--locked", "--offline", cwd=ROOT))
+    package = next(p for p in metadata["packages"] if p["name"] == "reswho")
+    validate_tag(args.tag, package["version"])
+    if args.binary is None and args.output is None:
+        print("Validated " + args.tag)
+        return
+    if args.binary is None or args.output is None:
+        parser.error("binary and output must be supplied together")
+    binary = Path(args.binary).resolve(strict=True)
+    output = Path(args.output).resolve()
+    if output.exists():
+        raise ValueError("output directory already exists; refusing to overwrite")
+    if run("lipo", "-archs", str(binary)) != "arm64":
+        raise ValueError("only arm64 binaries are supported")
+    load_commands = run("otool", "-l", str(binary))
+    if not re.search(r"\bminos 15\.0(?:\.0)?\s", load_commands):
+        raise ValueError("binary must have macOS deployment target 15.0")
+    linkage = run("otool", "-L", str(binary))
+    validate_linkage(linkage)
+    print(linkage)
+    with tempfile.TemporaryDirectory(prefix="reswho-release-") as temporary:
+        root = Path(temporary)
+        (root / "config.json").write_text('{"version":1,"settings":{}}\n')
+        env = dict(os.environ, HOME=temporary, XDG_CONFIG_HOME=temporary, PATH="/usr/bin:/bin")
+        command = [str(binary), "--config", str(root / "config.json")]
+        if run(*command, "--version", env=env) != "reswho " + package["version"]:
+            raise ValueError("binary version does not match tag")
+        if "--no-containers" not in run(*command, "--help", env=env):
+            raise ValueError("missing expected CLI help")
+        for subcommand in ("settings", "extensions"):
+            json.loads(run(*command, subcommand, "--json", env=env))
+        output.mkdir(parents=True)
+        archive = output / ("reswho-" + args.tag + "-aarch64-apple-darwin.tar.gz")
+        with tarfile.open(archive, "w:gz") as bundle:
+            bundle.add(binary, arcname="reswho")
+            for name in ("LICENSE", "README.md"):
+                bundle.add(ROOT / name, arcname=name)
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        (output / (archive.name + ".sha256")).write_text(digest + "  " + archive.name + "\n")
+        template = string.Template((ROOT / "packaging/reswho.rb.template").read_text())
+        (output / "reswho.rb").write_text(template.substitute(TAG=args.tag, SHA256=digest))
+    print("Packaged " + str(archive))
+
+
+if __name__ == "__main__":
+    main()

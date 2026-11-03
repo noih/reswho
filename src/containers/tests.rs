@@ -187,7 +187,15 @@ fn partial_inventory_and_container_markdown_preserve_semantics() {
     let md = output::markdown(&snapshot);
     assert!(md.contains("· >=0.0%  ?  ⏱︎ >=1m  >=1 active / >=1 containers"));
     assert!(!md.contains(">=>="));
-    assert!(md.contains("> ~ Container project inferred:"));
+    assert!(md.contains("> ~ Container project inferred:"), "{md}");
+    let json = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(
+        json["root"]["children"][0]["children"][0]["evidence"],
+        serde_json::json!([
+            "Container project inferred: bind path + project marker",
+            "container project path /a/space and`tick"
+        ])
+    );
     assert_eq!(md.matches("space and`tick").count(), 1);
     let mut item_depth = 0;
     let mut quote_depth = 0;
@@ -303,7 +311,13 @@ fn compose_group_notes_use_one_line_without_losing_pathless_evidence() {
     assert!(!md.contains("> path "));
     item.project.as_mut().unwrap().path = None;
     snapshot.root = build(runtime("endpoint-a"), vec![item]).unwrap();
-    assert!(output::markdown(&snapshot).contains("> compose\n"));
+    let md = output::markdown(&snapshot);
+    assert!(md.contains("> compose\n"), "{md}");
+    let json = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(
+        json["root"]["children"][0]["children"][0]["evidence"],
+        serde_json::json!(["compose"])
+    );
 }
 
 #[test]

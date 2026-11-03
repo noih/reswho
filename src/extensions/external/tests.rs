@@ -15,7 +15,7 @@ fn fixture(dir: &Path, id: &str, body: &str) -> External {
             .unwrap()
             .success()
     );
-    let mut manifest: Manifest = serde_json::from_value(json!({"id":id,"version":"1.0.0","engines":{"reswho":">=0.1.0 <0.2"},"protocol_version":1,"platforms":[std::env::consts::OS],"capabilities":["collect","classify","details"],"collect_scopes":["containers"],"executable":executable})).unwrap();
+    let mut manifest: Manifest = serde_json::from_value(json!({"id":id,"version":"1.0.0","engines":{"reswho":env!("CARGO_PKG_VERSION")},"protocol_version":1,"platforms":[std::env::consts::OS],"capabilities":["collect","classify","details"],"collect_scopes":["containers"],"executable":executable})).unwrap();
     manifest.validate().unwrap();
     External { manifest }
 }
@@ -309,7 +309,8 @@ fn wire_validation_settings_scope_and_incompatible_versions_do_not_execute() {
     let inspected = fixture(
         dir.path(),
         "inspect",
-        "char input[8192]={0}; fread(input,1,sizeof(input)-1,stdin); assert(strstr(input,\"\\\"settings\\\":{}\")); assert(strstr(input,\"0.1.0\")); assert(!strstr(input,\"command\")); assert(!strstr(input,\"environment\")); puts(\"{\\\"protocol_version\\\":1,\\\"provider\\\":\\\"inspect\\\",\\\"version\\\":\\\"1.0.0\\\",\\\"contribution\\\":{\\\"capability\\\":\\\"classify\\\",\\\"proposals\\\":[]}}\")",
+        &r#"char input[8192]={0}; fread(input,1,sizeof(input)-1,stdin); assert(strstr(input,"\"settings\":{}")); assert(strstr(input,"\"host\":{\"version\":\"@HOST_VERSION@\"")); assert(!strstr(input,"command")); assert(!strstr(input,"environment")); puts("{\"protocol_version\":1,\"provider\":\"inspect\",\"version\":\"1.0.0\",\"contribution\":{\"capability\":\"classify\",\"proposals\":[]}}");"#
+            .replace("@HOST_VERSION@", env!("CARGO_PKG_VERSION")),
     );
     assert!(
         dispatch(

@@ -2117,7 +2117,7 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
     ] {
         let mut record = crate::extensions::report::Record::new(
             id,
-            Some("0.1.0"),
+            Some(env!("CARGO_PKG_VERSION")),
             phase,
             result,
             if result == "failed" {

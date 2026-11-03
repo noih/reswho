@@ -1,0 +1,70 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_REPO: ${{ github.repository }}
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 scripts/package-release "$TAG"
+      - run: rustup update stable --no-self-update
+      - run: rustup default stable
+      - run: rustup component add rustfmt clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked -- --test-threads=1
+      - run: python3 tests/release_package.py
+      - run: bash -n scripts/release && python3 tests/release_script.py
+      - name: Create a new draft only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/$GH_REPO/releases/tags/$TAG" > "$RUNNER_TEMP/release.json" 2> "$RUNNER_TEMP/release-error"; then
+            echo "Release already exists; refusing to overwrite any draft or published assets" >&2
+            exit 1
+          fi
+          if ! grep -q 'HTTP 404' "$RUNNER_TEMP/release-error"; then
+            cat "$RUNNER_TEMP/release-error" >&2
+            exit 1
+          fi
+          gh release create "$TAG" --verify-tag --draft --title "$TAG" --notes-file CHANGELOG.md
+      - run: cargo build --release --locked --target aarch64-apple-darwin --bin reswho
+      - name: Check and package binary
+        run: |
+          python3 scripts/package-release "$TAG" target/aarch64-apple-darwin/release/reswho "$RUNNER_TEMP/dist"
+          ruby -c "$RUNNER_TEMP/dist/reswho.rb"
+          (cd "$RUNNER_TEMP/dist" && shasum -a 256 -c ./*.sha256)
+      - name: Upload complete assets and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" --json isDraft --jq '.isDraft' | grep -qx true
+          gh release upload "$TAG" "$RUNNER_TEMP/dist/"*
+          gh release view "$TAG" --json isDraft,assets > "$RUNNER_TEMP/uploaded.json"
+          python3 - "$RUNNER_TEMP/uploaded.json" "$RUNNER_TEMP/dist" <<'PY'
+          import json, pathlib, sys
+          release = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          expected = sorted(p.name for p in pathlib.Path(sys.argv[2]).iterdir())
+          assert release["isDraft"], "release is already public"
+          assert sorted(a["name"] for a in release["assets"]) == expected, "incomplete or unexpected assets"
+          PY
+          gh release edit "$TAG" --draft=false
