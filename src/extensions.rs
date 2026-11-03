@@ -379,6 +379,7 @@ fn dispatch_labeled(
 pub enum Builtin {
     Docker,
     Apple,
+    Podman,
     AppBundle,
     Command,
     Project,
@@ -386,14 +387,15 @@ pub enum Builtin {
     Bin,
 }
 
-pub const BUILTINS: [Builtin; 7] = [
-    Builtin::Docker,
-    Builtin::Apple,
+pub const BUILTINS: [Builtin; 8] = [
     Builtin::AppBundle,
-    Builtin::Command,
     Builtin::Project,
     Builtin::Ancestor,
     Builtin::Bin,
+    Builtin::Docker,
+    Builtin::Podman,
+    Builtin::Apple,
+    Builtin::Command,
 ];
 
 impl Extension for Builtin {
@@ -401,6 +403,7 @@ impl Extension for Builtin {
         let (id, capability) = match self {
             Self::Docker => ("docker", Capability::Collect),
             Self::Apple => ("apple", Capability::Collect),
+            Self::Podman => ("podman", Capability::Collect),
             Self::AppBundle => ("app_bundle", Capability::Classify),
             Self::Command => ("command", Capability::Details),
             Self::Project => ("project", Capability::Classify),
@@ -430,6 +433,13 @@ impl Extension for Builtin {
             }
             (Self::Apple, Request::Collect) => {
                 let (runtime, containers) = containers::collect_apple(context)?;
+                Ok(Contribution::Collect {
+                    runtime,
+                    containers,
+                })
+            }
+            (Self::Podman, Request::Collect) => {
+                let (runtime, containers) = containers::collect_podman(context)?;
                 Ok(Contribution::Collect {
                     runtime,
                     containers,

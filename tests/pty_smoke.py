@@ -217,7 +217,7 @@ def verify_priority(config):
         send(b"\x13")
         saved = json.loads(config.read_text())
         assert "source_priority" in saved, full_frame(slave, process, transcript, drain).decode(errors="replace")
-        assert saved["source_priority"][:3] == ["docker", "app_bundle", "apple"], saved
+        assert saved["source_priority"][:3] == ["app_bundle", "ancestor", "project"], saved
         offline = subprocess.run([str(ROOT / "target/debug/reswho"), "--config", str(config), "settings", "--json"], check=True, capture_output=True)
         assert json.loads(offline.stdout)["source_priority"] == saved["source_priority"]
         send(b"e")

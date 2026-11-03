@@ -45,7 +45,19 @@ impl Manifest {
         manifest.validate_entrypoint()?;
         Ok(manifest)
     }
+    pub(super) fn builtin_id(&self) -> bool {
+        super::BUILTINS.iter().any(|builtin| {
+            use super::Extension;
+            builtin.descriptor().id == self.id
+        })
+    }
     pub fn validate(&mut self) -> Result<()> {
+        if self.builtin_id() {
+            bail!("invalid or reserved extension id");
+        }
+        self.validate_contract()
+    }
+    fn validate_contract(&mut self) -> Result<()> {
         self.tag_contract.validate(&self.id)?;
         if self.id.is_empty()
             || self.id.len() > 64
@@ -54,10 +66,6 @@ impl Manifest {
                 .id
                 .chars()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
-            || super::BUILTINS.iter().any(|builtin| {
-                use super::Extension;
-                builtin.descriptor().id == self.id
-            })
         {
             bail!("invalid or reserved extension id");
         }
@@ -111,7 +119,11 @@ impl Manifest {
             definition.provider = self.id.clone();
             definition.version = self.version.clone();
         }
-        let mut check = super::settings_registry()?;
+        let mut check = if self.builtin_id() {
+            Registry::core()
+        } else {
+            super::settings_registry()?
+        };
         check.register_extension(&self.id, self.definitions.clone(), self.uses.clone())?;
         Ok(())
     }
@@ -122,6 +134,9 @@ impl Manifest {
         super::native::validate(&self.executable)
     }
     pub fn incompatibility(&self) -> Option<String> {
+        if self.builtin_id() {
+            return Some("external_builtin_id_conflict".into());
+        }
         if let Err(error) = self.validate_entrypoint() {
             return Some(error.to_string());
         }
@@ -248,13 +263,20 @@ impl State {
         let mut seen = HashSet::new();
         for entry in &mut state.installed {
             let started = std::time::Instant::now();
-            entry.manifest.validate()?;
+            entry.manifest.validate_contract()?;
+            if entry.manifest.builtin_id() {
+                entry.problem = (!entry.removed).then(|| "external_builtin_id_conflict".into());
+            }
             state.report.push(super::report::Record::new(
                 &entry.manifest.id,
                 Some(&entry.manifest.version),
                 "validate",
-                "success",
-                None,
+                if entry.problem.is_some() {
+                    "failed"
+                } else {
+                    "success"
+                },
+                entry.problem.as_deref(),
                 Some(started),
             ));
             if !seen.insert(&entry.manifest.id) {
@@ -332,6 +354,7 @@ impl State {
         check.restore_shared(&self.shared_definitions)?;
         for entry in &self.installed {
             if entry.manifest.id != manifest.id
+                && entry.problem.is_none()
                 && !entry.removed
                 && entry.enabled
                 && entry.manifest.incompatibility().is_none()
@@ -409,7 +432,11 @@ impl State {
                 report: vec![],
             })
             .collect();
-        for entry in self.installed.iter().filter(|entry| !entry.removed) {
+        for entry in self
+            .installed
+            .iter()
+            .filter(|entry| !entry.removed && !entry.manifest.builtin_id())
+        {
             let manifest = &entry.manifest;
             let mut reason = entry
                 .problem

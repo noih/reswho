@@ -8,6 +8,7 @@ mod http;
 #[cfg(test)]
 mod measure;
 mod model;
+mod podman;
 mod stats;
 
 use crate::{
@@ -54,6 +55,7 @@ pub(crate) fn collect_with_context(context: &crate::extensions::Context<'_>) -> 
                     .contains(&crate::extensions::Capability::Collect)
                 && (!matches!(extension, crate::extensions::Builtin::Apple)
                     || command::find_program("container").is_some())
+                && (!matches!(extension, crate::extensions::Builtin::Podman) || podman_available())
         })
         .map(|extension| extension as &dyn crate::extensions::Extension)
         .collect();
@@ -86,6 +88,20 @@ pub(crate) fn collect_docker(
         std::env::var("DOCKER_CONTEXT").ok(),
         std::env::var("DOCKER_HOST").ok(),
         time::OffsetDateTime::now_utc(),
+    ))
+}
+
+pub(crate) fn podman_available() -> bool {
+    command::find_program("podman").is_some()
+}
+
+pub(crate) fn collect_podman(
+    context: &crate::extensions::Context<'_>,
+) -> Result<(Runtime, Vec<Container>)> {
+    Ok(podman::native(
+        context.cancel,
+        context.deadline,
+        context.settings.interval("sampling.interval_ms"),
     ))
 }
 

@@ -2528,10 +2528,10 @@ fn priority_dialog_reorders_builtins_saves_and_keeps_failures_as_draft() {
     )));
     app.extensions_page = true;
     app.extension_selected = Some("app_bundle".into());
-    extensions::key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+    extensions::key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
     assert_eq!(
         &app.priority_draft.as_ref().unwrap()[..3],
-        ["docker", "app_bundle", "apple"]
+        ["project", "app_bundle", "ancestor"]
     );
     app.extensions_scroll = 2;
     let draft = app.priority_draft.clone();

@@ -95,8 +95,23 @@ fn lifecycle_keeps_order_canonical_definitions_and_is_atomic() {
             .into_iter()
             .map(|entry| entry.descriptor.id),
     );
-    assert_eq!(&order[..4], ["b", "missing", "a", "app_bundle"]);
-    assert_eq!(order.last().map(String::as_str), Some("c"));
+    assert_eq!(
+        order,
+        [
+            "b",
+            "missing",
+            "a",
+            "app_bundle",
+            "project",
+            "ancestor",
+            "bin",
+            "docker",
+            "podman",
+            "apple",
+            "command",
+            "c"
+        ]
+    );
     assert_eq!(
         resolved.report().settings["shared.example"]
             .definition
@@ -222,5 +237,162 @@ fn native_packaging_rejects_script_args_and_disables_replaced_binary() {
     assert!(!entry.compatible);
     assert!(super::super::external::installed(&state, &settings).is_empty());
     assert!(state.install(state.installed[0].manifest.clone()).is_err());
+    dir.close().unwrap();
+}
+
+#[test]
+fn newly_builtin_id_blocks_only_prior_external_and_preserves_state() {
+    use crate::extensions::{Builtin, Context, Extension, Request, external};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("extensions.json");
+    let marker = dir.path().join("executed");
+    let source = dir.path().join("provider.c");
+    let binary = dir.path().join("provider");
+    fs::write(&source,format!(r#"#include <stdio.h>
+#include <string.h>
+int main(void){{char b[8192];size_t n=fread(b,1,sizeof(b)-1,stdin);b[n]=0;if(!strstr(b,"healthy")){{FILE *f=fopen({:?},"w");if(f)fclose(f);return 7;}}puts("{{\"protocol_version\":1,\"provider\":\"healthy\",\"version\":\"1.0.0\",\"contribution\":{{\"capability\":\"classify\",\"proposals\":[]}}}}");return 0;}}
+"#,marker)).unwrap();
+    assert!(
+        std::process::Command::new("cc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut prior = manifest("prior_runtime");
+    prior.id = "podman".into();
+    prior.executable = binary.clone();
+    let definition:Definition=serde_json::from_value(json!({"key":"shared.kept","type":"number","default":17,"description":"Kept","provider":"podman","version":"1.0.0","sensitive":false})).unwrap();
+    prior.definitions = vec![definition.clone()];
+    let mut healthy = manifest("healthy");
+    healthy.executable = binary;
+    let state = State {
+        installed: vec![
+            Installed {
+                manifest: prior.clone(),
+                enabled: true,
+                removed: false,
+                origin: Origin::Explicit {
+                    manifest: dir.path().join("old.json"),
+                },
+                problem: None,
+            },
+            Installed {
+                manifest: healthy,
+                enabled: true,
+                removed: false,
+                origin: Origin::Legacy,
+                problem: None,
+            },
+            Installed {
+                manifest: manifest("gone"),
+                enabled: false,
+                removed: true,
+                origin: Origin::Legacy,
+                problem: None,
+            },
+        ],
+        shared_definitions: vec![definition],
+        ..Default::default()
+    };
+    fs::write(&path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+    let before = fs::read(&path).unwrap();
+    let mut loaded = State::startup(&path).unwrap();
+    assert_eq!(before, fs::read(&path).unwrap());
+    assert_eq!(
+        loaded.installed[0].problem.as_deref(),
+        Some("external_builtin_id_conflict")
+    );
+    assert!(loaded.installed[0].enabled);
+    assert!(loaded.installed[2].removed);
+    assert_eq!(
+        loaded
+            .installed
+            .iter()
+            .map(|e| e.manifest.id.as_str())
+            .collect::<Vec<_>>(),
+        ["podman", "healthy", "gone"]
+    );
+    let registry = loaded.registry_reported().unwrap();
+    let config = crate::settings::Config {
+        source_priority: vec!["healthy".into(), "podman".into(), "gone".into()],
+        settings: BTreeMap::from([
+            ("shared.kept".into(), json!(23)),
+            ("extensions.podman.old".into(), json!(true)),
+        ]),
+        ..Default::default()
+    };
+    let settings = registry.resolve(&config, &BTreeMap::new()).unwrap();
+    assert_eq!(settings.get("shared.kept"), Some(&json!(23)));
+    assert!(!settings.report().disabled_extensions.contains_key("podman"));
+    let inventory = loaded.list(&settings, true);
+    let podman: Vec<_> = inventory
+        .iter()
+        .filter(|e| e.descriptor.id == "podman")
+        .collect();
+    assert_eq!(podman.len(), 1);
+    assert_eq!(podman[0].descriptor.source, "builtin");
+    assert!(podman[0].descriptor.enabled);
+    assert!(
+        podman[0]
+            .report
+            .iter()
+            .any(|r| r.reason.as_deref() == Some("external_builtin_id_conflict"))
+    );
+    assert_eq!(
+        settings
+            .source_order(inventory.iter().map(|e| e.descriptor.id.clone()))
+            .iter()
+            .take(2)
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["healthy", "podman"]
+    );
+    let active = external::installed(&loaded, &settings);
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].manifest.id, "healthy");
+    let cancel = crate::snapshot::Cancellation::default();
+    let context = Context::new(&settings, &cancel);
+    crate::extensions::dispatch(&active[0], &context, Request::Classify(&[])).unwrap();
+    assert!(!marker.exists());
+    assert_eq!(Builtin::Podman.descriptor().id, "podman");
+    assert!(loaded.install(prior).is_err());
+    assert_eq!(before, fs::read(&path).unwrap());
+    State::mutate(&path, |state| {
+        state.toggle("healthy", false, false)?;
+        state.install(manifest("new_sibling"))
+    })
+    .unwrap();
+    State::mutate(&path, |state| state.toggle("new_sibling", false, true)).unwrap();
+    let after = State::load(&path).unwrap();
+    assert_eq!(
+        serde_json::to_value(&after.installed[0]).unwrap(),
+        serde_json::to_value(&state.installed[0]).unwrap()
+    );
+    assert_eq!(after.shared_definitions[0].provider, "podman");
+    assert_eq!(after.shared_definitions[0].default, 17);
+    assert!(after.installed[3].removed);
+    assert!(!marker.exists());
+    let mut corrupt = serde_json::to_value(&state).unwrap();
+    corrupt["installed"][0]["manifest"]["version"] = json!("invalid");
+    fs::write(&path, corrupt.to_string()).unwrap();
+    assert!(State::load(&path).is_err());
+    let mut duplicate = state.clone();
+    duplicate.installed.push(state.installed[0].clone());
+    fs::write(&path, serde_json::to_vec(&duplicate).unwrap()).unwrap();
+    assert!(State::load(&path).is_err());
+    fs::write(&path, serde_json::to_vec(&after).unwrap()).unwrap();
+    State::mutate(&path, |state| state.toggle("podman", false, true)).unwrap();
+    let removed = State::startup(&path).unwrap();
+    assert!(removed.installed[0].removed);
+    assert!(
+        !removed
+            .report
+            .iter()
+            .any(|record| record.provider == "podman" && record.issue())
+    );
+    assert_eq!(removed.shared_definitions[0].provider, "podman");
     dir.close().unwrap();
 }

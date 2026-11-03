@@ -16,11 +16,11 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 const MAX_CONTAINERS: usize = 256;
 const BATCH_SIZE: usize = 32;
-const INSPECT_FORMAT: &str = r#"{"id":{{json .Id}},"name":{{json .Name}},"state":{{json .State.Status}},"started_at":{{json .State.StartedAt}},"workdir":{{json .Config.WorkingDir}},"compose_project":{{json (index .Config.Labels "com.docker.compose.project")}},"compose_workdir":{{json (index .Config.Labels "com.docker.compose.project.working_dir")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"network_mode":{{json .HostConfig.NetworkMode}},"ports":{{json .NetworkSettings.Ports}},"mounts":[{{range $i, $m := .Mounts}}{{if $i}},{{end}}{"kind":{{json $m.Type}},"source":{{json $m.Source}},"destination":{{json $m.Destination}}}{{end}}]}"#;
+pub(super) const INSPECT_FORMAT: &str = r#"{"id":{{json .Id}},"name":{{json .Name}},"state":{{json .State.Status}},"started_at":{{json .State.StartedAt}},"workdir":{{json .Config.WorkingDir}},"compose_project":{{json (index .Config.Labels "com.docker.compose.project")}},"compose_workdir":{{json (index .Config.Labels "com.docker.compose.project.working_dir")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"network_mode":{{json .HostConfig.NetworkMode}},"ports":{{json .NetworkSettings.Ports}},"mounts":[{{range $i, $m := .Mounts}}{{if $i}},{{end}}{"kind":{{json $m.Type}},"source":{{json $m.Source}},"destination":{{json $m.Destination}}}{{end}}]}"#;
 const STATS_FORMAT: &str =
     r#"{"id":{{json .ID}},"cpu":{{json .CPUPerc}},"memory":{{json .MemUsage}}}"#;
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub(super) struct Inspect {
     pub id: String,
@@ -36,7 +36,7 @@ pub(super) struct Inspect {
     pub mounts: Vec<Mount>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct Binding {
     #[serde(rename = "HostIp")]
     host_ip: String,
@@ -379,7 +379,7 @@ fn active(state: Option<&str>) -> bool {
     matches!(state, Some("running" | "paused"))
 }
 
-fn apply(
+pub(super) fn apply(
     container: &mut Container,
     inspect: Inspect,
     now: OffsetDateTime,

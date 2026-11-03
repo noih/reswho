@@ -24,6 +24,20 @@ XPC 訊息格式沒有跨版本穩定承諾，因此目前僅1.6.1走此路徑�
 
 只從 CLI JSON 映射需要的欄位；環境變數、命令參數與其他 labels 不進入輸出。virtiofs 掛載視為本機 bind 路徑，其餘掛載保留來源類型；專案分類沿用下方規則。published port range 有界展開，無法解讀時保留 unknown。實機數據與限制見 [runtime probes](runtime-probes.md)。
 
+## Podman
+
+PATH 有原生 `podman` CLI 時加入內建來源；沒有 CLI 不建立假的空 runtime，已安裝但連線失敗則顯示 unavailable。離線 Extensions 清單仍列出 builtin 與 unknown availability，不探測服務。`--no-containers` 跳過採集，不啟動 machine／service。
+
+每輪透過 CLI 的 narrow info／list／inspect template 重新取得 metadata，不讀取環境變數、命令或全部 labels。遠端選擇遵守 Podman：`CONTAINER_CONNECTION` 優先於 `CONTAINER_HOST`，否則查預設 system connection；後續查詢固定該 connection／URL。Endpoint 僅以 hash 公開，完整原生 ID 與 hostname／storage scope 參與穩定身分，不與 Docker／Apple 合併。
+
+stats 使用 Go template 的原始 `.ContainerID`、`.CPUNano`、`.SystemNano`、`.ContainerStats.MemUsage`、`.PIDs`，不解析預設 JSON 中已格式化的 memory。每輪兩次 `--no-stream`，中間只等待一次有效 `sampling.interval_ms`，CPU 為 CPU 奈秒差／觀測時間奈秒差×100，100% 代表一個 logical core。Podman 的 SystemNano 是 daemon wall clock；不遞增時保持未知，這不是 monotonic counter。memory 保留未扣 cache 的 cgroup usage，basis=`podman_cgroup_usage_bytes`，不可與 Docker cache-adjusted 或主機 RSS 混稱。
+
+完整 inventory 最多256個容器，每次 inspect／stats 最多32個、序列執行，不建立 per-container fanout；來源與其他 runtime 共用10秒 deadline。CLI 使用現有 native lifeline guard、有界8MiB pipes，取消／host 退出時也回收由外掛啟動的 CLI。版本 metadata 必須有效且 server OS 為 Linux 才嘗試 raw counters；欄位／能力不支援或 cgroups 不可用時保留 inventory、用量為 unknown，不改成零。
+
+兩次 counters 後重查 inspect，比對完整 ID、state、有效 StartedAt；重啟、消失、無法重驗、CPU counter 回退、缺欄位、無活躍 PIDs 都不使用舊 CPU 值。stopped／created／exited 沒有用量；Podman initialized 正規化為 created，stopping／unknown 保持未知活動性。Paused 可採集。資料只存在本輪，沒有跨輪 cache。
+
+Compose labels 與 ports／mounts 沿用共同 adapter；macOS 上 Podman machine／remote bind 來源尚無已驗證的 host 路徑映射，因此不以它推論本機專案，即使 CLI 的 server OS 為 Linux 或 socket 為 Unix。Compose working_dir 只保留為宣告 metadata。實測與限制見 [runtime probes](runtime-probes.md)；本輪只驗證 Podman4.9.4 Linux-in-Docker，未宣稱 macOS machine／SSH／rootless 已實測。
+
 ## 分類規則
 
 | 證據 | 分類方式 | 邊界 |

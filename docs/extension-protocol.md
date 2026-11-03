@@ -210,3 +210,10 @@ TUI 用 `e` 開啟獨立 Extensions 頁，Esc 返回原頁（e 不切換頁面�
 每輪重新建立 report，startup read／validate／register 資料與本輪實際能力分開 phase。只用 Instant 量測實際執行，duration_ms 為可含小數的非負數；skipped／never_invoked 為 null，0 不代表未呼叫。失敗嘗試也保留 duration；核心拒絕 contribution 時標記失敗，不能只以 provider return 當成功。Native command details 及 external details 都只沿用真實按需查詢，不為 profiling 多跑一次。collection_ms 是整輪 wall time；startup、共享批次驗證及平行 provider durations 有重疊，不可加總當總耗時。Worker 失敗時 TUI 保留本次 report，舊 snapshot 僅作 stale 資源畫面。
 
 Report 最多2048 records，provider／version 最多64 chars，reason 最多128 chars，使用固定安全 reason code，不回顯 provider Err／stderr／panic payload、原始 manifest 或設定值。只保留本次結果；不寫 logfile、歷史資料或跨輪 resource cache，也不建立 daemon。
+
+
+## External source 成為 builtin
+
+若未來內建來源保留了先前合法 external 的 ID，舊 persisted manifest 仍須通過完整 metadata／設定契約驗證；該 external 本次標記 `external_builtin_id_conflict`，不能執行或覆蓋 builtin。舊登記、安裝序、tombstone、canonical shared definitions 與使用者 config 保留，startup 不自動遷移或刪除。新 install／drop-in 仍拒絕保留 ID。Inventory 僅列唯一 builtin row，附帶指明 external 衝突與其版本的 validation report；正常 builtin profiling 仍是本次實際執行。其他來源可繼續載入、執行與修改；corrupt metadata／duplicate persisted IDs 不屬於可忽略的碰撞。
+
+Podman 的公開 native prototype 已在本地 checkpoint `3a72356` 驗證後移入同一 builtin collector；目前不提供同名可安裝外掛，避免重複來源。實驗與界限見 [runtime probes](runtime-probes.md)。

@@ -188,13 +188,14 @@ fn extensions_list_is_offline_and_distinguishes_enabled_from_availability() {
                 .map(|entry| entry["id"].as_str().unwrap())
                 .collect::<Vec<_>>(),
             [
-                "docker",
-                "apple",
                 "app_bundle",
-                "command",
                 "project",
                 "ancestor",
-                "bin"
+                "bin",
+                "docker",
+                "podman",
+                "apple",
+                "command"
             ]
         );
         assert!(
@@ -205,8 +206,20 @@ fn extensions_list_is_offline_and_distinguishes_enabled_from_availability() {
                     && entry["version"] == env!("CARGO_PKG_VERSION"))
         );
         assert!(entries[0]["enabled"].as_bool().unwrap());
-        assert_eq!(entries[2]["capabilities"][0], "classify");
-        assert_eq!(entries[3]["capabilities"][0], "details");
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry["id"] == "app_bundle")
+                .unwrap()["capabilities"][0],
+            "classify"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry["id"] == "command")
+                .unwrap()["capabilities"][0],
+            "details"
+        );
     }
     let result = Command::new(env!("CARGO_BIN_EXE_reswho"))
         .env("XDG_CONFIG_HOME", dir.path())
@@ -266,7 +279,7 @@ fn lifecycle_commands_are_offline_and_updates_preserve_state_on_failure() {
     }
     let result = run(&["extensions", "--json"]);
     let entries: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
-    assert_eq!(entries.as_array().unwrap().len(), 7);
+    assert_eq!(entries.as_array().unwrap().len(), 8);
     assert_eq!(
         std::fs::read_to_string(&config).unwrap(),
         r#"{"version":1,"settings":{}}"#
@@ -420,5 +433,74 @@ fn dropin_default_root_discovers_without_executing_and_does_not_rewrite_config()
     assert_eq!(before, std::fs::read(state).unwrap());
     assert!(!dir.path().join("reswho/config.json").exists());
     assert!(!marker.exists());
+    dir.close().unwrap();
+}
+
+#[test]
+fn promoted_builtin_keeps_old_registry_usable_without_duplicate_inventory() {
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.json");
+    let state = dir.path().join("extensions.json");
+    let config_bytes=json!({"version":1,"settings":{"sampling.interval_ms":400,"extensions.podman.old":true},"source_priority":["healthy","podman"]}).to_string();
+    std::fs::write(&config, &config_bytes).unwrap();
+    let manifest = |id: &str| json!({"id":id,"version":"1.0.0","engines":{"reswho":"*"},"protocol_version":1,"platforms":["macos"],"capabilities":["classify"],"executable":"/usr/bin/false"});
+    std::fs::write(&state,json!({"version":1,"installed":[{"manifest":manifest("podman"),"enabled":true,"removed":false},{"manifest":manifest("healthy"),"enabled":true,"removed":false}],"shared_definitions":[]}).to_string()).unwrap();
+    let before = std::fs::read(&state).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_reswho"))
+            .arg("--config")
+            .arg(&config)
+            .args(args)
+            .env("PATH", "")
+            .output()
+            .unwrap()
+    };
+    let result = run(&["extensions", "--json"]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let entries: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let entries = entries.as_array().unwrap();
+    let podman: Vec<_> = entries.iter().filter(|e| e["id"] == "podman").collect();
+    assert_eq!(podman.len(), 1);
+    assert_eq!(podman[0]["source"], "builtin");
+    assert_eq!(podman[0]["enabled"], true);
+    assert!(
+        podman[0]["report"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["reason"] == "external_builtin_id_conflict")
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["id"] == "healthy" && e["enabled"] == true)
+    );
+    assert_eq!(before, std::fs::read(&state).unwrap());
+    let settings = run(&["settings", "--json"]);
+    assert!(settings.status.success());
+    let settings: serde_json::Value = serde_json::from_slice(&settings.stdout).unwrap();
+    assert_eq!(settings["settings"]["sampling.interval_ms"]["value"], 400);
+    assert_eq!(settings["source_priority"], json!(["healthy", "podman"]));
+    let reserved = dir.path().join("reserved.json");
+    std::fs::write(&reserved, manifest("podman").to_string()).unwrap();
+    assert!(
+        !run(&["extensions", "install", reserved.to_str().unwrap()])
+            .status
+            .success()
+    );
+    assert_eq!(before, std::fs::read(&state).unwrap());
+    for action in ["disable", "enable", "remove"] {
+        assert!(run(&["extensions", action, "healthy"]).status.success());
+    }
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+    assert_eq!(saved["installed"][0]["manifest"]["id"], "podman");
+    assert_eq!(saved["installed"][0]["enabled"], true);
+    assert_eq!(saved["installed"][1]["removed"], true);
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), config_bytes);
     dir.close().unwrap();
 }

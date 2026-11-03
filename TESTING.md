@@ -128,3 +128,8 @@ rw-38 的 tags fixtures 共用內建／原生外部分類路徑，涵蓋 source 
 rw-38 review repair fixtures 另涵蓋：同 ID 不同 bin roots 與 System／Unclassified 不碰撞；內外建共同 app／project／bin 身分合併、不同 ID 保持分離且保留 checkout metadata；native symlink alias 正規化後仍檢查敏感設定，selected JSON／MD 不洩漏；內建 app／project／bin／ancestor 顯示名稱以 UTF-8 邊界限制128 bytes，長 Unicode 路徑保留真實身分且不排除健康 sibling。外部超長 label 仍拒絕整份來源。這些修正沿用既有 runner，未重跑未受影響 PTY 或 guard／live／stress。
 
 UI12 focused TUI fixtures 直接走 production key handlers，覆蓋主樹分支／leaf、父程序 d、Left 返回 selection／TableState offset／path scroll、resource 無程序查詢、Extensions 兩層返回保留／放棄 priority draft，以及 Settings choices／文字輸入與搜尋的路由優先序。既有 `RESWHO_UI_EVIDENCE` hook 輸出實際 TestBackend frames；執行前先建立指定 evidence 目錄，部分既有 fixtures 只負責寫檔。PTY journey 改用 Right／Left 的預期按鍵，沒有增加 provider 執行。
+
+
+Podman fixtures 使用合成窄 inspect／raw counters，覆蓋完整 ID、Compose／ports／mounts、遠端 bind 不作本機歸屬、inactive／unknown、paired CPU 單位與 reset／partial、版本／能力失敗、missing CLI、deadline 保留 inventory，以及設定等待。Native nested fixture 只編譯自有 C CLI，驗證 outer host death／deadline、inner timeout／cancel 後 guard／provider／CLI／descendants 都退出；不連任何 runtime。Podman external-first 的 production install＋真實 Linux-in-Docker、離線 request→400ms→兩次 stats timing 與 builtin 真實資料證據，集中於 `docs/runtime-probes.md`，一般測試不得重建實機 fixture。
+
+新增 builtin ID 與既有 persisted external 碰撞時，state／discovery／CLI fixtures 驗證只阻擋外部來源、單一 builtin inventory、健康 sibling 可執行、原 metadata／order／tombstone／canonical definitions／config／priority 保留、startup bytes 不變、其他來源仍可 mutation，以及新 install／drop-in 拒絕與 corruption／duplicate IDs fail closed。這些都是 isolated temp roots／native markers，不修改使用者設定或服務。

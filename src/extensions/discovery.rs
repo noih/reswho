@@ -59,7 +59,9 @@ impl State {
     fn discover(&mut self, root: &Path) {
         let started = Instant::now();
         for entry in &mut self.installed {
-            if matches!(entry.origin, Origin::DropIn { .. }) {
+            if entry.manifest.builtin_id() {
+                entry.problem = (!entry.removed).then(|| "external_builtin_id_conflict".into());
+            } else if matches!(entry.origin, Origin::DropIn { .. }) {
                 entry.problem = Some("package_missing_or_invalid".into());
             }
         }
@@ -290,10 +292,13 @@ impl State {
                 } else {
                     "failed"
                 },
-                entry
-                    .problem
-                    .as_deref()
-                    .map(|_| "incompatible_or_invalid_entrypoint"),
+                entry.problem.as_deref().map(|reason| {
+                    if reason == "external_builtin_id_conflict" {
+                        "external_builtin_id_conflict"
+                    } else {
+                        "incompatible_or_invalid_entrypoint"
+                    }
+                }),
                 Some(started),
             ));
             let started = Instant::now();

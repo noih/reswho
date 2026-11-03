@@ -135,6 +135,7 @@ pub fn capture_reported(
                         .capabilities
                         .contains(&crate::extensions::Capability::Collect)
                     && (!matches!(provider, Builtin::Apple) || containers::apple_available())
+                    && (!matches!(provider, Builtin::Podman) || containers::podman_available())
             })
             .map(|provider| provider as &dyn crate::extensions::Extension)
             .collect();

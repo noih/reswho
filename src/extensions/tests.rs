@@ -9,17 +9,22 @@ fn builtin_list_is_deterministic_and_does_not_probe_sources() {
             .map(|entry| entry.id.as_str())
             .collect::<Vec<_>>(),
         [
-            "docker",
-            "apple",
             "app_bundle",
-            "command",
             "project",
             "ancestor",
-            "bin"
+            "bin",
+            "docker",
+            "podman",
+            "apple",
+            "command"
         ]
     );
     assert!(list.iter().all(|entry| entry.availability == "unknown"));
-    assert!(!list[0].enabled && !list[1].enabled);
+    assert!(
+        list.iter()
+            .filter(|entry| entry.capabilities.contains(&Capability::Collect))
+            .all(|entry| !entry.enabled)
+    );
     assert!(settings.report().disabled_extensions.is_empty());
 }
 

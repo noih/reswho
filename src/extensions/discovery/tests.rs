@@ -228,3 +228,60 @@ fn concurrent_saved_disable_and_remove_override_stale_discovery() {
         dir.close().unwrap();
     }
 }
+
+#[test]
+fn newly_reserved_dropin_cannot_clear_persisted_collision() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("extensions.json");
+    package(dir.path(), "former", "1.0.0");
+    package(dir.path(), "healthy", "1.0.0");
+    State::startup(&path).unwrap();
+    fs::rename(
+        dir.path().join("extensions/former"),
+        dir.path().join("extensions/podman"),
+    )
+    .unwrap();
+    let manifest = dir.path().join("extensions/podman/manifest.json");
+    let mut package: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    package["id"] = json!("podman");
+    fs::write(&manifest, package.to_string()).unwrap();
+    let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    saved["installed"][0]["manifest"]["id"] = json!("podman");
+    saved["installed"][0]["manifest"]["executable"] =
+        json!(dir.path().join("extensions/podman/provider"));
+    saved["installed"][0]["manifest"]["definitions"][0]["provider"] = json!("podman");
+    saved["installed"][0]["origin"]["manifest"] = json!(manifest);
+    saved["shared_definitions"][0]["provider"] = json!("podman");
+    fs::write(&path, saved.to_string()).unwrap();
+    let before = fs::read(&path).unwrap();
+    for package_present in [true, false, true] {
+        if package_present {
+            fs::write(&manifest, package.to_string()).unwrap();
+        } else {
+            fs::remove_file(&manifest).unwrap();
+        }
+        let mut state = State::startup(&path).unwrap();
+        assert_eq!(
+            state.installed[0].problem.as_deref(),
+            Some("external_builtin_id_conflict")
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let settings = state
+            .registry_reported()
+            .unwrap()
+            .resolve(&Config::default(), &BTreeMap::new())
+            .unwrap();
+        let active = super::super::external::installed(&state, &settings);
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].manifest.id, "healthy");
+        assert_eq!(
+            state
+                .list(&settings, true)
+                .iter()
+                .filter(|e| e.descriptor.id == "podman")
+                .count(),
+            1
+        );
+    }
+    dir.close().unwrap();
+}
