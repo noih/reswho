@@ -242,7 +242,7 @@ fn details_replace_the_list_with_a_single_page() {
     assert!(!text.contains("Grouped under:"));
     assert!(text.contains("Applications → Demo"));
     assert_eq!(text.matches("pid:11").count(), 1);
-    assert_eq!(text.matches("q quit").count(), 1);
+    assert_eq!(text.matches("q quit").count(), 0);
     assert!(text.contains("Esc back"));
 }
 
@@ -1376,7 +1376,7 @@ fn extension_page_preserves_navigation_never_requests_collection_and_keeps_faile
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(text.contains("Extensions - current status"));
+    assert!(text.contains("Extensions") && text.contains("System diagnostics"));
     assert!(text.contains("invalid_manifest"));
     assert_eq!(table.offset(), offset);
     handle_key(&mut app, KeyEvent::from(KeyCode::Char('j')));
@@ -1391,4 +1391,804 @@ fn extension_page_preserves_navigation_never_requests_collection_and_keeps_faile
         app.extensions[0].reason.as_deref(),
         Some("invalid_manifest")
     );
+}
+
+#[test]
+fn settings_popup_routes_drafts_masks_values_and_restores_focus() {
+    let key = KeyEvent::from;
+    use crate::settings::{Config, Registry, edit::Settings};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    let owner = tempfile::tempdir().unwrap();
+    let path = owner.path().canonicalize().unwrap().join("config.json");
+    let mut registry = Registry::core();
+    let definitions = [
+        json!({"key":"extensions.fixture.flag","type":"boolean","default":false,"description":"A flag","provider":"fixture","version":"1","sensitive":false}),
+        json!({"key":"extensions.fixture.number","type":"number","options":[-1.25,2.5],"default":-1.25,"description":"A choice","provider":"fixture","version":"1","sensitive":false}),
+        json!({"key":"extensions.fixture.secret","type":"string","options":["secret-option","another-secret"],"default":"secret-option","description":"Sensitive choice","provider":"fixture","version":"1","sensitive":true}),
+        json!({"key":"extensions.fixture.text","type":"string","default":"initial","description":format!("{}Description end", "Long description ".repeat(50)),"provider":"fixture","version":"1","sensitive":false}),
+    ].into_iter().map(|value| serde_json::from_value(value).unwrap()).collect();
+    registry
+        .register_extension("fixture", definitions, vec![])
+        .unwrap();
+    let baseline: Config = serde_json::from_value(
+        json!({"version":1,"settings":{"extensions.fixture.flag":"invalid"}}),
+    )
+    .unwrap();
+    std::fs::write(&path, serde_json::to_vec(&baseline).unwrap()).unwrap();
+    assert!(
+        registry
+            .resolve(&baseline, &BTreeMap::new())
+            .unwrap()
+            .get("extensions.fixture.flag")
+            .is_none()
+    );
+    let context = Settings::new(
+        registry,
+        baseline,
+        BTreeMap::from([("refresh.interval_ms".into(), json!(60000))]),
+        Some(path.clone()),
+    );
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(snapshot()));
+    app.selected = 2;
+    app.paused = true;
+    app.settings = Some(settings::Popup::new(context));
+    let mut table = TableState::default().with_offset(1);
+    let selected = app.selected;
+    let offset = table.offset();
+    assert!(!handle_key(&mut app, key(KeyCode::Char('s'))));
+    handle_key(&mut app, key(KeyCode::Char(' ')));
+    handle_key(&mut app, key(KeyCode::Down));
+    handle_key(&mut app, key(KeyCode::Down));
+    handle_key(&mut app, key(KeyCode::Enter));
+    handle_key(&mut app, key(KeyCode::Down));
+    handle_key(&mut app, key(KeyCode::Enter));
+    handle_key(&mut app, key(KeyCode::Down));
+    handle_key(&mut app, key(KeyCode::Enter));
+    for (width, height) in [(100, 30), (36, 10), (20, 6)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, &app, &mut table))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(!text.contains("secret-option") && !text.contains("another-secret"));
+        assert!(text.contains("Settings"));
+    }
+    handle_key(&mut app, key(KeyCode::Down));
+    handle_key(&mut app, key(KeyCode::PageDown));
+    let mut pages = String::new();
+    for _ in 0..8 {
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, &app, &mut table))
+            .unwrap();
+        pages.extend(
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol()),
+        );
+        handle_key(&mut app, key(KeyCode::PageDown));
+    }
+    assert!(pages.contains("Description end"));
+    handle_key(&mut app, key(KeyCode::End));
+    handle_key(&mut app, key(KeyCode::Enter));
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+    );
+    for ch in "qs text".chars() {
+        assert!(!handle_key(&mut app, key(KeyCode::Char(ch))));
+    }
+    handle_key(&mut app, key(KeyCode::Enter));
+    let popup = app.settings.as_ref().unwrap();
+    assert_eq!(
+        popup.changes["extensions.fixture.text"],
+        Some(json!("qs text"))
+    );
+    assert_eq!(popup.changes["extensions.fixture.flag"], Some(json!(true)));
+    assert_eq!(popup.changes["extensions.fixture.number"], Some(json!(2.5)));
+    handle_key(&mut app, key(KeyCode::Esc));
+    assert!(app.settings.as_ref().unwrap().changes.is_empty());
+    assert_eq!(app.selected, selected);
+    assert_eq!(table.offset(), offset);
+    assert!(app.paused);
+    assert_eq!(
+        Config::load(Some(&path)).unwrap().settings["extensions.fixture.flag"],
+        json!("invalid")
+    );
+    handle_key(&mut app, key(KeyCode::Char('s')));
+    handle_key(&mut app, key(KeyCode::Home));
+    handle_key(&mut app, key(KeyCode::Enter));
+    assert!(app.settings.as_ref().unwrap().changes.is_empty());
+    handle_key(&mut app, key(KeyCode::Down));
+    handle_key(&mut app, key(KeyCode::Enter));
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+    );
+    handle_key(&mut app, key(KeyCode::Char('1')));
+    handle_key(&mut app, key(KeyCode::Enter));
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    );
+    assert!(app.settings.as_ref().unwrap().open);
+    assert!(app.settings.as_ref().unwrap().applied.is_none());
+    owner.close().unwrap();
+}
+
+#[test]
+fn compact_settings_keeps_primary_controls_input_and_scrollable_info_visible() {
+    use crate::settings::{Config, Registry, edit::Settings};
+    use std::collections::BTreeMap;
+    let mut app = App::new("group:all".into(), 2);
+    app.settings = Some(settings::Popup::new(Settings::new(
+        Registry::core(),
+        Config::default(),
+        BTreeMap::new(),
+        None,
+    )));
+    handle_key(&mut app, KeyCode::Char('s').into());
+    handle_key(&mut app, KeyCode::End.into());
+    let render = |app: &App| {
+        let mut terminal = Terminal::new(TestBackend::new(36, 10)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, app, &mut TableState::default()))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    let initial = render(&app);
+    for label in [
+        "Ctrl-S Save",
+        "Ctrl-R Reset",
+        "Esc discard",
+        "Sampling interva",
+        "Time between",
+        "[250] ms",
+    ] {
+        assert!(initial.contains(label), "missing {label}: {initial}");
+    }
+    handle_key(&mut app, KeyCode::PageDown.into());
+    let mut pages = String::new();
+    for _ in 0..8 {
+        pages.push_str(&render(&app));
+        handle_key(&mut app, KeyCode::PageDown.into());
+    }
+    for label in [
+        "Key:",
+        "Default: 250",
+        "Constraints:",
+        "max=5000",
+        "Value: 250",
+    ] {
+        assert!(pages.contains(label), "missing {label}: {pages}");
+    }
+    for _ in 0..8 {
+        handle_key(&mut app, KeyCode::PageUp.into());
+    }
+    assert!(render(&app).contains("Time between"));
+    handle_key(&mut app, KeyCode::Enter.into());
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+    );
+    handle_key(&mut app, KeyCode::Char('1').into());
+    handle_key(&mut app, KeyCode::Enter.into());
+    let invalid = render(&app);
+    for label in [
+        "[1_]",
+        "Invalid value",
+        "Ctrl-S Save",
+        "Ctrl-U Clear",
+        "Esc Undo field",
+    ] {
+        assert!(invalid.contains(label), "missing {label}: {invalid}");
+    }
+}
+
+#[test]
+fn settings_panel_is_centered_and_content_sized() {
+    use crate::settings::{Config, Registry, edit::Settings};
+    let mut app = app();
+    app.settings = Some(settings::Popup::new(Settings::new(
+        Registry::core(),
+        Config::default(),
+        Default::default(),
+        None,
+    )));
+    handle_key(&mut app, KeyCode::Char('s').into());
+    let mut terminal = Terminal::new(TestBackend::new(160, 45)).unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let rows: Vec<String> = (0..45)
+        .map(|y| (0..160).map(|x| buffer[(x, y)].symbol()).collect())
+        .collect();
+    let title = rows
+        .iter()
+        .position(|row| row.contains("Settings"))
+        .unwrap();
+    assert!(title > 5, "panel should be vertically centered");
+    assert!(rows[title].find('┌').unwrap() >= 40);
+    assert!(rows.iter().any(|row| row.contains("Refresh interval")));
+    assert!(!rows.join("\n").contains("18446744073709551615"));
+}
+
+#[test]
+fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed() {
+    use crate::settings::{Config, Registry, edit::Settings};
+    let mut app = app();
+    app.settings = Some(settings::Popup::new(Settings::new(
+        Registry::core(),
+        Config::default(),
+        Default::default(),
+        None,
+    )));
+    let resolved = crate::extensions::default_settings().unwrap();
+    let registry = crate::extensions::state::State::default();
+    app.inventory = registry.list(&resolved, true);
+    app.extensions = vec![crate::extensions::report::Record::new(
+        "broken",
+        None,
+        "read",
+        "failed",
+        Some("invalid_manifest"),
+        None,
+    )];
+    let dump = |app: &App, width, height, name: &str| {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, app, &mut TableState::default()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let text = (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(path) = std::env::var_os("RESWHO_UI_EVIDENCE") {
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(
+                std::path::Path::new(&path).join(format!("{name}-{width}x{height}.txt")),
+                &text,
+            )
+            .unwrap();
+        }
+        text
+    };
+    for (width, height) in [(100, 30), (36, 10)] {
+        let text = dump(&app, width, height, "main");
+        for hint in ["? Help", "q Quit", "r refresh"] {
+            assert!(text.contains(hint), "missing {hint}: {text}");
+        }
+        assert!(!text.contains("j/k move"));
+        if width == 100 {
+            for hint in ["Enter Toggle", "/ Search", "s Settings", "e Extensions"] {
+                assert!(text.contains(hint), "missing {hint}: {text}");
+            }
+        }
+    }
+    select(&mut app, "pid:11");
+    app.open_details();
+    for (width, height) in [(100, 30), (36, 10)] {
+        let text = dump(&app, width, height, "process-details");
+        assert!(text.contains("Esc back") && text.contains("p pause"));
+        assert!(!text.contains("j/k") && !text.contains("scroll"));
+    }
+    handle_key(&mut app, KeyCode::Esc.into());
+    handle_key(&mut app, KeyCode::Char('s').into());
+    for (width, height) in [(160, 45), (100, 30), (36, 10)] {
+        let text = dump(&app, width, height, "settings");
+        assert!(text.contains("[Save]") && text.contains("[Cancel]"));
+        assert!(
+            text.contains("Ctrl-S Save")
+                && text.contains("Ctrl-R Reset")
+                && text.contains("Esc discard")
+        );
+        assert!(!text.contains("Move"));
+        if width >= 100 {
+            assert_eq!(text.matches("General").count(), 1);
+        }
+    }
+    let first = dump(&app, 100, 30, "settings-first");
+    handle_key(&mut app, KeyCode::Down.into());
+    let second = dump(&app, 100, 30, "settings-second");
+    let row = |text: &str, label: &str| text.lines().position(|line| line.contains(label)).unwrap();
+    for label in ["Refresh interval", "Sampling interval"] {
+        assert_eq!(row(&first, label), row(&second, label));
+    }
+    for (text, description) in [
+        (&first, "Wait between completed collections."),
+        (&second, "Time between resource samples."),
+    ] {
+        assert!(row(text, "Sampling interval") < row(text, description));
+        assert!(row(text, "[Save]") < row(text, description));
+        assert_eq!(row(text, description) + 1, row(text, "Enter Edit"));
+        assert_eq!(text.matches(description).count(), 1);
+    }
+    dump(&app, 36, 10, "settings-second");
+    handle_key(&mut app, KeyCode::Home.into());
+    handle_key(&mut app, KeyCode::Enter.into());
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+    );
+    handle_key(&mut app, KeyCode::Char('0').into());
+    for (width, height) in [(100, 30), (36, 10)] {
+        let text = dump(&app, width, height, "settings-edit");
+        assert!(
+            text.contains("[0_]")
+                && text.contains("Enter Accept")
+                && text.contains("Esc Undo field")
+        );
+        assert!(
+            !text.contains("Edit:") && !text.contains("Default:") && !text.contains("Constraints:")
+        );
+        if width == 100 {
+            assert_eq!(
+                row(&first, "Refresh interval"),
+                row(&text, "Refresh interval")
+            );
+        }
+    }
+    handle_key(&mut app, KeyCode::Enter.into());
+    assert!(dump(&app, 100, 30, "settings-invalid").contains("Invalid value"));
+    assert!(dump(&app, 36, 10, "settings-invalid").contains("Invalid value"));
+    handle_key(&mut app, KeyCode::Esc.into());
+    assert!(app.settings.as_ref().unwrap().open);
+    handle_key(&mut app, KeyCode::Esc.into());
+    handle_key(&mut app, KeyCode::Char('s').into());
+    handle_key(&mut app, KeyCode::Tab.into());
+    handle_key(&mut app, KeyCode::Enter.into());
+    assert!(!app.settings.as_ref().unwrap().open);
+    handle_key(&mut app, KeyCode::Char('s').into());
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+    );
+    handle_key(&mut app, KeyCode::Enter.into());
+    assert!(!app.settings.as_ref().unwrap().open);
+    handle_key(&mut app, KeyCode::Char('e').into());
+    handle_key(&mut app, KeyCode::Char('j').into());
+    let selected = app.extension_selected.clone();
+    app.inventory.reverse();
+    app.update(Ok(snapshot()));
+    assert_eq!(app.extension_selected, selected);
+    app.extensions = vec![crate::extensions::report::Record::new(
+        "broken",
+        None,
+        "read",
+        "failed",
+        Some("invalid_manifest"),
+        None,
+    )];
+    for (id, phase, result, duration) in [
+        ("docker", "collect", "success", 561.0),
+        ("app_bundle", "classify", "success", 1.2),
+        ("command", "details", "failed", 8.4),
+    ] {
+        let mut record = crate::extensions::report::Record::new(
+            id,
+            Some("0.1.0"),
+            phase,
+            result,
+            if result == "failed" {
+                Some("invalid_data")
+            } else {
+                None
+            },
+            None,
+        );
+        record.duration_ms = Some(duration);
+        app.extensions.push(record);
+    }
+    for (width, height) in [(160, 45), (100, 30), (36, 10)] {
+        let text = dump(&app, width, height, "extensions");
+        assert!(text.contains("System diagnostics") && text.contains("invalid_manifest"));
+        assert!(text.contains("Name") && text.contains("State"));
+        assert!(
+            !text.contains("s Settings")
+                && !text.contains("q Quit")
+                && !text.contains("Enter for details")
+        );
+        assert!(!text.contains("Move") && !text.contains("j/k"));
+        for hint in ["Enter Details", "Esc Back"] {
+            assert!(text.contains(hint), "missing {hint}: {text}");
+        }
+        if width >= 100 {
+            assert!(
+                text.lines()
+                    .any(|line| line.contains("Enter Details") && line.contains("Esc Back"))
+            );
+        }
+        if width >= 100 {
+            for column in ["Version", "Collect", "Classify", "Details"] {
+                assert!(text.contains(column));
+            }
+        }
+    }
+    app.extension_selected = Some("command".into());
+    handle_key(&mut app, KeyCode::Enter.into());
+    let text = dump(&app, 100, 30, "extension-details");
+    assert!(text.contains("Availability: unknown") && text.contains("No invocation timing"));
+    for (width, height) in [(100, 30), (36, 10)] {
+        let text = dump(&app, width, height, "extension-details");
+        assert!(!text.contains("Scroll") && !text.contains("j/k"));
+        assert_eq!(text.matches("Esc Back").count(), 1, "{text}");
+        assert!(text.contains("Process command"));
+    }
+    handle_key(&mut app, KeyCode::Esc.into());
+    app.inventory[0].explicit_enabled = false;
+    assert!(dump(&app, 100, 30, "extensions-disabled").contains("Disabled"));
+}
+
+#[test]
+fn invalid_setting_input_keeps_draft_while_controls_remain_reachable() {
+    use crate::settings::{Config, Registry, edit::Settings};
+    let mut app = app();
+    app.settings = Some(settings::Popup::new(Settings::new(
+        Registry::core(),
+        Config::default(),
+        Default::default(),
+        None,
+    )));
+    let send = |app: &mut App, code| {
+        handle_key(app, KeyEvent::from(code));
+    };
+    send(&mut app, KeyCode::Char('s'));
+    send(&mut app, KeyCode::Enter);
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+    );
+    send(&mut app, KeyCode::Char('0'));
+    send(&mut app, KeyCode::Enter);
+    send(&mut app, KeyCode::BackTab);
+    send(&mut app, KeyCode::Enter);
+    assert!(app.settings.as_ref().unwrap().open);
+    assert!(app.settings.as_ref().unwrap().applied.is_none());
+    send(&mut app, KeyCode::Tab);
+    send(&mut app, KeyCode::Char(' '));
+    let mut terminal = Terminal::new(TestBackend::new(36, 10)).unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("[0 _]"), "{text}");
+    send(&mut app, KeyCode::BackTab);
+    send(&mut app, KeyCode::BackTab);
+    send(&mut app, KeyCode::Enter);
+    assert!(!app.settings.as_ref().unwrap().open);
+    assert!(app.settings.as_ref().unwrap().changes.is_empty());
+    send(&mut app, KeyCode::Char('s'));
+    send(&mut app, KeyCode::Enter);
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+    );
+    send(&mut app, KeyCode::Char('0'));
+    send(&mut app, KeyCode::Tab);
+    send(&mut app, KeyCode::Enter);
+    assert!(!app.settings.as_ref().unwrap().open);
+    assert!(app.settings.as_ref().unwrap().applied.is_none());
+}
+
+#[test]
+fn compact_explicit_info_exposes_current_long_label_boolean_and_masks_sensitive_value() {
+    use crate::settings::{Config, Registry, edit::Settings};
+    use serde_json::json;
+    for sensitive in [false, true] {
+        let mut registry = Registry::core();
+        let key = "extensions.fixture.a_very_long_boolean_setting_label";
+        registry.register_extension("fixture",vec![serde_json::from_value(json!({"key":key,"type":"boolean","default":false,"description":"Fixture checkbox","provider":"fixture","version":"1","sensitive":sensitive})).unwrap()],vec![]).unwrap();
+        let baseline: Config =
+            serde_json::from_value(json!({"version":1,"settings":{key:true}})).unwrap();
+        let mut app = app();
+        app.settings = Some(settings::Popup::new(Settings::new(
+            registry,
+            baseline,
+            Default::default(),
+            None,
+        )));
+        handle_key(&mut app, KeyCode::Char('s').into());
+        handle_key(&mut app, KeyCode::End.into());
+        let mut initial = Terminal::new(TestBackend::new(36, 10)).unwrap();
+        initial
+            .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+            .unwrap();
+        handle_key(&mut app, KeyCode::PageDown.into());
+        handle_key(&mut app, KeyCode::PageUp.into());
+        let mut pages = String::new();
+        for _ in 0..10 {
+            let mut terminal = Terminal::new(TestBackend::new(36, 10)).unwrap();
+            terminal
+                .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let text = (0..10)
+                .map(|y| (0..36).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.contains("Value:")
+                && let Some(path) = std::env::var_os("RESWHO_UI_EVIDENCE")
+            {
+                std::fs::write(
+                    std::path::Path::new(&path)
+                        .join(format!("settings-longboolean-{sensitive}-36x10.txt")),
+                    &text,
+                )
+                .unwrap();
+            }
+            pages.push_str(&text);
+            handle_key(&mut app, KeyCode::PageDown.into());
+        }
+        assert!(pages.contains("Key:"));
+        if sensitive {
+            assert!(
+                pages.contains("Default: [masked]") && pages.contains("Value: [masked]"),
+                "{pages}"
+            );
+            assert!(!pages.contains("Value: [x]") && !pages.contains("Default: [ ]"));
+        } else {
+            assert!(
+                pages.contains("Default: [ ]") && pages.contains("Value: [x]"),
+                "{pages}"
+            );
+        }
+    }
+}
+
+#[test]
+fn modal_keys_stay_local_and_search_keeps_text() {
+    use crate::settings::{Config, Registry, edit::Settings};
+    let mut app = app();
+    app.settings = Some(settings::Popup::new(Settings::new(
+        Registry::core(),
+        Config::default(),
+        Default::default(),
+        None,
+    )));
+    app.inventory = crate::extensions::state::State::default()
+        .list(&crate::extensions::default_settings().unwrap(), true);
+    select(&mut app, "pid:11");
+    let selected = app.selected;
+    app.paused = true;
+    for modal in ['e', 'd', '?'] {
+        handle_key(&mut app, KeyCode::Char(modal).into());
+        for details in [false, true] {
+            if modal == 'e' && details {
+                handle_key(&mut app, KeyCode::Enter.into());
+                assert!(app.extension_details);
+            }
+            for ch in ['s', 'e', 'q'] {
+                assert!(!handle_key(&mut app, KeyCode::Char(ch).into()));
+                assert!(!app.settings.as_ref().unwrap().open);
+            }
+            if modal == 'e' && details {
+                handle_key(&mut app, KeyCode::Esc.into());
+                assert!(app.extensions_page && !app.extension_details);
+            }
+        }
+        handle_key(&mut app, KeyCode::Esc.into());
+        assert!(!app.extensions_page && app.details.is_none() && !app.help);
+        assert_eq!(app.selected, selected);
+        assert!(app.paused && app.manual_refresh.is_none() && !app.collecting);
+    }
+    handle_key(&mut app, KeyCode::Char('/').into());
+    for ch in "seq".chars() {
+        assert!(!handle_key(&mut app, KeyCode::Char(ch).into()));
+    }
+    assert_eq!(app.query, "seq");
+    handle_key(&mut app, KeyCode::Esc.into());
+    assert!(handle_key(&mut app, KeyCode::Char('q').into()));
+    app.help = true;
+    assert!(handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+    ));
+}
+
+#[test]
+fn settings_escape_discards_only_active_field_before_popup() {
+    use crate::settings::{Config, Registry, edit::Settings};
+    use serde_json::json;
+    let mut app = app();
+    app.settings = Some(settings::Popup::new(Settings::new(
+        Registry::core(),
+        Config::default(),
+        Default::default(),
+        None,
+    )));
+    for code in [KeyCode::Char('s'), KeyCode::Enter] {
+        handle_key(&mut app, code.into());
+    }
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+    );
+    for ch in "3000".chars() {
+        handle_key(&mut app, KeyCode::Char(ch).into());
+    }
+    handle_key(&mut app, KeyCode::Enter.into());
+    handle_key(&mut app, KeyCode::Down.into());
+    handle_key(&mut app, KeyCode::Enter.into());
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+    );
+    handle_key(&mut app, KeyCode::Char('0').into());
+    handle_key(&mut app, KeyCode::Enter.into());
+    handle_key(&mut app, KeyCode::Esc.into());
+    let popup = app.settings.as_ref().unwrap();
+    assert!(popup.open);
+    assert_eq!(popup.changes.len(), 1);
+    assert_eq!(popup.changes["refresh.interval_ms"], Some(json!(3000)));
+    handle_key(&mut app, KeyCode::Esc.into());
+    assert!(!app.settings.as_ref().unwrap().open);
+    assert!(app.settings.as_ref().unwrap().changes.is_empty());
+}
+
+#[test]
+fn inline_input_keeps_unicode_tail_cursor_visible_and_masks_secrets() {
+    use crate::settings::{Config, Registry, edit::Settings};
+    use serde_json::json;
+    for sensitive in [false, true] {
+        let mut registry = Registry::core();
+        registry
+            .register_extension(
+                "fixture",
+                vec![serde_json::from_value(json!({
+            "key":"extensions.fixture.long_text", "type":"string", "default":"initial",
+            "description":"Text", "provider":"fixture", "version":"1", "sensitive":sensitive
+        })).unwrap()],
+                vec![],
+            )
+            .unwrap();
+        let mut app = app();
+        app.settings = Some(settings::Popup::new(Settings::new(
+            registry,
+            Config::default(),
+            Default::default(),
+            None,
+        )));
+        for code in [KeyCode::Char('s'), KeyCode::End, KeyCode::Enter] {
+            handle_key(&mut app, code.into());
+        }
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        );
+        for ch in "專案內容很長很長很長尾端".chars() {
+            handle_key(&mut app, KeyCode::Char(ch).into());
+        }
+        for (width, height) in [(100, 30), (36, 10)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+                .unwrap();
+            let cursor = terminal.get_cursor_position().unwrap();
+            assert!(cursor.x < width - 2 && cursor.y < height - 1);
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer[cursor].symbol(), "_");
+            let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+            let visible = text.replace(' ', "");
+            if sensitive {
+                assert!(!visible.contains("尾端") && visible.contains("***_"));
+            } else {
+                assert!(visible.contains("尾端_]"), "{text}");
+            }
+        }
+    }
+}
+
+#[test]
+fn narrow_inline_input_reserves_tail_before_long_or_unicode_units() {
+    use crate::settings::{Config, Registry, edit::Settings};
+    use serde_json::json;
+    for (name, unit) in [
+        ("core", "ms"),
+        ("normal", "ms"),
+        ("long", "milliseconds"),
+        ("unicode", "秒鐘"),
+        ("long-unicode", "毫秒刻度 milliseconds"),
+    ] {
+        for sensitive in [false, true] {
+            if name == "core" && sensitive {
+                continue;
+            }
+            let mut registry = Registry::core();
+            if name != "core" {
+                registry
+                    .register_extension(
+                        "fixture",
+                        vec![
+                            serde_json::from_value(json!({
+                                "key":"extensions.fixture.interval", "type":"number", "default":250,
+                                "unit":unit, "description":"Fixture interval", "provider":"fixture",
+                                "version":"1", "sensitive":sensitive
+                            }))
+                            .unwrap(),
+                        ],
+                        vec![],
+                    )
+                    .unwrap();
+            }
+            let mut app = app();
+            app.settings = Some(settings::Popup::new(Settings::new(
+                registry,
+                Config::default(),
+                Default::default(),
+                None,
+            )));
+            for code in [KeyCode::Char('s'), KeyCode::End, KeyCode::Enter] {
+                handle_key(&mut app, code.into());
+            }
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            );
+            for ch in "6789".chars() {
+                handle_key(&mut app, KeyCode::Char(ch).into());
+            }
+            let mut terminal = Terminal::new(TestBackend::new(37, 10)).unwrap();
+            terminal
+                .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+                .unwrap();
+            let cursor = terminal.get_cursor_position().unwrap();
+            let buffer = terminal.backend().buffer();
+            let text = (0..10)
+                .map(|y| (0..37).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(cursor.x < 35 && cursor.y < 9);
+            assert_eq!(buffer[cursor].symbol(), "_");
+            if sensitive {
+                assert!(text.contains("[****_]"), "{name}: {text}");
+                assert!(!text.contains("6789"));
+            } else {
+                assert!(text.contains("[6789_]"), "{name}: {text}");
+            }
+            if name == "normal" || name == "core" {
+                assert!(text.contains(" ms"), "{text}");
+            }
+            if name == "unicode" {
+                assert!(text.replace(' ', "").contains("秒鐘"), "{text}");
+            }
+            if let Some(path) = std::env::var_os("RESWHO_UI_EVIDENCE") {
+                std::fs::create_dir_all(&path).unwrap();
+                std::fs::write(
+                    std::path::Path::new(&path)
+                        .join(format!("settings-unit-{name}-masked-{sensitive}-37x10.txt")),
+                    &text,
+                )
+                .unwrap();
+            }
+        }
+    }
 }

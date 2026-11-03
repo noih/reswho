@@ -188,41 +188,48 @@ fn selected_issue(app: &App) -> Option<&str> {
         })
 }
 
+pub(super) fn panel(area: Rect, width: u16, height: u16) -> Rect {
+    let width = area.width.min(width);
+    let height = area.height.min(height);
+    Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    )
+}
+
 pub(super) fn draw(frame: &mut Frame, app: &App, table: &mut TableState) {
+    let overlay = app.extensions_page || app.settings.as_ref().is_some_and(|popup| popup.open);
+    if overlay {
+        draw_base(frame, app, &mut table.clone());
+        let area = frame.area();
+        frame.buffer_mut().set_style(
+            area,
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
+        );
+    } else {
+        draw_base(frame, app, table);
+    }
+    if app.extensions_page {
+        super::extensions::draw(frame, app);
+    }
+    if let Some(popup) = &app.settings
+        && popup.open
+    {
+        popup.draw(frame);
+    }
+}
+
+fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
     let area = frame.area();
     if area.width < 36 || area.height < 10 {
         frame.render_widget(
             Paragraph::new("reswho: enlarge terminal (36x10 minimum). q quits.")
                 .wrap(Wrap { trim: false }),
             area,
-        );
-        return;
-    }
-    if app.extensions_page {
-        let [title, body, footer] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
-        frame.render_widget(
-            Paragraph::new("Extensions - current status / duration ms"),
-            title,
-        );
-        let lines: Vec<Line> = app
-            .extensions
-            .iter()
-            .map(|record| Line::raw(safe(&record.line())))
-            .collect();
-        frame.render_widget(
-            Paragraph::new(lines)
-                .wrap(Wrap { trim: false })
-                .scroll((app.extensions_scroll, 0)),
-            body,
-        );
-        frame.render_widget(
-            Paragraph::new("j/k scroll  Esc back  e back  q quit"),
-            footer,
         );
         return;
     }
@@ -457,7 +464,20 @@ pub(super) fn draw(frame: &mut Frame, app: &App, table: &mut TableState) {
     } else {
         format!("{}  ", app.refresh_hint())
     };
-    frame.render_widget(Paragraph::new(vec![Line::styled(diagnostic, Style::default().fg(Color::Yellow)), Line::raw(format!("j/k move  {refresh}enter toggle  d details  e extensions  c/m/u/n sort  / search  a active  p pause  ? help  q quit"))]), footer);
+    let keys = if app.extensions_page || app.settings.as_ref().is_some_and(|popup| popup.open) {
+        String::new()
+    } else if area.width < 80 {
+        format!("? Help  q Quit  {refresh}")
+    } else {
+        format!("Enter Toggle / Search s Settings e Extensions ? Help q Quit  {refresh}")
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(diagnostic, Style::default().fg(Color::Yellow)),
+            Line::raw(keys),
+        ]),
+        footer,
+    );
     if app.help {
         help(frame, area, app);
     }
@@ -471,7 +491,7 @@ fn help(frame: &mut Frame, area: Rect, app: &App) {
         area.height.saturating_sub(2),
     );
     frame.render_widget(Clear, popup);
-    let mut text = "reswho controls\n\nUp/Down or k/j: move    Left/h: collapse or parent\nRight/l: expand or child    Enter/Space: toggle\nd: process details    Esc: back to list\nDetails: j/k/PgUp/PgDn scroll, r refresh, p pause\nc: CPU    m: memory    u: uptime (descending within siblings)\nn: name (natural order, case-insensitive; node2 before node10)\n/: search name, PID, ref or path    Enter: accept    Esc: clear\na: all / active containers (unknown retained)\n[ / ]: scroll path    PgUp/PgDn: move 10 rows\nr: refresh once (keeps pause); reuse pending collection\np: pause automatic refresh\nq / Ctrl-C: quit    ? / Esc: close help\n\nRefresh: 2 seconds after each completed collection; one query at a time.\nHost CPU: whole-machine usage (0-100%). CPU/core: 100% = one core.\nRows can exceed 100%; >= means a partial total with unreadable values.\nAge is process uptime or oldest group member, including idle time.\nHost RSS and container memory are separate scopes; never add both.\nFilters affect visible rows, not aggregate totals. Unknown is not zero.\nSearch reveals matching branches without changing saved expansion.\n".to_owned();
+    let mut text = "reswho controls\n\nUp/Down or k/j: move    Left/h: collapse or parent\nRight/l: expand or child    Enter/Space: toggle\ns: Settings from main (Enter accept, Esc undo field / discard popup)\ne: Extensions from main (Enter details, Esc back)\nd: process details    Esc: back to list\nDetails: Up/Down, j/k, PgUp/PgDn scroll, r refresh, p pause\nc: CPU    m: memory    u: uptime (descending within siblings)\nn: name (natural order, case-insensitive; node2 before node10)\n/: search name, PID, ref or path    Enter: accept    Esc: clear\na: all / active containers (unknown retained)\n[ / ]: scroll path    PgUp/PgDn: move 10 rows\nr: refresh once (keeps pause); reuse pending collection\np: pause automatic refresh\nq: quit from main    Ctrl-C: quit anywhere    ? / Esc: close help\n\nRefresh: configured wait after each result; one query at a time.\nHost CPU: whole-machine usage (0-100%). CPU/core: 100% = one core.\nRows can exceed 100%; >= means a partial total with unreadable values.\nAge is process uptime or oldest group member, including idle time.\nHost RSS and container memory are separate scopes; never add both.\nFilters affect visible rows, not aggregate totals. Unknown is not zero.\nSearch reveals matching branches without changing saved expansion.\n".to_owned();
     if let Some(error) = &app.error {
         text.push_str(&format!("\nSTALE: {}\n", safe(error)));
     }

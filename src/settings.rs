@@ -25,30 +25,57 @@ pub struct Limits {
 }
 
 fn numeric_cmp(left: &Number, right: &Number) -> Ordering {
-    let integer = |number: &Number| {
-        number
-            .as_i64()
-            .map(i128::from)
-            .or_else(|| number.as_u64().map(i128::from))
-    };
-    match (integer(left), integer(right)) {
-        (Some(left), Some(right)) => left.cmp(&right),
-        (Some(left), None) => {
-            let right = right.as_f64().expect("finite JSON number");
-            let approximate = (left as f64)
-                .partial_cmp(&right)
-                .expect("finite JSON number");
-            if approximate == Ordering::Equal {
-                left.cmp(&(right as i128))
+    fn decimal(number: &Number) -> (bool, String, i64) {
+        let text = number.to_string();
+        let negative = text.starts_with('-');
+        let text = text.trim_start_matches('-');
+        let (mantissa, exponent) = text.split_once(['e', 'E']).unwrap_or((text, "0"));
+        let exponent = exponent
+            .parse::<i64>()
+            .unwrap_or(if exponent.starts_with('-') {
+                i64::MIN / 2
             } else {
-                approximate
-            }
-        }
-        (None, Some(_)) => numeric_cmp(right, left).reverse(),
-        (None, None) => left
-            .as_f64()
-            .partial_cmp(&right.as_f64())
-            .expect("finite JSON numbers"),
+                i64::MAX / 2
+            });
+        let whole = mantissa.split('.').next().unwrap_or("").len() as i64;
+        let digits: String = mantissa.chars().filter(|ch| *ch != '.').collect();
+        let leading = digits.bytes().take_while(|byte| *byte == b'0').count();
+        let digits = digits[leading..].trim_end_matches('0').to_owned();
+        (
+            negative && !digits.is_empty(),
+            digits,
+            exponent
+                .saturating_add(whole)
+                .saturating_sub(leading as i64),
+        )
+    }
+    let (left_negative, left_digits, left_position) = decimal(left);
+    let (right_negative, right_digits, right_position) = decimal(right);
+    if left_negative != right_negative {
+        return right_negative.cmp(&left_negative);
+    }
+    let ordering = match (left_digits.is_empty(), right_digits.is_empty()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        (false, false) => left_position.cmp(&right_position).then_with(|| {
+            let length = left_digits.len().max(right_digits.len());
+            left_digits
+                .bytes()
+                .chain(std::iter::repeat(b'0'))
+                .take(length)
+                .cmp(
+                    right_digits
+                        .bytes()
+                        .chain(std::iter::repeat(b'0'))
+                        .take(length),
+                )
+        }),
+    };
+    if left_negative {
+        ordering.reverse()
+    } else {
+        ordering
     }
 }
 
@@ -94,7 +121,7 @@ pub struct Contract {
 }
 
 impl Contract {
-    fn validate(&self, value: &Value) -> Result<()> {
+    pub(crate) fn validate(&self, value: &Value) -> Result<()> {
         let valid_type = match self.value_type {
             ValueType::Integer => {
                 value.as_i64().is_some()
@@ -103,6 +130,10 @@ impl Contract {
                         number.is_finite()
                             && number.fract() == 0.0
                             && number.abs() <= 9_007_199_254_740_992.0
+                            && numeric_cmp(
+                                value.as_number().expect("numeric value"),
+                                &Number::from(number as i64),
+                            ) == Ordering::Equal
                     })
             }
             ValueType::Number => value.as_f64().is_some_and(f64::is_finite),
@@ -312,6 +343,10 @@ fn valid_namespace(key: &str, provider: &str) -> bool {
 }
 
 impl Registry {
+    pub fn definitions(&self) -> impl Iterator<Item = &Definition> {
+        self.definitions.values()
+    }
+
     pub fn definition(&self, key: &str) -> Option<&Definition> {
         self.definitions.get(key)
     }
@@ -551,7 +586,7 @@ impl Default for Registry {
     }
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub version: u32,
@@ -568,13 +603,27 @@ impl Config {
         let Some(path) = path else {
             return Ok(Self::default());
         };
-        let bytes = match std::fs::read(path) {
-            Ok(bytes) => bytes,
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+        {
+            Ok(file) => file,
             Err(error) if !explicit && error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Self::default());
             }
             Err(error) => bail!("cannot read config: {error}"),
         };
+        if !file.metadata()?.is_file() {
+            bail!("config must be a regular file");
+        }
+        let mut bytes = Vec::new();
+        file.take(1_048_577).read_to_end(&mut bytes)?;
+        if bytes.len() > 1_048_576 {
+            bail!("config exceeds 1 MiB");
+        }
         let config: Self = serde_json::from_slice(&bytes).map_err(|error| {
             anyhow::anyhow!(
                 "invalid config JSON at line {} column {}",
@@ -639,3 +688,5 @@ impl Resolved {
 
 #[cfg(test)]
 mod tests;
+
+pub mod edit;

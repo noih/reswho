@@ -77,7 +77,7 @@ Refresh 與 sampling 是不同用途。保持目前同時最多一輪採集、�
 
 每階段由開發 owner 執行針對性測試，整合後依 TESTING.md 完成 fmt／Clippy／一般 Rust 測試；CLI／排程改動補受影響的 PTY 範圍。每階段一次獨立 review，修復只重驗受影響範圍。一般測試不得啟動真實容器服務，外部協定使用自有假程序／fixture；既有 native container probes 的未改動證據可沿用。
 
-目前：階段5由同一單一開發 owner 實作，不派子代理、不寫 Tenqo，本地提交後停在 leader 指派的獨立 review 邊界。支援固定 config root 的 drop-in discovery 與明確 manifest install；沒有 marketplace、設定 editor 或 multiselect。target 保留開發 cache；測試僅用 isolated state/config，沒有修改真正使用者設定或啟動服務。
+目前：階段5由同一單一開發 owner 實作，不派子代理、不寫 Tenqo，本地提交後停在 leader 指派的獨立 review 邊界。支援固定 config root 的 drop-in discovery 與明確 manifest install；沒有 marketplace 或 multiselect；Settings popup 見下方 rw-35 Current。target 保留開發 cache；測試僅用 isolated state/config，沒有修改真正使用者設定或啟動服務。
 
 ## 階段1可用介面
 
@@ -207,3 +207,82 @@ Focused discovery／timing／TUI 測試已通過：排序、restart／不重寫�
 - Selected PID 最終 verify_identity 拒絕原先只清掉 external detail payload，report 仍是 success。現在同一最終核心邊界會將實際 contributing details 的成功報告改為 failed／identity_changed，保留耗時並加入本輪 failure bookkeeping，再清除 payload。Deterministic validator fixture 經真 attach_details 與最終 validation helper，確認失敗／never_invoked／健康 classify 報告不變、敏感 Err 不出現，且同輪重試被跳過；輸出符合 Schema10。
 
 本輪限定驗證：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、29個 extension／discovery tests、1個 snapshot final-boundary test、6個 JSON contract tests 均通過。沒有 full suite／PTY／live／measurement 重跑；UI 與 Phase4 runner 未改，原證據保留。所有新增 fixture threads 已 join、temp roots 已 close；原生協定 fixtures 由既有 bounded runner reap。target 約7.3GiB，保留給同專案 scoped review，未新增隔離 cache。提交本地 coherent repair commit 後停止修改，供這三項 finding 的一次 scoped recheck；無 nested agents／Tenqo writes／push。
+
+
+## rw-35 Current：TUI Settings popup
+
+`s` 僅從主畫面開啟 Settings；開啟與編輯只操作 draft，不觸發 provider 或寫檔。依 registry 顯示 Core／Shared／extension、目前值與來源；無效私有值造成 provider disabled 時仍可修復，Shared canonical definition 只列一次。CLI 覆寫標為 locked。Up／Down 選欄位，Enter／Space 編輯或切換 checkbox／單選 options；Left／Right 循環選項。自由 number／string 直接在選取 value cell 編輯，Ctrl-U 清空、Enter 接受。PgUp／PgDn 捲動說明、預設值與限制；編輯列固定可見。敏感值、預設值與 options 預覽皆遮蔽，新的敏感文字從空白輸入，不把 `[redacted]` 當值保存。
+
+Ctrl-S 明確 Save；Ctrl-R Reset selected 刪除該 user override，改用 canonical default；編輯中 Esc 僅放棄目前輸入並回 browse，保留先前已接受的 draft；browse Esc 或 Cancel 放棄整份 draft 並回主頁，保留主樹 selection／scroll。未變更不寫檔。儲存使用啟動時選定的 `--config`／XDG／HOME 路徑，0600 同目錄暫存檔、fsync、atomic rename；新增目錄為0700。設定與 extension registry 的鎖分開，非阻塞 flock 避免 TUI 等待其他 saver。儲存前重讀版本1有效檔案，只合併修改 key；保留未知／未修改設定，不序列化預設值。與 baseline 同 key 不一致會拒絕；不同 key 的外部修改會合併。壞 JSON、未知格式／版本、非 regular file、hardlink、非本人檔案及不安全目錄不會被替換。明確拒絕路徑任一層 symlink 與 `..`；macOS 暫存設定請使用 `/private/tmp` 或實體路徑。錯誤提示不含設定原值，失敗保留 draft 與舊 effective settings。鎖只能協調遵守同一 flock 的 saver；手動編輯器不遵守鎖，應避免與 Save 同時寫檔。
+
+Save 先以既有 Contract／resolved policy 驗證；JSON number 啟用既有 serde_json 的 arbitrary_precision feature，保留大整數與有限長小數，bounds／options 比較使用十進位精確順序。成功後才將新 immutable settings 交給 worker 下一輪，既有採集保留其 Arc；更新刷新等待，不新增 collector、不重載 discovery，pause 狀態不變。資源 snapshot 維持 `reswho/10`。
+
+開發驗證與限制：15個 settings、27個 TUI／worker、14個 extension dispatcher、2個 parser、10個 CLI、6個 Schema tests 全通過；fmt／Clippy 與正式 binary 的 `python3 tests/pty_smoke.py --settings-only` 通過。最初 PTY 斷言誤用精確 sample 毫秒及未重建的 terminal 差分文字，已改為最短取樣範圍與 SIGWINCH 重繪檢查；沒有未解決測試失敗。PTY 使用自有0700 temp root，驗證 draft／invalid／cancel／save／CLI reload／nochange／reset／conflict／malformed failure／resize／pause；不操作真實設定或服務。尚待 leader 指派獨立 review；未跑 full suite、live container 或效能量測。target 約8.5GiB（起始7.4GiB），為保留的專案 cache；剩餘磁碟約495GiB，下一階段邊界再檢視。PTY 的 child／handles 與 temp root 已驗證回收。
+
+
+rw-35 review 修復（基於3fe1d46）：P1 先以真實 Response → WireResponse 重現 fractional Container CPU 的 `invalid type: map, expected f64`，原因是 arbitrary_precision 的 number map 經 internally tagged enum buffer 後不能直接交給 f64。Container 的 optional CPU 解碼改先接受 serde_json::Number，再取得有限 f64；維持原 wire／null／missing 語意，設定與 parsed detail 的精確長小數不變。回歸使用自有 native External 同時驗證12.5 CPU、失敗 sibling 隔離及健康來源後續 classify／details。已檢查其他 tag／flatten：ClassificationEvidence、Origin 僅路徑／文字；Definition／Use 的數值由既有 Contract／Number 解碼；Listing 僅序列化，沒有相同的浮點接收欄位。
+
+P2 窄版36×10固定保留一行欄位、至少兩行說明、兩行輸入／錯誤／值來源與三行控制。Save／Reset／Esc 不再被導航文字換行擠掉；頁移依說明區高度，避免固定跳五行漏看限制，並夾住最末頁。沿用 Ratatui 現有 rendered-line-info feature 計算實際換行，不另建 UI／wrapping framework；該 API 是目前鎖定版本的 opt-in unstable API。TestBackend 與 production PTY 都檢查主要控制、初始描述、後續限制／目前值與返回描述，並保留原寬版流程。
+
+本次原始產品回歸為P1小數 wire 與P2窄版配置／頁移。PTY 另遇到固定兩秒初始載入等待與差分文字斷言失敗；保留既有流程，改為十秒有界載入與明確 SIGWINCH 的36×10完整畫面斷言，不將 harness failure 當作產品通過。重驗範圍為新 wire fixture、15 settings、28 TUI／worker、14 dispatcher、6 Schema、fmt／Clippy，以及 settings-only PTY；未重跑不變的 lifecycle／container／full suite。原 parser／CLI 證據沿用。測試僅使用自有 temp roots／native children，target 為保留開發 cache，review closeout 再確認大小與清理。
+
+修復驗證結果：上述受影響檢查與最後一次 settings-only production PTY 全通過；PTY child／FD／temp root 已驗證回收，沒有未解決測試失敗。target 約9.4GiB、磁碟剩餘約494GiB，保留給後續開發；未做全域 purge。開發 owner 本地提交後停寫，待獨立 scoped recheck。
+
+## rw-36 Current：Settings／Extensions UI punch list
+
+本輪依使用者核准的 mockup 修復既有 UI；單一開發 owner，沒有新 dependency／framework、manifest／MD／JSON／report protocol 變更，沒有 enable／disable 管理動作。只修改 presentation、輸入路由與受影響的 TestBackend／PTY 斷言。下表四項共用同一 renderer／navigation 修復，合併於一個本地 commit；SHA 見交接回報。Tenqo 由 leader 同步，本輪未寫 tracker、未 push。
+
+| ID | 原始觀察 → 修復 | Route／state | Evidence |
+| --- | --- | --- | --- |
+| UI-1 | 全畫面與大空隙 → Settings 最大76欄、Extensions 最大98欄，置中且依內容定高、受 viewport 上限約束；背景 resource view 保留並 dim，返回 selection／scroll 不變 | stay／fixed | verified：30個 TUI／worker tests，160×45、100×30、36×10 actual TestBackend frames |
+| UI-2 | raw-key／重複資訊表 → General／Shared／provider 分組，友善核心 labels／描述、對齊值與 unit、changed／CLI locked 標示，Tab／Shift-Tab 操作 Cancel／Save。乾淨表單沒有固定 Draft 提示；編輯資訊不重複描述，完整 key／constraints 經 PgDn 查看，refresh 編輯只顯 Minimum:1ms。敏感預覽／輸入遮蔽，draft／save／reset 與安全儲存邏輯沿用 | stay／fixed | verified：TUI input／mask／grouping／controls tests；settings-only production PTY |
+| UI-3 | raw phase report → 每個 provider 一列的 Name／Version／State／Collect／Classify／Details inventory；enabled、availability 與 error 分別表達，不聲稱 Ready。以 provider ID 保留選取；Enter 開 metadata／來源／path／compatibility／各 phase timing／安全 reason 詳情。未執行是無 timing，沒有相加或假0ms；candidate／registry errors 另列可捲動 diagnostics | stay／fixed | verified：provider selection／refresh／failed-report tests；extensions-only production PTY（native counter 證明開啟與返回無額外執行） |
+| UI-4 | 全 cyan／內容貼邊／footer 遙遠 → 一致 border、水平內距1、灰白層級、選取背景與黃色錯誤；footer 固定面板底部。長 key／value／error 於 info／details／diagnostics 依實際換行捲動，36×10 保留必要控制 | stay／fixed | verified：三尺寸 frames、invalid／disabled／failed-provider frames、PTY resize／errors |
+
+| UI-5 | 選取描述插入選項列、切換時後續列移動 → 清單維持連續列；描述固定在按鈕下、快捷提示正上方，正常最多2列、compact最多1列，完整文字由既有 Info 捲動。footer 高度納入內容定高，保留編輯錯誤、遮蔽與36×10控制 | stay／fixed | verified：選取首／次項 y 不變、描述位置／唯一性、完整長描述可達、compact input/error／Info 回歸與 actual frames |
+| UI-6 | inventory／details footer 固定2列 → 移除硬換行，使用 Ratatui Wrap／line_count 依實際內寬計算 footer 與 panel 高度；寬版1列、窄版必要換行 | stay／fixed | verified：100×30／36×10 inventory／details hints 全可見，diagnostics、metadata、selection 與 scroll 回歸 |
+
+實際 frame 證據保留於 `/Users/noi/.bb/thread-storage/thr_sybrkuyfgf/ui-evidence`（約52KiB），由本輪 owner 保留至 leader review 結束。`settings-*`／`extensions-*` 各有160×45、100×30、36×10；另有 settings-invalid、extensions-disabled 與 extension-details。Inventory 使用 synthetic Docker collect561.0ms、App bundles classify1.2ms、Process command details8.4ms／invalid_data，另保留 broken discovery 的 invalid_manifest。這些是 actual Ratatui TestBackend buffer，不是另外製作的 mockup，也不代表真實 runtime 效能。Leader 已接受置中／compact form／table 方向，後續五點視覺回饋已納入；尚待獨立 scoped code review。
+
+驗證：`cargo test --lib tui:: --no-fail-fast`（30 passed）、`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo build --bin reswho --example extension_example`、`python3 tests/pty_smoke.py --settings-only`、`python3 tests/pty_smoke.py --extensions-only` 全通過。初次 render checks 發現窄版輸入／錯誤互擠與空 inventory 診斷被擠掉，已修復重驗；padding 後 diagnostics heading 換行遮住錯誤，已縮短 heading 重驗。Settings PTY 原本假設第二次翻頁是 Current 值，改版後末頁是完整錯誤；移除過時重複斷言，仍驗證 constraints、主要 controls 與返回描述，完整捲動另由 TestBackend 驗證。未將失敗當作通過。
+
+不重跑不變的 persistence／wire／runner／container checks，不跑 full suite、live containers 或 stress。測試僅使用自有 temp config、native provider fixture、shell／PTY；兩個 PTY runner 都確認 child／handles 退出與 temp root 移除，沒有真實設定／服務變更。保留專案 `target/` 開發 cache 約9.7GiB（起始9.4GiB），剩餘磁碟約494GiB，由專案後續階段邊界再檢視，未做全域清理。
+
+rw-36 scoped review 修復（基於48ade69，UI-2／UI-4，stay／fixed）：獨立 review 發現兩個 P2。第一個觸發為36×10長 boolean label 把 checkbox 擠出列寬，而 Info 原本只依 value 本身長度決定是否顯示，因此 default=false／current=true 只能看到 default。explicit Info 現在一律顯示完整 `Value:`，與 `Key:`／`Default:` 分開，敏感值仍經同一 preview 遮蔽，正常表單不重複目前值。新增 ordinary／sensitive 長標籤回歸，實際翻頁驗證 key、default 與 current 可讀；新增 frames：`settings-longboolean-false-36x10.txt`（Value:[x]）與 `settings-longboolean-true-36x10.txt`（Value:[masked]），位於前述 evidence 目錄。
+
+第二個觸發為 number input=0 驗證失敗後 Tab／Shift-Tab 被 accept_input early return 擋住，Cancel 無法聚焦。焦點移動現在不接受或清除 typed draft；只有 Save 執行既有驗證，invalid Save 留在 popup，Esc／Cancel 放棄。回歸驗證雙向焦點循環、Save 被擋、回到 input 保留0、Space 作文字輸入而非按鈕，以及兩條方向的 Cancel Enter 不儲存。production settings-only PTY 增加 invalid0 → Shift-Tab Save 失敗 → Tab回input → Tab Cancel退出，檔案 bytes 不變。
+
+修復驗證：受影響 TUI／worker 的32例中31例於第一次 batched run 通過；新增長標籤 case 起初未翻回 info 頂端而漏讀 Key，補正測試頁移後該例獨立通過，合計32例的有效證據齊全。`cargo fmt --check`／`cargo clippy --all-targets -- -D warnings`、重建正式 binary 與 settings-only PTY 通過。依 leader 裁定不再另派 independent review，不重跑 Extensions PTY／persistence／wire／full suite。PTY child／handles／temp root 已驗證回收；evidence 約60KiB，target 保留約9.8GiB、磁碟剩餘約490GiB，保留期限與 owner 不變。完成本地修復提交後停寫，由 leader 檢視新增 specific frames 與關閉 checkpoint。
+
+
+UI-5／UI-6 checkpoint：基準948c7e4，未重開UI-1..4決策。focused self-review 發現並修復清單末列多捲一列，以及 compact 描述新增後擠掉 input error；保留原 Info 區、編輯時減為1列，完整描述附於 explicit Info。Info 第二頁的既有測試改驗 current value，第一頁仍驗 min／max，不刪 bounds 證據。32個受影響 TUI／worker checks 的有效結果齊全，修復後僅重跑受影響案例；fmt／all-targets clippy 通過。沒有新增 dependency、source comments、PTY 或服務；未重跑不變的 persistence／wire／完整 suite／production PTY，沿用既有安全與路由證據。
+
+本批 actual TestBackend frames 位於 `/Users/noi/.bb/thread-storage/thr_rsj5xju577/ui-evidence`（約80KiB），含100×30、36×10首／次選項、編輯錯誤、inventory／details 與既有長 boolean 遮蔽。由本批 owner 保留至 leader 檢視結束；沒有自有常駐程序／PTY 或額外 temp root，既有 fixture 使用原 guard 清理。target 由9.8GiB維持約9.8GiB並保留，未全域清理。Tenqo 依指示留給 leader 同步；僅本地提交，不 push，SHA 見交接。
+
+
+UI7／UI8 Current（基於7fbbc65；本節取代上方舊交互描述）：
+
+| ID | 觀察 → 修復 | Route／state | Evidence |
+| --- | --- | --- | --- |
+| UI7 | 編輯重複值與 metadata／Edit block → 直接在選取 value cell 編輯；固定 status／description／hints 區，Enter 接受目前輸入，編輯中 Esc 只放棄該輸入並保留先前 draft，browse Esc／Cancel 放棄整份 popup。Tab／Shift-Tab 保留 invalid 輸入，Cancel 可達，Save 才驗證。explicit PgDn Info 提供完整 current／default／constraints／key／描述與錯誤；CLI lock 與敏感遮蔽沿用。窄版截短 label／value，編輯保留尾端與游標 | stay／fixed | verified：TUI keyboard／render tests；100×30、36×10 actual frames；單一 settings-only production PTY 的 invalid→Cancel、兩層 Esc、Save／CLI reload |
+| UI8 | Extensions 跨開 Settings／q退出與重複 Enter → 只有主畫面 s／e 開 modal，inventory→details→Esc 返回；inventory／details／process-details／help 吞掉 s／e／q，不跨開 modal 或退出。q 僅主畫面退出，Ctrl-C 不變；搜尋字元仍是文字。同步提示與既有 PTY 進出流程 | stay／fixed | verified：top-level routing、selection／scroll／pause／無新增採集要求 tests；同一 production PTY 驗證 inventory／details 的 s／q／e 隔離與兩層 Esc 返回 |
+
+35個受影響 TUI／worker tests、`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings` 全通過。重建正式 binary 後的 `python3 tests/pty_smoke.py --settings-only` 通過，沿用既有 persistence failure／conflict／reset／resize／pause assertions，沒有刪除 oracle。初次新增 Unicode fixture 誤用不允許的 key，第二次把寬字元 TestBackend continuation cells 當文字空白；修正 fixture 與讀法後通過，實際 cursor cell 仍必須是 `_`。Clippy 的 collapsible_if 已修正。focused self-review 已檢查 masking／safe escaping、按鈕焦點與 caller 路由；沒有新 dependency、provider／wire／persistence 變更。
+
+Actual frames：`/Users/noi/.bb/thread-storage/thr_k8t7bux9h6/ui7-8-evidence`，約88KiB。Leader 已接受 edit100×30／invalid36×10／extensions36×10 方向，並保留證據至 focused review 結束。PTY child／handles／temp root 已驗證回收；沒有修改真實設定、服務或既有程序。target 約9.9GiB，保留專案既有開發 cache，由後續階段邊界再檢視。
+
+本輪只有一個 production PTY journey；未重跑 external native counter／extensions-only、full／backend／wire／live suites。既有 no-extra-provider oracle 保留且路由已更新，TUI state tests 驗證 modal 導航不新增採集要求。Tenqo 未寫，僅本地 commit、不 push；完成後停寫供 focused review。
+
+
+UI7 scoped P2 修復（基於fe8de40；stay／fixed）：review 的37×10 synthetic extension `unit=milliseconds` 重現輸入6789只顯示`[_]`，因此前述 inline-width 證據不足以涵蓋長 unit。欄寬改先保留至少8欄 value 空間及 locked／changed marker，再截短 label／unit；unit 與 suffix 用 Ratatui terminal display width 計算，不用 UTF-8 byte 長度。production refresh／sampling definition 未修改，visible unit 維持 `ms`；milliseconds 僅為 extension robustness fixture，完整單位仍可由 explicit Info 查看。
+
+新增37×10 regression 先紅後綠，覆蓋 core ms，以及 synthetic ms／milliseconds／秒鐘／長 Unicode unit，各 extension case 同時驗證 ordinary typed tail、實際 `_` cursor cell 與 sensitive `****` 遮蔽。9個受影響 Settings keyboard／render tests、fmt／all-targets Clippy 通過；沒有重跑整個 TUI suite／PTY／backend／wire／live gates，沿用未受影響路由與既有 production PTY 證據。未新增 framework／dependency，沒有 persistence 或 provider 變更。
+
+新增 actual frames 與既有證據同在 parent `ui7-8-evidence`，總計約124KiB；正式 core frame 為 `settings-unit-core-masked-false-37x10.txt`，長 unit fixture 明確命名為 `settings-unit-long-masked-false-37x10.txt`，另含 Unicode 與 masked variants。由 leader 保留至檢視結束。本輪沒有建立 PTY／child／temp root，TestBackend 僅記憶體資源；target 約9.9GiB仍保留。僅本地 commit、不 push、不寫 Tenqo，完成後停寫供 leader actual-frame inspection；依裁定不另派 independent recheck。
+
+
+UI9 Current（基於d1f698d；stay／fixed）：依使用者最新裁定，footer 僅留必要操作，不再列通用 Move／Scroll 或導航別名。主頁寬版顯示 Enter Toggle、/ Search、s Settings、e Extensions、? Help、q Quit 與 refresh／retry／進行中回饋；窄版保留 Help、Quit 與刷新提示。方向鍵及 hjkl 導航保留於 Help，process details 的方向鍵捲動也補入 Help。Extensions list 僅 Enter Details／Esc Back，extension details 僅 Esc Back；process details 保留 refresh／pause／Esc。Settings browse 移除 Move，保留 Edit／Controls／Save／Reset／Discard／Info；編輯提示維持情境。modal 背景隱藏無法作用的主頁快捷提示。
+
+驗證：8個受影響既有 renderer／refresh／navigation tests 通過，`cargo fmt --check` 與 `git diff --check` 通過。既有 renderer assertions 擴充檢查主頁與 process details，100×30、36×10 actual TestBackend frames 均檢視；Settings 編輯、invalid、focus／description 與 Extensions diagnostics／metadata 斷言保留。初輪發現 modal 背景殘留主頁提示，修正後重驗通過。僅提示／局部 render 分支變更，按鍵路由與既有 key-behavior 證據沿用，無新依賴、設定或 wire 變更。
+
+證據保留於 parent `/Users/noi/.bb/thread-storage/thr_k8t7bux9h6/ui9-evidence`，由 leader 檢視與決定清理。未建立 PTY／child／temp root，TestBackend 僅記憶體資源；target 約10GiB沿用專案開發 cache。依指示未跑 full suite／Clippy／PTY／backend／獨立 review，未操作真實設定、服務、Tenqo 或 push；僅本地英文 commit，tracker 與 acceptance 交由 leader。

@@ -317,13 +317,7 @@ impl Details {
         } else {
             format!("{refresh_hint}  ")
         };
-        let keys = if area.width < 40 {
-            format!("j/k  {refresh}p  Esc back  q")
-        } else if area.width < 66 {
-            format!("j/k  {refresh}p pause  Esc back  q quit")
-        } else {
-            format!("j/k scroll  PgUp/PgDn page  {refresh}p pause  Esc back  q quit")
-        };
+        let keys = format!("{refresh}p pause  Esc back");
         frame.render_widget(Paragraph::new(keys), controls);
     }
 }

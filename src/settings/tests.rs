@@ -640,3 +640,223 @@ fn public_manifest_schema_and_report_agree_on_scalar_metadata() {
     let invalid = json!({"key":"shared.x","type":"number","options":[1,"bad"],"default":1,"description":"invalid","sensitive":false});
     assert!(!validator.is_valid(&invalid));
 }
+
+#[test]
+fn saves_merge_independent_keys_preserve_unknowns_and_reject_conflicts() {
+    use super::edit::Settings;
+    use std::os::unix::fs::PermissionsExt;
+    let owner = tempfile::tempdir().unwrap();
+    let path = owner.path().canonicalize().unwrap().join("config.json");
+    let write = |value: Value| std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    write(json!({"version":1,"settings":{"sampling.interval_ms":250,"unknown":{"keep":true}}}));
+    let baseline = Config::load(Some(&path)).unwrap();
+    let mut editor = Settings::new(
+        Registry::core(),
+        baseline,
+        BTreeMap::new(),
+        Some(path.clone()),
+    );
+    write(
+        json!({"version":1,"settings":{"sampling.interval_ms":250,"refresh.interval_ms":1234,"unknown":{"keep":true}}}),
+    );
+    let changes = BTreeMap::from([("sampling.interval_ms".into(), Some(json!(500)))]);
+    let applied = editor.save(&changes).unwrap().unwrap();
+    assert_eq!(applied.get("sampling.interval_ms"), Some(&json!(500)));
+    assert_eq!(applied.get("refresh.interval_ms"), Some(&json!(1234)));
+    let saved = Config::load(Some(&path)).unwrap();
+    assert_eq!(saved.settings["unknown"], json!({"keep":true}));
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let before = std::fs::read(&path).unwrap();
+    assert!(editor.save(&BTreeMap::new()).unwrap().is_none());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    write(json!({"version":1,"settings":{"sampling.interval_ms":900}}));
+    assert!(
+        editor
+            .save(&changes)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("changed on disk")
+    );
+    assert_eq!(editor.baseline.settings["sampling.interval_ms"], json!(500));
+    assert_eq!(
+        Config::load(Some(&path)).unwrap().settings["sampling.interval_ms"],
+        json!(900)
+    );
+    owner.close().unwrap();
+}
+
+#[test]
+fn saves_reset_validate_and_refuse_unsafe_or_broken_paths() {
+    use super::edit::Settings;
+    use std::os::unix::fs::symlink;
+    let owner = tempfile::tempdir().unwrap();
+    let root = owner.path().canonicalize().unwrap();
+    let path = root.join("config.json");
+    let baseline = config(json!({"sampling.interval_ms":500}));
+    std::fs::write(&path, serde_json::to_vec(&baseline).unwrap()).unwrap();
+    let mut editor = Settings::new(
+        Registry::core(),
+        baseline,
+        BTreeMap::new(),
+        Some(path.clone()),
+    );
+    let changes = BTreeMap::from([("sampling.interval_ms".into(), None)]);
+    let result = editor.save(&changes).unwrap().unwrap();
+    assert_eq!(result.get("sampling.interval_ms"), Some(&json!(250)));
+    assert!(Config::load(Some(&path)).unwrap().settings.is_empty());
+    let invalid = BTreeMap::from([("sampling.interval_ms".into(), Some(json!(1)))]);
+    assert!(editor.save(&invalid).is_err());
+    editor.cli.insert("sampling.interval_ms".into(), json!(300));
+    assert!(editor.save(&changes).is_err());
+    editor.cli.clear();
+    for bytes in [b"broken".as_slice(), b"{\"version\":2,\"settings\":{}}"] {
+        std::fs::write(&path, bytes).unwrap();
+        assert!(editor.save(&changes).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+    std::fs::remove_file(&path).unwrap();
+    let target = root.join("target.json");
+    std::fs::write(&target, b"secret").unwrap();
+    symlink(&target, &path).unwrap();
+    assert!(editor.save(&changes).is_err());
+    assert_eq!(std::fs::read(&target).unwrap(), b"secret");
+    std::fs::remove_file(&path).unwrap();
+    let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    assert!(Config::load(Some(&path)).is_err());
+    assert!(editor.save(&changes).is_err());
+    owner.close().unwrap();
+}
+
+#[test]
+fn exact_numbers_survive_config_edit_and_bounds() {
+    use super::edit::Settings;
+    let owner = tempfile::tempdir().unwrap();
+    let path = owner.path().canonicalize().unwrap().join("config.json");
+    let mut registry = Registry::core();
+    let mut number = definition("a", "extensions.a.number", 1);
+    number.contract =
+        serde_json::from_value(json!({"type":"number", "min":-10, "max":18446744073709551615u64}))
+            .unwrap();
+    registry
+        .register_extension("a", vec![number], vec![])
+        .unwrap();
+    let mut editor = Settings::new(
+        registry,
+        Config::default(),
+        BTreeMap::new(),
+        Some(path.clone()),
+    );
+    for text in [
+        "18446744073709551615",
+        "1.12345678901234567890123456789",
+        "-0.12345678901234567890123456789",
+    ] {
+        let value: Value = serde_json::from_str(text).unwrap();
+        editor
+            .save(&BTreeMap::from([(
+                "extensions.a.number".into(),
+                Some(value.clone()),
+            )]))
+            .unwrap();
+        assert_eq!(
+            Config::load(Some(&path)).unwrap().settings["extensions.a.number"].to_string(),
+            text
+        );
+        assert_eq!(
+            editor
+                .registry
+                .resolve(&editor.baseline, &editor.cli)
+                .unwrap()
+                .get("extensions.a.number"),
+            Some(&value)
+        );
+    }
+    let left: Number = serde_json::from_str("1.123456789012345678901").unwrap();
+    let right: Number = serde_json::from_str("1.123456789012345678902").unwrap();
+    assert_eq!(numeric_cmp(&left, &right), Ordering::Less);
+    assert_eq!(
+        numeric_cmp(&serde_json::from_str("-0.0").unwrap(), &0.into()),
+        Ordering::Equal
+    );
+    owner.close().unwrap();
+}
+
+#[test]
+fn private_repairs_save_real_sensitive_values_and_keep_prior_effective_on_failure() {
+    use super::edit::Settings;
+    let owner = tempfile::tempdir().unwrap();
+    let path = owner.path().canonicalize().unwrap().join("config.json");
+    let mut registry = Registry::core();
+    let secret: Definition = serde_json::from_value(json!({"key":"extensions.a.secret","type":"string","default":"private-default","description":"Secret","provider":"a","version":"1","sensitive":true})).unwrap();
+    registry
+        .register_extension("a", vec![secret], vec![])
+        .unwrap();
+    let baseline = config(json!({"extensions.a.secret":false}));
+    std::fs::write(&path, serde_json::to_vec(&baseline).unwrap()).unwrap();
+    let before = registry.resolve(&baseline, &BTreeMap::new()).unwrap();
+    assert!(before.get("extensions.a.secret").is_none());
+    let mut editor = Settings::new(registry, baseline, BTreeMap::new(), Some(path.clone()));
+    assert!(
+        editor
+            .save(&BTreeMap::from([(
+                "extensions.a.secret".into(),
+                Some(json!("[redacted]"))
+            )]))
+            .is_err()
+    );
+    let applied = editor
+        .save(&BTreeMap::from([(
+            "extensions.a.secret".into(),
+            Some(json!("new-private-value")),
+        )]))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        applied.get("extensions.a.secret"),
+        Some(&json!("new-private-value"))
+    );
+    assert!(before.get("extensions.a.secret").is_none());
+    assert_eq!(
+        Config::load(Some(&path)).unwrap().settings["extensions.a.secret"],
+        json!("new-private-value")
+    );
+    assert!(
+        !serde_json::to_string(applied.report())
+            .unwrap()
+            .contains("new-private-value")
+    );
+    std::fs::write(&path, b"malformed private sentinel").unwrap();
+    let error = editor
+        .save(&BTreeMap::from([(
+            "extensions.a.secret".into(),
+            Some(json!("replacement-private-value")),
+        )]))
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(!error.contains("private"));
+    assert_eq!(
+        applied.get("extensions.a.secret"),
+        Some(&json!("new-private-value"))
+    );
+    assert_eq!(
+        editor.baseline.settings["extensions.a.secret"],
+        json!("new-private-value")
+    );
+    let integer = &editor
+        .registry
+        .definition("sampling.interval_ms")
+        .unwrap()
+        .contract;
+    assert!(
+        integer
+            .validate(&serde_json::from_str("250.000000000000000001").unwrap())
+            .is_err()
+    );
+    owner.close().unwrap();
+}

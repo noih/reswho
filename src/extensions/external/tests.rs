@@ -358,3 +358,66 @@ fn external_collect_uses_runtime_dtos_and_failure_snapshots_match_schema9() {
     assert!(errors.is_empty(), "{errors:?}");
     dir.close().unwrap();
 }
+
+#[test]
+fn fractional_collect_response_and_remaining_capabilities_survive_wire_decoding() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime {
+        name: "fractional".into(),
+        context: None,
+        endpoint_ref: Some("fixture".into()),
+        daemon_id: None,
+        status: "available".into(),
+        inventory_complete: true,
+        collection_ms: 1,
+        unavailable: vec![],
+    };
+    let container = Container {
+        runtime: "fractional".into(),
+        endpoint_ref: "fixture".into(),
+        id: "one".into(),
+        name: "one".into(),
+        state: Some("running".into()),
+        cpu_percent: Some(12.5),
+        ..Default::default()
+    };
+    let response = Response {
+        provider: "fractional".into(),
+        version: "1.0.0".into(),
+        contribution: Contribution::Collect {
+            runtime,
+            containers: vec![container],
+        },
+    };
+    let mut wire = serde_json::to_value(response).unwrap();
+    wire["protocol_version"] = json!(1);
+    let bytes = serde_json::to_vec(&wire).unwrap();
+    let decoded: WireResponse = serde_json::from_slice(&bytes).unwrap();
+    let Contribution::Collect { containers, .. } = decoded.contribution else {
+        panic!("expected collect");
+    };
+    assert_eq!(containers[0].cpu_percent, Some(12.5));
+    let classify = json!({"protocol_version":1,"provider":"fractional","version":"1.0.0","contribution":{"capability":"classify","proposals":[]}});
+    let precise: Value = serde_json::from_str("1.123456789012345678901").unwrap();
+    let details = json!({"protocol_version":1,"provider":"fractional","version":"1.0.0","contribution":{"capability":"parsed_details","identity":{"pid":42,"started_unix_us":123},"fields":[{"key":"extensions.fractional.value","label":"Value","value":precise,"sensitive":false}]}});
+    let body = format!(
+        "char input[8192]={{0}}; fread(input,1,sizeof(input)-1,stdin); if(strstr(input,\"\\\"capability\\\":\\\"collect\\\"\")) puts({}); else if(strstr(input,\"\\\"capability\\\":\\\"classify\\\"\")) puts({}); else puts({})",
+        serde_json::to_string(&String::from_utf8(bytes).unwrap()).unwrap(),
+        serde_json::to_string(&classify.to_string()).unwrap(),
+        serde_json::to_string(&details.to_string()).unwrap()
+    );
+    let healthy = fixture(dir.path(), "fractional", &body);
+    let bad = fixture(dir.path(), "bad", "return 1");
+    let settings = super::super::default_settings().unwrap();
+    let cancel = Cancellation::default();
+    let context = Context::new(&settings, &cancel);
+    let results = dispatch_many(&[&bad, &healthy], &context, Request::Collect);
+    assert!(results[0].1.is_err());
+    assert!(results[1].1.is_ok());
+    assert!(dispatch(&healthy, &context, Request::Classify(&[])).is_ok());
+    let mut process = process(dir.path());
+    assert!(attach_details(&[&healthy], &context, &mut process).is_empty());
+    assert_eq!(process.extension_details[0].fields[0].value, precise);
+    assert!(dispatch(&bad, &context, Request::Classify(&[])).is_err());
+    dir.close().unwrap();
+}

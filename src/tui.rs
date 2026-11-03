@@ -1,4 +1,6 @@
 mod details;
+mod extensions;
+mod settings;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -63,15 +65,25 @@ pub fn run(
     depth: usize,
     sort: Sort,
     refresh_interval: Duration,
+    settings: crate::settings::edit::Settings,
 ) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("TUI requires terminal stdin and stdout; use --md or --json");
     }
+    let inventory = options
+        .extensions
+        .list(&options.settings, options.containers);
+    let registry = options.extensions.clone();
+    let containers = options.containers;
     let worker = Worker::start(options);
     let mut restore = TerminalRestore(true);
     let mut app = App::new(scope, depth);
     app.extensions = worker.report.lock().expect("report lock").clone();
+    app.inventory = inventory;
+    app.extension_registry = Some(registry);
+    app.containers = containers;
     app.sort = sort;
+    app.settings = Some(settings::Popup::new(settings));
     request_snapshot(&worker, &mut app);
     let mut table = TableState::default();
     let mut terminal = io::stdout()
@@ -95,7 +107,7 @@ fn event_loop(
     worker: &Worker,
     mut app: App,
     mut table: TableState,
-    refresh_interval: Duration,
+    mut refresh_interval: Duration,
 ) -> Result<()> {
     let mut next_refresh = Instant::now();
     let mut dirty = false;
@@ -142,6 +154,18 @@ fn event_loop(
                     if handle_key(&mut app, key) {
                         return Ok(());
                     }
+                    if let Some(settings) =
+                        app.settings.as_mut().and_then(|popup| popup.applied.take())
+                    {
+                        refresh_interval = settings.interval("refresh.interval_ms");
+                        if let Some(registry) = &app.extension_registry {
+                            app.inventory = registry.list(&settings, app.containers);
+                        }
+                        worker.set_settings(settings);
+                        next_refresh = Instant::now()
+                            .checked_add(refresh_interval)
+                            .context("refresh interval cannot be safely scheduled")?;
+                    }
                     if let Some(anchor) = anchor {
                         anchor.restore(&app, &mut table);
                     }
@@ -177,31 +201,18 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         return true;
     }
-    if !app.editing && !app.help && key.code == KeyCode::Char('e') {
-        app.extensions_page = !app.extensions_page;
+    if let Some(popup) = &mut app.settings
+        && popup.open
+    {
+        popup.key(key);
         return false;
     }
     if app.extensions_page {
-        match key.code {
-            KeyCode::Esc => app.extensions_page = false,
-            KeyCode::Char('q') => return true,
-            KeyCode::Down | KeyCode::Char('j') => {
-                app.extensions_scroll = app.extensions_scroll.saturating_add(1)
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                app.extensions_scroll = app.extensions_scroll.saturating_sub(1)
-            }
-            KeyCode::PageDown => app.extensions_scroll = app.extensions_scroll.saturating_add(10),
-            KeyCode::PageUp => app.extensions_scroll = app.extensions_scroll.saturating_sub(10),
-            KeyCode::Home => app.extensions_scroll = 0,
-            _ => {}
-        }
-        return false;
+        return extensions::key(app, key);
     }
     if let Some(details) = &mut app.details {
         match key.code {
             KeyCode::Esc | KeyCode::Char('d') => app.details = None,
-            KeyCode::Char('q') => return true,
             KeyCode::Down | KeyCode::Char('j') => details.scroll(1),
             KeyCode::Up | KeyCode::Char('k') => details.scroll(-1),
             KeyCode::PageDown => details.scroll(10),
@@ -218,7 +229,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         if matches!(key.code, KeyCode::Char('?') | KeyCode::Esc) {
             app.help = false;
         }
-        return key.code == KeyCode::Char('q');
+        return false;
     }
     if app.editing {
         match key.code {
@@ -248,6 +259,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     }
     match key.code {
         KeyCode::Char('q') => return true,
+        KeyCode::Char('s') => {
+            if let Some(popup) = &mut app.settings {
+                popup.show();
+            }
+        }
+        KeyCode::Char('e') => app.extensions_page = true,
         KeyCode::Char('d') => app.open_details(),
         KeyCode::Char('r') => app.request_refresh(),
         KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),

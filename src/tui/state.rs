@@ -19,8 +19,14 @@ pub(super) enum ManualRefresh {
 }
 
 pub(super) struct App {
+    pub settings: Option<super::settings::Popup>,
     pub snapshot: Option<Snapshot>,
     pub extensions: Vec<crate::extensions::report::Record>,
+    pub inventory: Vec<crate::extensions::state::Listing>,
+    pub extension_registry: Option<std::sync::Arc<crate::extensions::state::State>>,
+    pub containers: bool,
+    pub extension_selected: Option<String>,
+    pub extension_details: bool,
     pub extensions_page: bool,
     pub extensions_scroll: u16,
     pub rows: Vec<Row>,
@@ -88,8 +94,14 @@ fn node_at<'a>(root: &'a Node, path: &[usize]) -> &'a Node {
 impl App {
     pub fn new(scope: String, initial_depth: usize) -> Self {
         Self {
+            settings: None,
             snapshot: None,
             extensions: vec![],
+            inventory: vec![],
+            extension_registry: None,
+            containers: false,
+            extension_selected: None,
+            extension_details: false,
             extensions_page: false,
             extensions_scroll: 0,
             rows: Vec::new(),

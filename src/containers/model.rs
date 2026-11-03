@@ -23,6 +23,7 @@ pub struct Container {
     pub state: Option<String>,
     pub started_at: Option<String>,
     pub uptime_seconds: Option<u64>,
+    #[serde(default, deserialize_with = "optional_json_float")]
     pub cpu_percent: Option<f64>,
     pub memory_bytes: Option<u64>,
     pub memory_basis: String,
@@ -32,6 +33,18 @@ pub struct Container {
     pub candidates: Vec<PathBuf>,
     pub service: Option<String>,
     pub unavailable: Vec<Diagnostic>,
+}
+
+fn optional_json_float<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error> {
+    Option::<serde_json::Number>::deserialize(deserializer)?
+        .map(|number| {
+            number
+                .as_f64()
+                .ok_or_else(|| serde::de::Error::custom("expected finite CPU number"))
+        })
+        .transpose()
 }
 
 impl Container {

@@ -34,7 +34,7 @@ struct Args {
     json_schema: bool,
     #[arg(
         long,
-        help = "Open the interactive resource tree (requires a terminal)"
+        help = "Open the interactive resource tree; s opens Settings (requires a terminal)"
     )]
     tui: bool,
     #[arg(long, help = "Explain output fields, units and missing values")]
@@ -162,7 +162,8 @@ fn run() -> Result<()> {
                 overrides.insert(key.into(), value.into());
             }
         }
-        let resolved = state.registry_reported()?.resolve(&user, &overrides)?;
+        let registry = state.registry_reported()?;
+        let resolved = registry.resolve(&user, &overrides)?;
         for key in &resolved.report().unknown_keys {
             eprintln!("reswho: unknown setting {key} (not applied)");
         }
@@ -232,6 +233,12 @@ fn run() -> Result<()> {
                     args.depth,
                     args.sort,
                     refresh_interval,
+                    settings::edit::Settings::new(
+                        registry,
+                        user,
+                        overrides,
+                        args.config.or_else(settings::default_path),
+                    ),
                 );
             }
             let mut snapshot = snapshot::capture(
