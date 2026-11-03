@@ -70,7 +70,7 @@ draft 建立後才建置 release binary；檢查與打包成功後以不含 `--c
 
 `scripts/release` 在 crate 發佈後，最多等待5分鐘尋找同 tag＋commit SHA＋push event＋release workflow 的 run，再以最多1800秒輪詢該 run 的 Actions API `status`／`conclusion`，每次 request 最多30秒，持續核對 `head_sha`。不使用需要額外 jobs／annotations 讀取的 `gh run watch`。成功後透過 public release URLs 下載三個 assets（不依賴 Contents read-only token 能否讀 release API），驗證 archive 檔名／SHA256、成員清單及 formula 與 reviewed template／tag／checksum 完全相同，再檢查 Ruby syntax。
 
-再次確認 tap HEAD、工作樹與 remote SHA 未變後，才複製到既有 `Formula/reswho.rb`。停用 Homebrew auto-update 執行 style／readall／strict audit，完成 tap 本地 commit，只印出待維護者執行的 tap push。沒有跨 repo token；不自動 tap push。
+再次確認 tap HEAD、工作樹與 remote SHA 未變後，才複製到既有 `Formula/reswho.rb`。停用 Homebrew auto-update 執行 style／readall／strict audit，完成 tap 本地 commit，只印出待維護者執行的 tap push，明確使用 `git@github.com:noih/homebrew-tap.git` 保留 SSH passphrase gate，不修改 tap remote。沒有跨 repo token；不自動 tap push。
 
 維護者仍需在 macOS 15 Apple Silicon 做真實安裝與 `brew test reswho`，審核 tap 本地 commit 後自行推送。只有 tap 公開後才能宣稱 `brew install noih/tap/reswho` 可用。Ruby syntax 驗證不能取代真實 Homebrew 測試。檢查 public download、Actions 結果及 crates.io 實際安裝後才更新 README 的待發佈文字。
 

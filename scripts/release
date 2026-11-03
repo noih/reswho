@@ -40,7 +40,10 @@ absent "repos/$repo/releases/tags/$tag"
 tap=$(brew --repository noih/tap 2>/dev/null) || die 'existing noih/tap checkout required; set up the tap yourself before releasing'
 [[ -d $tap/Formula ]] || die 'tap Formula directory is missing'
 tap_origin=$(git -C "$tap" remote get-url origin)
-[[ $tap_origin == git@github.com:noih/homebrew-tap.git || $tap_origin == https://github.com/noih/homebrew-tap.git ]] || die 'tap origin is not noih/homebrew-tap'
+case $tap_origin in
+  git@github.com:noih/homebrew-tap|git@github.com:noih/homebrew-tap.git|https://github.com/noih/homebrew-tap|https://github.com/noih/homebrew-tap.git) ;;
+  *) die 'tap origin is not noih/homebrew-tap' ;;
+esac
 [[ -z $(git -C "$tap" status --porcelain) ]] || die 'tap checkout must be clean'
 tap_branch=$(git -C "$tap" branch --show-current)
 [[ -n $tap_branch ]] || die 'tap checkout must be on a branch'
@@ -151,4 +154,4 @@ HOMEBREW_NO_AUTO_UPDATE=1 brew audit --strict noih/tap/reswho
 git -C "$tap" add Formula/reswho.rb
 git -C "$tap" commit -m "reswho $version"
 printf 'Released %s; tap commit is local. Review and push it yourself:\n' "$tag"
-printf '  git -C %q push origin %q\n' "$tap" "$tap_branch"
+printf '  git -C %q push git@github.com:noih/homebrew-tap.git %q\n' "$tap" "$tap_branch"

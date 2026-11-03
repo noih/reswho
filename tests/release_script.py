@@ -31,7 +31,7 @@ if tool == "git":
     elif args == ["branch", "--show-current"]: print("main")
     elif args == ["status", "--porcelain"]:
         if failure == "dirty": print(" M unrelated")
-    elif args[:2] == ["remote", "get-url"]: print("git@github.com:noih/" + ("homebrew-tap" if tap else "reswho") + ".git")
+    elif args[:2] == ["remote", "get-url"]: print(os.environ["RELEASE_TEST_TAP_ORIGIN"] if tap else "git@github.com:noih/reswho.git")
     elif args == ["rev-parse", "HEAD"]: print("taphead" if tap else "releasehead")
     elif args[:2] == ["merge-base", "--is-ancestor"]: pass
     elif args[:3] == ["rev-parse", "-q", "--verify"]: sys.exit(0 if failure == "local-tag" else 1)
@@ -99,7 +99,7 @@ elif tool not in ("ruby", "shasum", "sleep"): raise AssertionError(tool)
 
 
 class ReleaseScriptTests(unittest.TestCase):
-    def run_release(self, version=VERSION, failure=""):
+    def run_release(self, version=VERSION, failure="", tap_origin="git@github.com:noih/homebrew-tap.git"):
         temporary = tempfile.TemporaryDirectory(prefix="reswho-release-script-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -117,12 +117,33 @@ class ReleaseScriptTests(unittest.TestCase):
             wrapper.chmod(0o755)
         original = {p:(root / p).read_text() for p in ("Cargo.toml", "Cargo.lock", "examples/extensions/example.json")}
         (root / "state").write_text(json.dumps({"original": original}))
-        env = dict(os.environ, PATH=str(root / "bin") + ":/usr/bin:/bin", HOME=str(root), TMPDIR=str(root / "tmp"), RELEASE_TEST_ROOT=str(root), RELEASE_TEST_FAILURE=failure, CARGO_REGISTRY_TOKEN="NEVER_LOG_THIS_TOKEN")
+        env = dict(os.environ, PATH=str(root / "bin") + ":/usr/bin:/bin", HOME=str(root), TMPDIR=str(root / "tmp"), RELEASE_TEST_ROOT=str(root), RELEASE_TEST_FAILURE=failure, RELEASE_TEST_TAP_ORIGIN=tap_origin, CARGO_REGISTRY_TOKEN="NEVER_LOG_THIS_TOKEN")
         result = subprocess.run(["/bin/bash", str(root / "scripts/release"), version], cwd=root, env=env, text=True, capture_output=True, timeout=30)
         calls = [json.loads(line) for line in (root / "calls").read_text().splitlines()] if (root / "calls").exists() else []
         self.assertNotIn("NEVER_LOG_THIS_TOKEN", result.stdout + result.stderr + json.dumps(calls))
         self.assertEqual(list((root / "tmp").iterdir()), [], "owned script temporary directory leaked")
         return result, calls, root, original
+
+    def test_tap_origin_variants_print_explicit_ssh_push(self):
+        for origin in ("https://github.com/noih/homebrew-tap", "https://github.com/noih/homebrew-tap.git", "git@github.com:noih/homebrew-tap", "git@github.com:noih/homebrew-tap.git"):
+            with self.subTest(origin=origin):
+                result, calls, root, _ = self.run_release(tap_origin=origin)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("push git@github.com:noih/homebrew-tap.git main\n", result.stdout)
+                self.assertNotIn("push origin", result.stdout)
+                self.assertTrue((root / "tap/Formula/reswho.rb").exists())
+                self.assertFalse(any(c[:3] == ["git", "-C", str(root / "tap")] and c[3:4] == ["push"] for c in calls))
+
+    def test_wrong_tap_origins_stop_before_version_or_publication(self):
+        for origin in ("https://github.com/noih/homebrew-taps", "https://github.com/other/homebrew-tap", "https://example.com/noih/homebrew-tap", "https://github.com.evil/noih/homebrew-tap", "https://github.com/noih/homebrew-tap.git/extra", "https://github.com/noih/homebrew-tap-extra", "git@github.com:other/homebrew-tap.git", "git@example.com:noih/homebrew-tap.git", "git@github.com:noih/homebrew-tap.git/extra", "https://NEVER_LOG_THIS_TOKEN@github.com/noih/homebrew-tap"):
+            with self.subTest(origin=origin):
+                result, calls, root, original = self.run_release(NEXT_VERSION, tap_origin=origin)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("release: tap origin is not noih/homebrew-tap", result.stderr)
+                for path, content in original.items():
+                    self.assertEqual((root / path).read_text(), content)
+                self.assertFalse(any(c[0] == "cargo" or c[:2] in (["git", "tag"], ["git", "push"]) for c in calls))
+                self.assertEqual(list((root / "tap/Formula").iterdir()), [])
 
     def test_same_version_runs_without_empty_bump_commit(self):
         result, calls, root, original = self.run_release()
