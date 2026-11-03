@@ -14,7 +14,7 @@ scripts/release 1.0.0
 
 全部預檢通過後，先準備 Cargo.toml／Cargo.lock／同樹 example engines 的完整新內容，再逐檔 replace；寫入例外會還原原內容並刪除 staging 檔，不宣稱跨檔 power-loss transaction。拒絕倒退版本。同版本初次1.0.0允許不產生空 bump commit；仍完整驗證並建立新的 annotated tag。example range 使用目前版本至下一個 major，與同樹編譯的例子一致。測試 helpers 讀 `CARGO_PKG_VERSION`，不以首發版本綁死相容性。
 
-依序完成 fmt、clippy、串行一般測試、兩組離線腳本測試及 Cargo dry-run，才本地 commit/tag、push main/tag、執行真實 `cargo publish --locked`。使用者的 Cargo 自行取得認證；腳本不讀、不印 credential 檔或 token。認證是否有 upload 權限仍須真實發佈證明。
+依序完成 fmt、clippy、串行一般測試、兩組離線腳本測試及 Cargo dry-run，再建置／打包預定版本，對生成的 formula 路徑執行標準 `brew style`，成功後才本地 commit/tag、push main/tag、執行真實 `cargo publish --locked`。預檢也必須能唯讀存取 Actions runs API；403 會在 tag/push 前停止，不要求擴大 token 或調整認證。使用者的 Cargo 自行取得認證；腳本不讀、不印 credential 檔或 token。認證是否有 upload 權限仍須真實發佈證明。
 
 推送 release tag 是 GitHub Release 的發佈觸發：workflow 先建立 draft，只有建置、smoke、checksum、formula 與上傳完整性全部成功，才自動公開。不另設手動公開步驟。首次準備不建立 tag，也不執行任何遠端發佈。
 
@@ -56,7 +56,7 @@ Cargo include 清單包含原始碼、`build.rs`、C bridges、schemas、tests�
 
 維護者推送 reviewed commit 與對應 tag 前，確認 tag 指向預期 commit；不要推送未審核的 release workflow。workflow 每個 tag 串行且不中斷既有 run；先跑 fmt／clippy／一般測試與打包單元檢查。GitHub API 只有明確404才視為不存在，其他讀取錯誤直接失敗。任何既有 release（含 draft）都拒絕重用，`--verify-tag` 避免意外建立遠端 tag。
 
-draft 建立後才建置 release binary；檢查與打包成功後以不含 `--clobber` 的 `gh release upload` 一次上傳三個 assets，再確認仍為 draft 且 asset 名稱完整吻合，才自動公開。不要在 workflow 執行中手動公開或修改 draft。
+draft 建立後才建置 release binary；檢查與打包成功後以不含 `--clobber` 的 `gh release upload` 一次上傳三個 assets，對生成的 formula 執行標準 `brew style`，再確認仍為 draft 且 asset 名稱完整吻合，才自動公開。不要在 workflow 執行中手動公開或修改 draft。
 
 失敗恢復界線：
 
@@ -68,7 +68,7 @@ draft 建立後才建置 release binary；檢查與打包成功後以不含 `--c
 
 ## Tap 與公開後驗證
 
-`scripts/release` 在 crate 發佈後，最多等待5分鐘尋找同 tag＋commit SHA＋push event＋release workflow 的 run，再以30分鐘 timeout 觀看該 run。成功後透過 public release URLs 下載三個 assets（不依賴 Contents read-only token 能否讀 release API），驗證 archive 檔名／SHA256、成員清單及 formula 與 reviewed template／tag／checksum 完全相同，再檢查 Ruby syntax。
+`scripts/release` 在 crate 發佈後，最多等待5分鐘尋找同 tag＋commit SHA＋push event＋release workflow 的 run，再以最多1800秒輪詢該 run 的 Actions API `status`／`conclusion`，每次 request 最多30秒，持續核對 `head_sha`。不使用需要額外 jobs／annotations 讀取的 `gh run watch`。成功後透過 public release URLs 下載三個 assets（不依賴 Contents read-only token 能否讀 release API），驗證 archive 檔名／SHA256、成員清單及 formula 與 reviewed template／tag／checksum 完全相同，再檢查 Ruby syntax。
 
 再次確認 tap HEAD、工作樹與 remote SHA 未變後，才複製到既有 `Formula/reswho.rb`。停用 Homebrew auto-update 執行 style／readall／strict audit，完成 tap 本地 commit，只印出待維護者執行的 tap push。沒有跨 repo token；不自動 tap push。
 
@@ -87,3 +87,5 @@ draft 建立後才建置 release binary；檢查與打包成功後以不含 `--c
 - Actions 成功但 assets／tap 階段失敗：已公開版本保持不變。重新下載該版本三個 assets 並驗證，協調 tap 的乾淨狀態後人工續做 formula copy／checks／commit；已存在的 tap commit 只需 review 後自行 push。不要重跑 release 或覆寫公開 assets。
 
 真正 Actions、crates.io upload、公開下載與 Homebrew 安裝都不在離線 fake-command 測試的證明範圍內。
+
+生成 formula 的 `brew style` 在使用者 push 前與 tag workflow 公開前各檢查一次，兩處都使用標準已安裝 Homebrew 工具。`brew readall` CLI 僅支援已安裝 tap；為避免修改真實 tap，未加入預發佈 readall，仍保留在複製 formula 後。離線準備禁止安裝依賴，本機 wrapper 的 gem 載入限制與 focused cop 結果需分開回報，不能宣稱完整 style／readall／audit 已通過。

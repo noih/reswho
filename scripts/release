@@ -24,6 +24,7 @@ cd "$(git rev-parse --show-toplevel)"
 [[ $(git remote get-url --push origin) == git@github.com:noih/reswho.git ]] || die 'origin push URL must be the intended SSH repository'
 gh auth status >/dev/null 2>&1 || die 'gh authentication is required'
 remote_main=$(gh api "repos/$repo/git/ref/heads/main" --jq .object.sha)
+gh api "repos/$repo/actions/runs?per_page=1" >/dev/null || die 'Actions API read access is required before releasing; no tag or push attempted'
 git merge-base --is-ancestor "$remote_main" HEAD || die 'remote main is not an ancestor of local HEAD; reconcile the checkout yourself before releasing'
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
   die "$tag already exists locally; inspect prior progress, do not recreate it"
@@ -82,6 +83,10 @@ cargo test --locked -- --test-threads=1
 python3 tests/release_package.py
 python3 tests/release_script.py
 cargo publish --dry-run --locked --allow-dirty
+phase='generated formula verification before push'
+MACOSX_DEPLOYMENT_TARGET=15.0 cargo build --release --locked --target aarch64-apple-darwin --bin reswho
+python3 scripts/package-release "$tag" target/aarch64-apple-darwin/release/reswho "$temporary/preflight-dist"
+HOMEBREW_NO_AUTO_UPDATE=1 brew style "$temporary/preflight-dist/reswho.rb"
 if ! git diff --quiet -- Cargo.toml Cargo.lock examples/extensions/example.json; then
   git add Cargo.toml Cargo.lock examples/extensions/example.json
   git commit -m "chore(release): prepare $version"
@@ -102,9 +107,20 @@ for ((attempt=0; attempt<60; attempt++)); do
   sleep 5
 done
 [[ -n $run ]] || die 'no matching Actions run within five minutes; inspect the pushed tag and Actions before resuming'
-python3 - "$run" <<'PY'
-import subprocess, sys
-subprocess.run(["gh", "run", "watch", "--repo", "noih/reswho", sys.argv[1], "--exit-status", "--interval", "10"], check=True, timeout=1800)
+python3 - "$run" "$release_commit" <<'PY'
+import json, subprocess, sys, time
+run, commit = sys.argv[1:]
+deadline = time.monotonic() + 1800
+while time.monotonic() < deadline:
+    result = subprocess.run(["gh", "api", "repos/noih/reswho/actions/runs/" + run], check=True, capture_output=True, text=True, timeout=min(30, deadline - time.monotonic()))
+    state = json.loads(result.stdout)
+    assert state["head_sha"] == commit, "Actions run commit mismatch"
+    if state["status"] == "completed":
+        assert state["conclusion"] == "success", "Release workflow failed: " + str(state["conclusion"])
+        break
+    time.sleep(min(10, max(0, deadline - time.monotonic())))
+else:
+    raise TimeoutError("Release workflow did not complete within 1800 seconds")
 PY
 
 phase='verify published assets and prepare tap'

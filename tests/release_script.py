@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +46,13 @@ elif tool == "gh":
     if args[:2] == ["auth", "status"]: pass
     elif args[:1] == ["api"]:
         path = args[1]
-        if "homebrew-tap" in path: print("drift" if failure == "tap-drift" else "taphead")
+        if "/actions/runs?" in path:
+            if failure == "actions-403":
+                print("gh: Forbidden (HTTP 403)", file=sys.stderr); fail()
+            print('{}')
+        elif "/actions/runs/" in path:
+            print(json.dumps({"head_sha":"releasehead","status":"completed","conclusion":"failure" if failure == "actions" else "success"}))
+        elif "homebrew-tap" in path: print("drift" if failure == "tap-drift" else "taphead")
         elif path.endswith("heads/main"): print("basehead")
         else:
             if failure == "existing-release": sys.exit(0)
@@ -60,11 +67,16 @@ elif tool == "brew":
         if failure == "missing-tap": fail()
         print(root / "tap")
     elif args[:1] not in (["style"], ["readall"], ["audit"]): raise AssertionError(args)
+    elif args[:1] == ["style"] and failure == "style": fail()
 elif tool == "cargo":
     if (failure == "gate" and args[:1] == ["test"]) or (failure == "publish" and args == ["publish", "--locked"]): fail()
 elif tool == "python3":
     if args[:1] == ["-"]: os.execv(sys.executable, [sys.executable, *args])
     if args[0] not in ("scripts/package-release", "tests/release_package.py", "tests/release_script.py"): raise AssertionError(args)
+    if args[0] == "scripts/package-release" and len(args) == 4:
+        import string
+        output = pathlib.Path(args[3]); output.mkdir()
+        (output / "reswho.rb").write_text(string.Template((root / "packaging/reswho.rb.template").read_text()).substitute(TAG=args[1],SHA256="0"*64))
 elif tool == "curl":
     destination = pathlib.Path(args[args.index("-o") + 1])
     name = destination.name
@@ -123,6 +135,8 @@ class ReleaseScriptTests(unittest.TestCase):
         publish = calls.index(["cargo", "publish", "--locked"])
         download = next(i for i,c in enumerate(calls) if c[0] == "curl")
         self.assertTrue(gate < tag < push < publish < download)
+        style = next(i for i,c in enumerate(calls) if c[:2] == ["brew", "style"])
+        self.assertTrue(gate < style < tag < push)
         listing = next(c for c in calls if c[:3] == ["gh", "run", "list"])
         self.assertIn("releasehead", listing)
         self.assertIn("v" + VERSION, listing)
@@ -138,12 +152,12 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertIn(["git", "commit", "-m", "chore(release): prepare " + NEXT_VERSION], calls)
 
     def test_preflight_and_gate_failures_cannot_push(self):
-        for failure in ("dirty", "403", "local-tag", "existing-release", "missing-tap", "tap-drift", "gate"):
+        for failure in ("dirty", "403", "actions-403", "local-tag", "existing-release", "missing-tap", "tap-drift", "gate", "style"):
             with self.subTest(failure=failure):
                 result, calls, root, original = self.run_release(NEXT_VERSION, failure)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(any(c[:2] == ["git", "push"] or c == ["cargo", "publish", "--locked"] for c in calls))
-                if failure != "gate":
+                if failure not in ("gate", "style"):
                     self.assertEqual((root / "Cargo.toml").read_text(), original["Cargo.toml"])
 
     def test_partial_publication_and_invalid_assets_stop_before_tap(self):
@@ -160,6 +174,20 @@ class ReleaseScriptTests(unittest.TestCase):
         result, calls, _, _ = self.run_release("$(touch forbidden)")
         self.assertEqual(result.returncode, 2)
         self.assertEqual(calls, [])
+
+    def test_actions_polling_keeps_commit_binding_and_time_budget(self):
+        source = (ROOT / "scripts/release").read_text()
+        polling = "run, commit = sys.argv[1:]" + source.split("run, commit = sys.argv[1:]", 1)[1].split("\nPY", 1)[0]
+        result = subprocess.CompletedProcess([], 0, json.dumps({"head_sha":"releasehead","status":"in_progress","conclusion":None}))
+        with mock.patch.object(sys, "argv", ["-", "4242", "releasehead"]), mock.patch("time.monotonic", side_effect=[0,0,0,1800,1800]), mock.patch("time.sleep"), mock.patch("subprocess.run", return_value=result) as request:
+            with self.assertRaises(TimeoutError):
+                exec(polling, {"sys":sys, "time":__import__("time"), "subprocess":subprocess, "json":json})
+            self.assertEqual(request.call_args.args[0][-1], "repos/noih/reswho/actions/runs/4242")
+            self.assertLessEqual(request.call_args.kwargs["timeout"], 30)
+        result.stdout = json.dumps({"head_sha":"unexpected","status":"completed","conclusion":"success"})
+        with mock.patch.object(sys, "argv", ["-", "4242", "releasehead"]), mock.patch("subprocess.run", return_value=result):
+            with self.assertRaisesRegex(AssertionError, "commit mismatch"):
+                exec(polling, {"sys":sys, "time":__import__("time"), "subprocess":subprocess, "json":json})
 
 
 if __name__ == "__main__":
