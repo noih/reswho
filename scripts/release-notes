@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+import argparse
+from pathlib import Path
+import re
+import sys
+
+
+def extract_notes(changelog, version):
+    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
+        raise ValueError("version must be X.Y.Z (stable versions only)")
+    lines = changelog.splitlines(keepends=True)
+    matches = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == "## " + version]
+    if len(matches) != 1:
+        raise ValueError("expected exactly one CHANGELOG heading: ## " + version)
+    start = matches[0] + 1
+    end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))
+    body = "".join(lines[start:end]).strip()
+    if not body:
+        raise ValueError("empty release notes for " + version)
+    return body + "\n"
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Extract one version's CHANGELOG body")
+    parser.add_argument("version")
+    args = parser.parse_args()
+    changelog = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
+    try:
+        notes = extract_notes(changelog.read_text(encoding="utf-8"), args.version)
+    except ValueError as error:
+        parser.error(str(error))
+    sys.stdout.write(notes)
+
+
+if __name__ == "__main__":
+    main()

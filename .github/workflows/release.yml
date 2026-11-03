@@ -38,6 +38,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          python3 scripts/release-notes "${TAG#v}" > "$RUNNER_TEMP/release-notes.md"
           if gh api "repos/$GH_REPO/releases/tags/$TAG" > "$RUNNER_TEMP/release.json" 2> "$RUNNER_TEMP/release-error"; then
             echo "Release already exists; refusing to overwrite any draft or published assets" >&2
             exit 1
@@ -46,7 +47,7 @@ jobs:
             cat "$RUNNER_TEMP/release-error" >&2
             exit 1
           fi
-          gh release create "$TAG" --verify-tag --draft --title "$TAG" --notes-file CHANGELOG.md
+          gh release create "$TAG" --verify-tag --draft --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
       - run: cargo build --release --locked --target aarch64-apple-darwin --bin reswho
       - name: Check and package binary
         run: |

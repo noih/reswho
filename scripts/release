@@ -21,6 +21,7 @@ done
 cd "$(git rev-parse --show-toplevel)"
 [[ $(git branch --show-current) == main ]] || die 'run on main'
 [[ -z $(git status --porcelain) ]] || die 'reswho checkout must be clean'
+python3 scripts/release-notes "$version" > "$temporary/release-notes.md"
 [[ $(git remote get-url --push origin) == git@github.com:noih/reswho.git ]] || die 'origin push URL must be the intended SSH repository'
 gh auth status >/dev/null 2>&1 || die 'gh authentication is required'
 remote_main=$(gh api "repos/$repo/git/ref/heads/main" --jq .object.sha)

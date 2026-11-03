@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from unittest import mock
 
@@ -73,7 +74,7 @@ elif tool == "brew":
 elif tool == "cargo":
     if (failure == "gate" and args[:1] == ["test"]) or (failure == "publish" and args == ["publish", "--locked"]): fail()
 elif tool == "python3":
-    if args[:1] == ["-"]: os.execv(sys.executable, [sys.executable, *args])
+    if args[:1] == ["-"] or args[:1] == ["scripts/release-notes"]: os.execv(sys.executable, [sys.executable, *args])
     if args[0] not in ("scripts/package-release", "tests/release_package.py", "tests/release_script.py"): raise AssertionError(args)
     if args[0] == "scripts/package-release" and len(args) == 4:
         import string
@@ -101,16 +102,17 @@ elif tool not in ("ruby", "shasum", "sleep"): raise AssertionError(tool)
 
 
 class ReleaseScriptTests(unittest.TestCase):
-    def run_release(self, version=VERSION, failure="", tap_origin="git@github.com:noih/homebrew-tap.git"):
+    def run_release(self, version=VERSION, failure="", tap_origin="git@github.com:noih/homebrew-tap.git", changelog=None):
         temporary = tempfile.TemporaryDirectory(prefix="reswho-release-script-")
         self.addCleanup(temporary.cleanup)
         owned = Path(temporary.name).resolve()
         root = owned / "reswho"
         root.mkdir()
-        for name in ("Cargo.toml", "Cargo.lock", "examples/extensions/example.json", "packaging/reswho.rb.template", "scripts/release"):
+        for name in ("Cargo.toml", "Cargo.lock", "examples/extensions/example.json", "packaging/reswho.rb.template", "scripts/release", "scripts/release-notes"):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
+        (root / "CHANGELOG.md").write_text(changelog if changelog is not None else "## " + version + "\n\nRelease notes.\n")
         if failure != "missing-tap":
             (owned / "homebrew-tap/Formula").mkdir(parents=True)
         managed_formula = owned / "managed-tap/Formula/reswho.rb"
@@ -187,6 +189,37 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertIn('name = "reswho"\nversion = "' + NEXT_VERSION + '"', (root / "Cargo.lock").read_text())
         self.assertEqual(json.loads((root / "examples/extensions/example.json").read_text())["engines"]["reswho"], ">=" + NEXT_VERSION + " <" + str(int(NEXT_VERSION.split(".")[0]) + 1) + ".0.0")
         self.assertIn(["git", "commit", "-m", "chore(release): prepare " + NEXT_VERSION], calls)
+
+    def test_invalid_notes_stop_before_version_changes_or_public_actions(self):
+        for changelog in ("## 1.0.0\nOld.\n", "## 1.0.1\n \n", "## 1.0.1\nFix.\n## 1.0.1\nOther.\n"):
+            with self.subTest(changelog=changelog):
+                result, calls, root, original = self.run_release("1.0.1", changelog=changelog)
+                self.assertNotEqual(result.returncode, 0)
+                for path, content in original.items():
+                    self.assertEqual((root / path).read_text(), content)
+                self.assertFalse(any(c[0] in ("gh", "cargo", "curl") or c[:2] in (["git", "commit"], ["git", "tag"], ["git", "push"]) for c in calls))
+
+    def test_workflow_draft_uses_exact_extracted_body_and_rejects_invalid_notes(self):
+        source = (ROOT / ".github/workflows/release.yml").read_text()
+        draft = textwrap.dedent(source.split("      - name: Create a new draft only\n", 1)[1].split("        run: |\n", 1)[1].split("      - run:", 1)[0])
+        with tempfile.TemporaryDirectory(prefix="reswho-release-draft-") as temporary:
+            root = Path(temporary)
+            (root / "scripts").mkdir()
+            shutil.copyfile(ROOT / "scripts/release-notes", root / "scripts/release-notes")
+            (root / "gh").write_text('#!' + sys.executable + '\nimport pathlib, sys\nroot = pathlib.Path(__file__).parent\nwith (root / "calls").open("a") as log: log.write(repr(sys.argv[1:]) + "\\n")\nif sys.argv[1] == "api":\n print("HTTP 404", file=sys.stderr)\n sys.exit(1)\nassert sys.argv[1:8] == ["release", "create", "v1.0.1", "--verify-tag", "--draft", "--title", "v1.0.1"]\n(root / "body").write_bytes(pathlib.Path(sys.argv[sys.argv.index("--notes-file") + 1]).read_bytes())\n')
+            (root / "gh").chmod(0o755)
+            env = dict(os.environ, PATH=temporary + ":" + os.environ["PATH"], TAG="v1.0.1", GH_REPO="noih/reswho", RUNNER_TEMP=temporary)
+            body = b"Updated the README with a clearer introduction, quick-start examples, and links to detailed guides.\n\nNo functional changes.\n"
+            (root / "CHANGELOG.md").write_bytes((ROOT / "CHANGELOG.md").read_bytes())
+            result = subprocess.run(["/bin/bash", "-euo", "pipefail", "-c", draft], cwd=root, env=env, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / "body").read_bytes(), body)
+            for changelog in ("## 1.0.0\nOld.\n", "## 1.0.1\n", "## 1.0.1\nFix.\n## 1.0.1\nOther.\n"):
+                (root / "calls").unlink(missing_ok=True)
+                (root / "CHANGELOG.md").write_text(changelog)
+                result = subprocess.run(["/bin/bash", "-euo", "pipefail", "-c", draft], cwd=root, env=env, capture_output=True, timeout=5)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((root / "calls").exists())
 
     def test_preflight_and_gate_failures_cannot_push(self):
         for failure in ("dirty", "403", "actions-403", "local-tag", "existing-release", "missing-tap", "tap-wrong-root", "tap-dirty", "tap-drift", "gate", "style"):

@@ -10,6 +10,8 @@ scripts/release 1.0.0
 
 參數決定 package version 與 tag。這是具有發佈權限的使用者入口，會執行普通 SSH `git push`，保留 passphrase gate；不 bypass hook、不調整認證、不 fetch／pull／clone。不要在代理的準備或測試工作階段執行真實入口。
 
+發佈前先在 `CHANGELOG.md` 撰寫唯一的精確 `## X.Y.Z` 標題與非空正文；版本由 `scripts/release X.Y.Z` 更新。`python3 scripts/release-notes X.Y.Z` 只輸出該節正文（不含版本標題），到下一個 `## ` 標題為止，並保留一個結尾換行。缺少、空白或重複章節會在本地版本修改／commit／tag／push 與 workflow 建立 draft 前停止；GitHub Release body 使用這份輸出。
+
 腳本先確認乾淨 main、指定 SSH origin、remote main 為本地祖先、全新 local/remote tag 與 release、gh auth、工具與 reswho Git root 的 sibling `../homebrew-tap` 開發 checkout。該目錄必須存在且為獨立 Git root，解析為 canonical absolute path 後，所有 tap 檢查、formula copy、本地 commit 與最後印出的 SSH push 都使用此路徑；不透過 `brew --repository` 尋找 Homebrew 管理的副本。開發 checkout 必須乾淨且位於 branch。tap origin 必須為 `noih/homebrew-tap`，本地 HEAD 須與 `gh api` 查到的 remote branch SHA 相同；若不存在／漂移，發佈前停止，由維護者自行設定或協調，不自動安裝 tap 或同步其他 repo。403 不當成不存在。
 
 全部預檢通過後，先準備 Cargo.toml／Cargo.lock／同樹 example engines 的完整新內容，再逐檔 replace；寫入例外會還原原內容並刪除 staging 檔，不宣稱跨檔 power-loss transaction。拒絕倒退版本。同版本初次1.0.0允許不產生空 bump commit；仍完整驗證並建立新的 annotated tag。example range 使用目前版本至下一個 major，與同樹編譯的例子一致。測試 helpers 讀 `CARGO_PKG_VERSION`，不以首發版本綁死相容性。

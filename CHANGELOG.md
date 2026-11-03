@@ -2,8 +2,9 @@
 
 ## 1.0.1
 
-- 精簡 README，以快速定位資源所屬的 app、project、container 與相關程序為主軸，保留安裝、使用範例與詳細文件連結。
-- 更新1.0.0發佈狀態，移除已完成步驟的待驗證文字。
+Updated the README with a clearer introduction, quick-start examples, and links to detailed guides.
+
+No functional changes.
 
 ## 1.0.0
 
