@@ -9,7 +9,7 @@ cargo run -- --md
 cargo run -- --json --depth 1
 cargo run -- --md --from group:projects --depth 2
 cargo run -- --md --from pid:1234 --depth all
-cargo run -- --help-format
+cargo run -- --help-md
 ```
 
 `pid:1234` 是範例，須替換為當前 PID。`group:` ref 可直接從輸出複製。
@@ -39,8 +39,8 @@ cargo run -- --help-format
 - 同一組內的父子關係須有相容的啟動時間；循環或超過 128 層的異常鏈轉為明示的獨立根，避免遺失或重複程序。
 - Ownership group ID 使用 dimension／id／canonical root 的穩定身分，不含勝出來源或 label；同一快照會檢查碰撞並拒絕混組。識別規則屬原型契約，未來若改變必須更新格式版本。
 - 深度從選取起點 0 計算，預設 2；metadata 不算資源階層。限制深度不改變已計算的 totals。
-- Markdown 收合標記為原列尾端的 `[+N]`（收合的直接子項數），不另列展開指令；用法見 `--help-format`。此標記僅影響顯示，ref 與 JSON omitted_children 不變。
-- 路徑證據簡寫為 `app PATH`／`git PATH`，意義集中在 `--help-format`，不逐項描述辨識步驟。
+- Markdown 收合標記為原列尾端的 `[+N]`（收合的直接子項數），不另列展開指令；閱讀方式見 `--help-md`，指令用法見 `--help`。此標記僅影響顯示，ref 與 JSON omitted_children 不變。
+- 路徑證據簡寫為 `app PATH`／`git PATH`，意義集中在 `--help-md`，不逐項描述辨識步驟。
 
 ## Projects 與分類優先級
 

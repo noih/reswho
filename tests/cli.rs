@@ -2,20 +2,77 @@ use std::process::Command;
 
 #[test]
 fn help_is_available_without_resource_collection() {
-    let result = Command::new(env!("CARGO_BIN_EXE_reswho"))
-        .arg("--help-format")
-        .output()
-        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.json");
+    std::fs::write(&config, "invalid config: must not be read").unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_reswho"))
+            .env("XDG_CONFIG_HOME", dir.path())
+            .arg("--config")
+            .arg(&config)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let result = run(&["--help-md"]);
     assert!(result.status.success());
     assert!(result.stderr.is_empty());
+    let obsolete = run(&["--help-format"]);
+    assert_eq!(obsolete.status.code(), Some(2));
+    assert!(obsolete.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&obsolete.stderr).contains("unexpected argument '--help-format'")
+    );
     let text = String::from_utf8(result.stdout).unwrap();
-    assert!(text.contains("reswho-md/19"));
-    assert!(text.contains("root=0"));
-    assert!(text.contains("Group ⏱︎ is the longest known member uptime"));
-    assert!(text.contains("ΣN is the total host process count"));
-    assert!(text.contains("[+N] counts collapsed direct children"));
-    assert!(text.contains("reswho --md --from REF --depth N"));
-    assert!(!text.contains("Captured:"));
+    for meaning in [
+        "reswho-md/19",
+        "root=0",
+        "Group ⏱︎ is the longest",
+        "ΣN is the total host process count",
+        "[+N] counts collapsed direct children",
+        "Classification",
+        "[resource:kind]",
+        "not a security",
+        "docs/containers.md",
+        "--json-schema and docs/json-format.md",
+    ] {
+        assert!(text.contains(meaning), "missing {meaning}");
+    }
+    assert!(!text.contains("Command arguments, environment"));
+    for flag in ["-h", "--help"] {
+        let result = run(&[flag]);
+        assert!(result.status.success());
+        assert!(result.stderr.is_empty());
+        let text = String::from_utf8(result.stdout).unwrap();
+        for heading in [
+            "Output:",
+            "Selection/expansion:",
+            "Sorting:",
+            "Sampling/refresh:",
+            "Configuration:",
+        ] {
+            assert!(text.contains(heading), "missing {heading}");
+        }
+        assert!(text.contains("--help-md"));
+        assert!(!text.contains("--help-format"));
+        assert!(!text.contains("collection prototype"));
+        assert!(text.lines().all(|line| line.chars().count() <= 80));
+    }
+    for args in [
+        vec!["--json-schema", "--help-md"],
+        vec!["--help-md", "--json-schema"],
+        vec!["--json-schema", "--help-md", "settings", "--json"],
+    ] {
+        let result = run(&args);
+        assert!(!result.status.success(), "accepted {args:?}");
+        assert!(result.stdout.is_empty());
+        assert!(!result.stderr.is_empty());
+    }
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "invalid config: must not be read"
+    );
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }
 
 #[test]
@@ -117,7 +174,7 @@ fn config_failures_defaults_and_help_do_not_collect() {
             .status
             .success()
     );
-    for flag in ["--help", "--help-format", "--json-schema"] {
+    for flag in ["--help", "--help-md", "--json-schema"] {
         assert!(run(&[flag, "--config", path]).status.success());
     }
     for contents in ["SECRET", r#"{"version":2,"settings":{}}"#] {

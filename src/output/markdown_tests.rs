@@ -54,7 +54,7 @@ fn report_categories_quotes_and_process_lists_have_distinct_structure() {
     let snapshot = fixture_snapshot();
     let md = markdown(&snapshot);
     assert!(md.starts_with("# reswho\n\n"));
-    assert!(md.contains("reswho-md/19"));
+    assert!(md.contains("reswho-md/19 · help: reswho --help-md"));
     assert!(!md.contains("Collection prototype:"));
     assert_eq!(md.matches("> ! Host swap:").count(), 1);
     assert!(!md.contains("Resources group:all"));

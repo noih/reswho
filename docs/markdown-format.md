@@ -2,6 +2,8 @@
 
 已實作：`reswho-md/19`。Tenqo：rw-8、rw-9、rw-16。JSON `reswho/12`，語意見 [JSON 格式](json-format.md)。容器採用獨立統計範圍，詳見 [容器採集](containers.md)；ownership group ref 依 dimension／id／canonical root 決定，早期原型 refs 應從目前 snapshot 重新取得。
 
+`reswho --help-md` 提供精簡英文閱讀指南。CLI 用法與範例見 `reswho --help`。
+
 ## 原則
 
 固定位置與單位已能解釋的資料，使用一般文字。符號只負責區分結構、補充狀態或保護字面值；不增加純裝飾。名稱完整保留，不用 `=` 取代。格式應同時適合直接讀原始文字與 Markdown renderer。
@@ -16,7 +18,7 @@
 | 巢狀 `-` | 群組與程序 | 依資源樹縮排；同一串清單不混用 `+`／`*` |
 | 縮排 `>` | 所屬節點的路徑、證據、診斷 | reswho 的附註約定，Markdown 本義是引用；不佔深度 |
 | 行內 code | 路徑等易被 Markdown 誤讀的字面值 | 名稱、ref、數值不額外包裝 |
-| 表格／程式碼區塊 | 欄位對照／指令範例 | 放在 `--help-format`，資源樹不改成表格 |
+| 表格／程式碼區塊 | 欄位對照／指令範例 | 閱讀說明放在 `--help-md`，CLI 指令範例放在 `--help`；資源樹不改成表格 |
 
 大分類標題後用一般段落保留 `ref · CPU  RSS  ⏱︎ uptime  ΣN`。全機不再顯示重複的 Resources 摘要列，程序數放在頂端 Host CPU 摘要；其他選取根仍保留摘要與 ref。System 只有一個 System services 包裝時直接列出其子項，證據／診斷併入 System 的附註。
 
@@ -84,7 +86,7 @@ group:unclassified · 0.0%  3.0MiB  ⏱︎ 5h  Σ2
 - 全機 `--depth 0` 只有整機摘要、程序數與必要診斷；尚有子項時程序數後保留 `[+N]`。`--depth 1` 可見分類標題及摘要，分類有未展開成員時摘要末尾保留 `[+N]`。
 - `--from group:…` 只顯示選取分支；不為版面補回上層 category。`--from pid:…` 顯示該 PID 的摘要與詳情，子程序仍為摘要。
 - 群組名稱、引用與子程序連續排列；同層群組之間留一個空行，連續 PID 不加空行。標題、根摘要與獨立附註仍用空行分段。清單內引用／子清單一致使用四空格縮排；連續附註使用 Markdown hard break。
-- 格式說明維持單一入口。表格定義欄位順序及符號，另附一次 `--from`／`--depth` 指令範例，不在每個節點重複。
+- 格式說明維持單一入口。表格定義欄位順序及符號，`--from`／`--depth` 指令範例集中在 `--help`，不在每個節點重複。
 
 ## 實作與驗證
 
@@ -94,7 +96,7 @@ group:unclassified · 0.0%  3.0MiB  ⏱︎ 5h  Σ2
 
 涵蓋全機／選取群組／PID、depth 0／1／多層、單一程序、部分未知、全 unreadable、直接與推論歸屬，以及含空白／反引號／控制字元的名稱或路徑。驗證不啟停使用者程序。
 
-參考：[Markdown Guide — Basic Syntax](https://www.markdownguide.org/basic-syntax/)。標題、清單、引用和 code 採既有 Markdown 意義；狀態符號與欄位契約由 reswho 的 `--help-format` 定義。
+參考：[Markdown Guide — Basic Syntax](https://www.markdownguide.org/basic-syntax/)。標題、清單、引用和 code 採既有 Markdown 意義；狀態符號與欄位契約由 reswho 的 `--help-md` 定義。
 
 ## PID 命令詳情
 

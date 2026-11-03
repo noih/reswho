@@ -16,64 +16,110 @@ use std::{
 #[derive(Debug, Parser)]
 #[command(
     version,
-    about = "Read-only macOS resource attribution (collection prototype)"
+    about = "Read-only macOS resource attribution: processes, containers and resources",
+    after_help = "With no output flag, terminals open the TUI; pipes emit Markdown.
+--md, --json and --tui are mutually exclusive. --json-schema also conflicts
+with these formats and --help-md.
+
+Examples:
+  reswho --md --sort cpu                Inspect a snapshot by CPU usage
+  reswho --md --from pid:1234           Read one PID's details
+  reswho --md --from group:containers --depth all
+  reswho --help-md                      Read the Markdown output guide
+  reswho settings --json                Inspect effective settings offline"
 )]
 #[command(group(ArgGroup::new("format").args(["md", "json", "tui"])))]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
-    #[arg(long, global = true, help = "Read JSON settings from PATH")]
-    config: Option<PathBuf>,
-    #[arg(long, help = "Emit a single Markdown snapshot")]
+    #[arg(
+        long,
+        help_heading = "Output",
+        help = "Emit a single Markdown snapshot"
+    )]
     md: bool,
-    #[arg(long, help = "Include current extension timings in Markdown output")]
+    #[arg(
+        long,
+        help_heading = "Output",
+        help = "Append the extension timing table to Markdown output"
+    )]
     profile: bool,
-    #[arg(long, global = true, help = "Emit JSON (snapshot or offline settings)")]
+    #[arg(
+        long,
+        global = true,
+        help_heading = "Output",
+        help = "Emit JSON (snapshot or offline settings/extensions)"
+    )]
     json: bool,
-    #[arg(long, conflicts_with_all = ["md", "json", "tui", "help_format"], help = "Print the JSON Schema without collecting resources")]
+    #[arg(long, help_heading = "Output", conflicts_with_all = ["md", "json", "tui", "help_md"], help = "Print the JSON Schema without collecting resources")]
     json_schema: bool,
     #[arg(
         long,
-        help = "Open the interactive resource tree; s opens Settings (requires a terminal)"
+        help_heading = "Output",
+        help = "Open the interactive resource tree (requires a terminal)"
     )]
     tui: bool,
-    #[arg(long, help = "Explain output fields, units and missing values")]
-    help_format: bool,
-    #[arg(long, default_value = "group:all", value_parser = parse_reference, help = "Select a pid:<number> or group:<id> branch")]
+    #[arg(
+        long = "help-md",
+        help_heading = "Output",
+        help = "Explain Markdown output offline: rows, units and symbols"
+    )]
+    help_md: bool,
+    #[arg(long, help_heading = "Selection/expansion", default_value = "group:all", value_parser = parse_reference, help = "Select pid:<number> or group:<id>")]
     from: String,
-    #[arg(long, default_value = "2", value_parser = parse_depth, help = "Output depth / initial TUI expansion (0..128 or all)")]
+    #[arg(long, help_heading = "Selection/expansion", next_line_help = true, default_value = "2", value_parser = parse_depth, help = "Depth / initial TUI expansion (0..128 or all)")]
     depth: usize,
     #[arg(
         long,
         global = true,
+        help_heading = "Selection/expansion",
+        help = "Skip container runtime queries"
+    )]
+    no_containers: bool,
+    #[arg(
+        long,
+        help_heading = "Sorting",
+        value_enum,
+        default_value = "memory",
+        hide_possible_values = true,
+        next_line_help = true,
+        help = "Sibling order: cpu/memory/uptime descending; name natural ascending.
+Sets initial TUI sort"
+    )]
+    sort: Sort,
+    #[arg(
+        long,
+        global = true,
+        help_heading = "Sampling/refresh",
+        next_line_help = true,
         help = "Override minimum CPU sampling wait in ms (200..5000; default 250)"
     )]
     sample_ms: Option<u64>,
     #[arg(
         long,
         global = true,
+        help_heading = "Sampling/refresh",
+        next_line_help = true,
         help = "Override TUI wait after each result in ms (positive; default 2000)"
     )]
     refresh_ms: Option<u64>,
-    #[arg(long, global = true, help = "Skip container runtime queries")]
-    no_containers: bool,
     #[arg(
         long,
-        value_enum,
-        default_value = "memory",
-        help = "Sort siblings by CPU, memory, uptime (descending) or natural name; also sets initial TUI sort"
+        global = true,
+        help_heading = "Configuration",
+        help = "Read JSON settings from PATH"
     )]
-    sort: Sort,
+    config: Option<PathBuf>,
 }
 
 impl Args {
     fn validate_formats(&self) -> Result<(), clap::Error> {
         if u8::from(self.md) + u8::from(self.json) + u8::from(self.tui) > 1
-            || (self.json_schema && (self.md || self.json || self.tui || self.help_format))
+            || (self.json_schema && (self.md || self.json || self.tui || self.help_md))
         {
             return Err(clap::Error::raw(
                 clap::error::ErrorKind::ArgumentConflict,
-                "--md, --json and --tui are mutually exclusive; --json-schema also conflicts with these formats and --help-format",
+                "--md, --json and --tui are mutually exclusive; --json-schema also conflicts with these formats and --help-md",
             ));
         }
         Ok(())
@@ -84,7 +130,7 @@ impl Args {
 enum Command {
     #[command(about = "Show effective settings offline without collecting resources")]
     Settings,
-    #[command(about = "List built-in extensions offline without collecting resources")]
+    #[command(about = "List built-in/installed extensions offline; manage sources")]
     Extensions {
         #[command(subcommand)]
         action: Option<ExtensionAction>,
@@ -93,9 +139,13 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum ExtensionAction {
+    #[command(about = "Register an external extension from its manifest")]
     Install { manifest: PathBuf },
+    #[command(about = "Enable an installed external extension")]
     Enable { id: String },
+    #[command(about = "Disable an installed external extension")]
     Disable { id: String },
+    #[command(about = "Unregister an external extension without deleting its files")]
     Remove { id: String },
 }
 
@@ -131,7 +181,7 @@ fn run() -> Result<()> {
     }
     let content = if args.json_schema {
         output::JSON_SCHEMA.into()
-    } else if args.help_format {
+    } else if args.help_md {
         output::FORMAT_HELP.into()
     } else if let Some(Command::Extensions {
         action: Some(action),

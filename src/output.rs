@@ -8,103 +8,148 @@ mod markdown_tests;
 
 pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-12.schema.json");
 
-pub const FORMAT_HELP: &str = "reswho-md/19 (collection prototype)\n\n\
-| Row | Fields, in order |\n\
-| --- | --- |\n\
-| Process | name pid:REF · CPU/core  RSS  uptime  ports |\n\
-| Group | name [grouping] group:REF · CPU/core sum  RSS sum  ⏱︎ uptime  ΣN |\n\
-| Container | name [container] group:REF · CPU/core  memory  uptime  state  published ports |\n\
-| Category summary | group:REF · CPU/core sum  RSS sum  ⏱︎ uptime  ΣN |\n\
-\n\
-Container groups use container counts and runtime memory, not process RSS.\n\
-Host process totals exclude the separate Containers subtree; never add both scopes.\n\
-Docker uses the current context / DOCKER_CONTEXT / DOCKER_HOST; Apple Container uses the local user service when its CLI is on PATH.\n\
-Runtimes run in parallel with a shared 10s deadline and 256-container limit per runtime; --no-containers skips container collectors. Partial inventory uses >=.\n\
-Docker Unix endpoints use fresh paired API samples; other Docker connections use CLI stats. Apple Container 1.6.1 uses fresh paired XPC counters, at most four requests in flight.\n\
-API/XPC samples use --sample-ms without cache or smoothing. Docker memory subtracts inactive file cache; Apple memory is raw memoryUsageBytes. Unsupported Apple versions retain inventory with unknown stats.\n\
-Container CPU 100% is one daemon logical core; sampling differs from host processes.\n\
-Container active = running/paused/restarting; created/exited/dead/stopped metrics are not applicable (-), excluded from unknown counts.\n\
-Container summaries show active / total; unknown activity or incomplete inventory keeps active counts partial.\n\
-Removing or unrecognized/missing states remain unknown, not inactive. Uptime is for the current running/paused incarnation.\n\
-Published tcp:HOST->CONTAINER ports are configuration, not observed listeners or traffic.\n\
-Compose labels declare project ownership; ~ bind inference requires local transport and project markers.\n\
-Remote bind paths are not checked locally. Ambiguous candidates are shown in container details.\n\
---from group:REF shows container mounts, start time, service and attribution candidates.\n\
-Runtime diagnostics omit raw CLI stderr which may contain endpoint credentials.\n\
-Grouping: [resource], [runtime], [container], [app], [repo], [checkout], [project], [bin], [system], [unknown]; categories have no tag.\n\
-The whole-machine Resources row is omitted; its process count is in the Host CPU summary.\n\
-Other selected roots are paragraphs; child categories use ## headings with a ref/totals summary.\n\
-A sole System services wrapper is flattened in Markdown before --depth is applied.\n\
-Other resources use nested - lists; indented > blocks contain attributes, not child resources.\n\
-Headings, notes and whitespace do not change --depth. List nesting uses four spaces.\n\
-Group details stay together; blank lines separate sibling groups. Consecutive PID rows stay compact.\n\
-! starts a diagnostic note with an observed error; ~ marks an explicit inference with source and conditions.\n\
-Neither mark means a process is safe to stop. Low CPU or long uptime alone adds no diagnostic.\n\
-Static collection limitations live here; snapshots retain current errors, deduplicated within their scope.\n\
-Names, grouping tags and refs use single spaces; a middle dot separates the ref from metrics; metric fields use two spaces in raw Markdown.\n\
-Names and refs are plain text; paths use inline code to preserve literal characters.\n\
-A bin containing only one process is shown directly as a PID; its group ref exists only for multiple processes.\n\
-Uptime is elapsed time since process start, including idle time.\n\
-Group ⏱︎ is the longest known member uptime, not active use or the group's lifetime; the symbol requests text presentation.\n\
-⏱︎ >=2h means at least 2h with unknown members; ⏱︎ ? means unavailable, ⏱︎ - means not applicable.\n\
-CPU 100% means one logical core for processes/groups; host CPU is 0–100%.\n\
-Memory uses binary units (KiB/MiB/GiB). Process rows show own RSS.\n\
-Group rows sum known descendant values once; shared pages can overlap.\n\
->= marks a partial sum with unknown members; ? means unavailable, - means known absent, or not applicable for inactive container metrics.\n\
-Ports: tcp:N = TCP listening port; udp:N = bound UDP port (not proof of a server).\n\
-A trailing + ? means partial socket coverage. Details show local/remote endpoints and TCP state.\n\
-Sockets count unique observed TCP/UDP sockets per process, not descriptors; no cross-process sum.\n\
-Socket snapshots are non-atomic; no traffic, Unix sockets or inactivity history is reported.\n\
-Nested groups represent attribution; nested processes represent observed parenthood.\n\
-Process rows are summaries; --from pid:N shows commands and tag decisions for the selected PID only; children remain summaries.\n\
-cmd preserves argument order; quotes delimit empty/whitespace arguments, not a runnable shell command.\n\
-[filtered] replaces detected sensitive values, assignments, URLs and inline code; other positional values may still be sensitive.\n\
-entry is a supported script/JAR launch argument, not verified ownership; relative paths are not resolved against current cwd.\n\
-Unreadable rows combine processes with no readable details; they cannot be expanded.\n\
-JSON retains individual processes and diagnostics, including unreadable entries.\n\
-PPID is preserved even when a parent belongs to a different group.\n\
-Grouping uses effective app > project > bin > unknown after highest-first source adjudication.\n\
-Evidence: app PATH = app bundle; git PATH = checkout root; repo PATH = shared Git directory.\n\
-Matching declared bundle IDs share an app parent across paths; single-path apps stay flat.\n\
-Bundle path refs remain stable; app parents exist only while multiple paths are present.\n\
-Evidence: bundle ID = declared CFBundleIdentifier, not verified signing identity.\n\
-Child bundle VERSION is the on-disk Info.plist version, not necessarily the running version.\n\
-Missing or invalid bundle metadata falls back to path grouping.\n\
-Projects use the nearest manifest or Git root; discovery stops at the nearest Git boundary.\n\
-Markers: Cargo.toml, package.json, pyproject.toml, pom.xml, settings.gradle[.kts], build.gradle[.kts],\n\
-go.work, go.mod, build.sbt, Gemfile, composer.json, pubspec.yaml, mix.exs, Package.swift,\n\
-deno.json[c], CMakeLists.txt, meson.build, build.zig. Only file presence is checked.\n\
-project FILE PATH = manifest hint; git PATH = Git boundary, including colocated projects.\n\
-Project subdirectories stay inside their checkout; coincident project/checkout roots share a row.\n\
-No marker means no project claim; cwd remains available via --from pid:N and JSON.\n\
-Fallback bin groups use exact root executable paths (exe PATH), not process names.\n\
-Bin totals include attached process subtrees; System paths retain the System category.\n\
-Missing executable paths remain unknown. Grouping does not establish a shared task or safe shutdown.\n\
-Multiple active checkouts of one repository share a project parent; a single checkout stays flat.\n\
-Checkout refs remain stable; a repository parent exists only while multiple checkouts are present.\n\
-Ancestor attribution is labelled inferred and requires matching UID/cwd and compatible start times.\n\
-A direct app/project assignment wins; different or missing cwd prevents ancestor inference.\n\
-Cwd/exe paths are hints, not proof that a process is no longer needed.\n\
---from REF selects a branch; --depth N counts edges from that branch (root=0).\n\
-ΣN is the total host process count, including all descendants; Unreadable uses its combined process count.\n\
-Depth limits presentation only. [+N] counts collapsed direct children, not all descendants or processes; children can be groups or processes.\n\
---sort cpu|memory|uptime|name applies to all output modes (default: memory).\n\
-Numeric sorts descend within siblings, unknown/inactive values last; names use natural ascending order.\n\
-Process sorts use own metrics; groups use their scope totals (partial totals use known values). Ties use ref.\n\
-Sorting preserves the tree and does not combine host and container totals.\n\
-Copy REF from the row. Use --depth all for unlimited expansion.\n\
-\n\
-```sh\n\
-reswho --md --from REF --depth N\n\
-```\n\
-\n\
-Group refs are deterministic, not display positions. PID refs query the current PID.\n\
-JSON retains the original root and System services nodes; depth counts original tree edges.\n\
-JSON system.cpu_percent is whole-host 0-100%; process.cpu_percent and totals.known_cpu_percent use one-core 100%.\n\
-JSON totals are subtree aggregates, not extra usage; do not add parent totals to children.\n\
-JSON schema reswho/12 includes structured attribution and diagnostics, raw byte counts, unknown counts and sample timing.\n\
-Use --json-schema for the offline JSON Schema; see docs/json-format.md for version and identity rules.\n\
-Command arguments, environment, container-internal processes and review rules are not collected.\n";
+pub const FORMAT_HELP: &str = r#"# Markdown reading guide — reswho-md/19
+
+Synthetic snapshot excerpt (names, refs and values are illustrative):
+
+```markdown
+# reswho
+
+Format: reswho-md/19 · help: reswho --help-md
+Captured: 1793664000000ms Unix · sample 251ms · collection 312ms
+Host CPU 8.0% · RAM 8.0GiB/16.0GiB · swap 0.0KiB · 8 logical CPUs · Σ120
+
+## Projects
+
+group:projects · 25.0%  300.0MiB  ⏱︎ 2h  Σ3
+
+- demo [project] group:abcd1234 · 25.0%  300.0MiB  ⏱︎ 2h  Σ3
+    > project Cargo.toml `/work/demo`
+    - cargo pid:1234 · 25.0%  200.0MiB  2h  - [+1]
+    - rustc pid:1236 · 0.0%  100.0MiB  5m  -
+```
+
+The project has three processes in total. cargo hides one direct child;
+rustc is another visible member. Parent totals already include descendants.
+The final process field is ports: here `-` means none observed.
+
+## Report and hierarchy
+
+Format identifies this Markdown version. Captured is Unix time in milliseconds;
+sample is the measured host sampling interval; collection is capture duration.
+Host CPU, RAM used/total, swap used and logical CPUs describe the whole machine,
+even when a branch is selected. ΣN is the total host process count at the root.
+
+Category headings carry a ref and totals; selected roots are paragraphs.
+Nested `-` lists use four spaces per level. Indented `>` blocks are attributes
+or evidence, not child resources. Paths use inline code to preserve literals.
+A sole System services wrapper is flattened; the whole-machine Resources row
+is omitted. Unreadable processes can be combined as `Unreadable  ΣN`, without
+a ref or expandable details.
+
+Copy a row's ref to select it. Group refs identify groups,
+not display positions;
+PID refs address the current PID, which may be reused. Depth counts tree edges
+from the selected root (root=0), after Markdown flattening. Headings, notes and
+blank lines do not consume depth. [+N] counts collapsed direct children,
+including groups or processes; ΣN includes all host process descendants.
+Depth hides rows without changing totals. See --help for selection examples.
+
+## Rows, values and units
+
+Fields after `·` have two spaces between them in raw output:
+
+- Process: name pid:REF · CPU  RSS  uptime  ports
+- Host group: name [grouping] group:REF · CPU sum  RSS sum  ⏱︎ uptime  ΣN
+- Category: group:REF · the same scope totals, without a name/grouping tag
+- Container: name [container] group:REF · CPU  memory  uptime  state  ports
+- Container group: name [grouping] group:REF · CPU sum  memory sum  ⏱︎ uptime
+  followed by active / total containers, rather than ΣN
+- Resource: name [resource:kind] group:REF · label: value unit
+  (up to two metrics, separated by `·`); resource groups say `independent
+metrics`
+
+Resource attributes identify the provider and optional path. Selecting a
+resource shows all its typed metrics. These metrics stay outside
+host/container totals.
+Grouping tags include [runtime], [app], [repo], [checkout], [project], [bin],
+[system] and [unknown]; they describe attribution, not extra usage.
+
+CPU 100% means one logical core for processes and host groups; container CPU
+uses one runtime/daemon logical core. Values can exceed 100%. Host CPU alone
+is whole-host 0–100%. Sampling and CPU scopes differ: never add host and
+container usage. Host process totals exclude the separate Containers subtree.
+Memory uses binary KiB/MiB/GiB units. Process RSS is its own resident memory;
+groups sum known descendant values once, but shared pages can overlap.
+Container memory is runtime memory, not host RSS. Never add parent totals to
+children, or sibling scopes that overlap.
+
+Process uptime is time since start, including idle time. Group ⏱︎ is the longest
+known member uptime, not active use or the group's lifetime. Container uptime
+is for the current running/paused incarnation. Durations use s/m/h/d.
+
+- `?`: unavailable, never zero.
+- `-`: known absent, or not applicable for inactive container metrics.
+- `>=`: partial known sum/count or oldest uptime, a lower bound.
+  For example, `⏱︎ >=2h` has unknown members; `⏱︎ ?` is unavailable.
+- `[+N]`: collapsed DIRECT children, distinct from total descendants ΣN.
+
+Container active means running/paused/restarting. Created/exited/dead/stopped
+usage is not applicable and does not count as unknown. Missing/unrecognized
+states remain unknown; incomplete inventory or activity makes counts partial.
+
+## Ports and selected details
+
+Process `tcp:N` is a TCP listening port; `udp:N` is a bound UDP port, not proof
+of a server. A trailing `+ ?` means partial socket coverage. Selected details
+show local/remote endpoints and TCP state; socket counts deduplicate observed
+TCP/UDP sockets per process, not across processes. Observations are non-atomic;
+traffic, Unix sockets and inactivity history are not reported.
+Container `tcp:HOST->CONTAINER` ports are published configuration, not observed
+listeners or traffic. Selected container details show mounts, start time,
+service and attribution candidates when available.
+
+Selecting a PID adds details for that PID only; descendants remain summaries.
+`cmd:` preserves argument order; quotes mark empty/whitespace arguments, not a
+runnable shell command. `entry:` is a supported script/JAR launch argument,
+not verified ownership; relative paths are not resolved against current cwd.
+`[filtered]` replaces detected sensitive values. Redaction is not a security
+guarantee: other values, paths and positional arguments may still be sensitive.
+Environment variables and container-internal processes are not collected.
+
+## Tags, Classification and evidence
+
+Tags lists effective hashtags (`bin` displays as #executable). Classification
+shows proposals, exclusions and source-priority decisions by dimension.
+Effective app and project tags may coexist; the tree chooses its primary group
+from effective app, then project, then bin tags. Nested groups show attribution;
+nested processes show observed parenthood. PPID may point into another group.
+
+`app PATH` is bundle evidence; `git PATH` is a checkout root; `repo PATH` is a
+shared Git directory; `project FILE PATH` is a manifest hint; `exe PATH` is an
+exact executable path. Bundle IDs are declared identities, not verified signing;
+versions are on-disk metadata. Multi-path apps or multi-checkout repositories
+can have shared parents; single-path/checkouts stay flat. A single-process bin
+is displayed directly as a PID. Missing paths remain unknown.
+
+`!` starts an observed error or coverage diagnostic. `~` marks explicit
+inference with source and conditions, not an approximate metric. Ancestor
+inference
+requires matching UID/cwd and compatible start times; container bind inference
+requires local paths and project markers. Remote bind paths are not checked
+locally. Compose labels declare ownership. Low CPU, long uptime, paths and
+attribution do not establish that a process is safe to stop.
+
+## Further reading
+
+--profile optionally appends an extension timing table to Markdown output.
+Use --help for commands, flags, sorting and copyable examples.
+See docs/markdown-format.md for structure and evidence conventions,
+docs/collection-probe.md for project markers and classification boundaries,
+and docs/containers.md for runtime support, API/XPC transport, sampling limits
+and memory accounting. See docs/extension-protocol.md for typed resources.
+For JSON, use --json-schema and docs/json-format.md.
+"#;
 
 pub fn markdown(snapshot: &Snapshot) -> String {
     markdown_with_depth(snapshot, usize::MAX)
@@ -144,7 +189,7 @@ fn render_markdown(snapshot: &Snapshot) -> String {
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "# reswho\n\nFormat: reswho-md/19 · help: reswho --help-format  "
+        "# reswho\n\nFormat: reswho-md/19 · help: reswho --help-md  "
     );
     let _ = writeln!(
         text,
