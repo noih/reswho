@@ -10,7 +10,7 @@ scripts/release 1.0.0
 
 參數決定 package version 與 tag。這是具有發佈權限的使用者入口，會執行普通 SSH `git push`，保留 passphrase gate；不 bypass hook、不調整認證、不 fetch／pull／clone。不要在代理的準備或測試工作階段執行真實入口。
 
-腳本先確認乾淨 main、指定 SSH origin、remote main 為本地祖先、全新 local/remote tag 與 release、gh auth、工具與既有乾淨 `noih/tap` checkout。tap origin 必須為 `noih/homebrew-tap`，本地 HEAD 須與 `gh api` 查到的 remote branch SHA 相同；若不存在／漂移，發佈前停止，由維護者自行設定或協調，不自動安裝 tap 或同步其他 repo。403 不當成不存在。
+腳本先確認乾淨 main、指定 SSH origin、remote main 為本地祖先、全新 local/remote tag 與 release、gh auth、工具與 reswho Git root 的 sibling `../homebrew-tap` 開發 checkout。該目錄必須存在且為獨立 Git root，解析為 canonical absolute path 後，所有 tap 檢查、formula copy、本地 commit 與最後印出的 SSH push 都使用此路徑；不透過 `brew --repository` 尋找 Homebrew 管理的副本。開發 checkout 必須乾淨且位於 branch。tap origin 必須為 `noih/homebrew-tap`，本地 HEAD 須與 `gh api` 查到的 remote branch SHA 相同；若不存在／漂移，發佈前停止，由維護者自行設定或協調，不自動安裝 tap 或同步其他 repo。403 不當成不存在。
 
 全部預檢通過後，先準備 Cargo.toml／Cargo.lock／同樹 example engines 的完整新內容，再逐檔 replace；寫入例外會還原原內容並刪除 staging 檔，不宣稱跨檔 power-loss transaction。拒絕倒退版本。同版本初次1.0.0允許不產生空 bump commit；仍完整驗證並建立新的 annotated tag。example range 使用目前版本至下一個 major，與同樹編譯的例子一致。測試 helpers 讀 `CARGO_PKG_VERSION`，不以首發版本綁死相容性。
 
@@ -70,7 +70,7 @@ draft 建立後才建置 release binary；檢查與打包成功後以不含 `--c
 
 `scripts/release` 在 crate 發佈後，最多等待5分鐘尋找同 tag＋commit SHA＋push event＋release workflow 的 run，再以最多1800秒輪詢該 run 的 Actions API `status`／`conclusion`，每次 request 最多30秒，持續核對 `head_sha`。不使用需要額外 jobs／annotations 讀取的 `gh run watch`。成功後透過 public release URLs 下載三個 assets（不依賴 Contents read-only token 能否讀 release API），驗證 archive 檔名／SHA256、成員清單及 formula 與 reviewed template／tag／checksum 完全相同，再檢查 Ruby syntax。
 
-再次確認 tap HEAD、工作樹與 remote SHA 未變後，才複製到既有 `Formula/reswho.rb`。停用 Homebrew auto-update 執行 style／readall／strict audit，完成 tap 本地 commit，只印出待維護者執行的 tap push，明確使用 `git@github.com:noih/homebrew-tap.git` 保留 SSH passphrase gate，不修改 tap remote。沒有跨 repo token；不自動 tap push。
+再次確認開發 checkout 的 HEAD、工作樹與 remote SHA 未變後，才複製到該 checkout 的 `Formula/reswho.rb`。停用 Homebrew auto-update，對同一份 formula 的絕對路徑執行 `brew style`，完成該 checkout 的本地 commit，只印出待維護者執行的 tap push，明確使用 `git@github.com:noih/homebrew-tap.git` 保留 SSH passphrase gate，不修改 tap remote。沒有跨 repo token；不自動 tap push。
 
 維護者仍需在 macOS 15 Apple Silicon 做真實安裝與 `brew test reswho`，審核 tap 本地 commit 後自行推送。只有 tap 公開後才能宣稱 `brew install noih/tap/reswho` 可用。Ruby syntax 驗證不能取代真實 Homebrew 測試。檢查 public download、Actions 結果及 crates.io 實際安裝後才更新 README 的待發佈文字。
 
@@ -88,4 +88,4 @@ draft 建立後才建置 release binary；檢查與打包成功後以不含 `--c
 
 真正 Actions、crates.io upload、公開下載與 Homebrew 安裝都不在離線 fake-command 測試的證明範圍內。
 
-生成 formula 的 `brew style` 在使用者 push 前與 tag workflow 公開前各檢查一次，兩處都先複製到自有暫存 `Formula/reswho.rb`，使用標準已安裝 Homebrew 工具。Homebrew cop 的 Include 規則會略過一般 `dist/reswho.rb`；不能直接檢查 dist 路徑並以綠燈推論 cop 已執行。暫存 Formula 副本在結束時清除，不加入三個 Release assets。`brew readall` CLI 僅支援已安裝 tap；為避免修改真實 tap，未加入預發佈 readall，仍保留在複製 formula 後。離線準備禁止安裝依賴，本機 wrapper 的 gem 載入限制與 focused cop 結果需分開回報，不能宣稱完整 style／readall／audit 已通過。
+生成 formula 的 `brew style` 在使用者 push 前與 tag workflow 公開前各檢查一次，兩處都先複製到自有暫存 `Formula/reswho.rb`，使用標準已安裝 Homebrew 工具。Homebrew cop 的 Include 規則會略過一般 `dist/reswho.rb`；不能直接檢查 dist 路徑並以綠燈推論 cop 已執行。暫存 Formula 副本在結束時清除，不加入三個 Release assets。`brew readall` CLI 僅支援已安裝 tap；本機 Homebrew 的 `brew audit` 明確拒絕 `.rb` 路徑，且要求 formula 屬於已安裝 tap（見 [audit CLI source](https://github.com/Homebrew/brew/blob/HEAD/Library/Homebrew/dev-cmd/audit.rb)、[readall CLI source](https://github.com/Homebrew/brew/blob/HEAD/Library/Homebrew/cmd/readall.rb)）。因此腳本移除 readall／strict audit，不以 `noih/tap` 名稱檢查另一份 Homebrew 管理副本，也不改寫該副本或建立暫存連結。保留生成前與複製後的 formula-path style、Ruby syntax、archive 成員／SHA256 與 reviewed template 精確比對；這些不能取代 readall 的跨平台載入檢查或完整 strict audit，兩者移至公開後的 installed-tap acceptance：使用者推送開發 checkout 並自行更新 Homebrew 管理的 `noih/tap`，確認已載入同一份公開 formula 後，再執行 `brew readall --os=all --arch=all noih/tap` 與 `brew audit --strict noih/tap/reswho`。這不是預發佈證明，目前仍未驗證。離線準備禁止安裝依賴，本機 wrapper 的 gem 載入限制與 focused cop 結果需分開回報，不能宣稱完整 style／readall／audit 已通過。

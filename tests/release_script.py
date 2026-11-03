@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -26,11 +27,14 @@ def save(): state_path.write_text(json.dumps(state))
 def fail(): sys.exit(1)
 if tool == "git":
     tap = args[:1] == ["-C"]
-    if tap: args = args[2:]
-    if args == ["rev-parse", "--show-toplevel"]: print(root)
+    if tap:
+        assert args[1] == str(root.parent / "homebrew-tap"), args
+        args = args[2:]
+    if args == ["rev-parse", "--show-toplevel"]:
+        print(root.parent if tap and failure == "tap-wrong-root" else root.parent / "homebrew-tap" if tap else root)
     elif args == ["branch", "--show-current"]: print("main")
     elif args == ["status", "--porcelain"]:
-        if failure == "dirty": print(" M unrelated")
+        if (failure == "dirty" and not tap) or (failure == "tap-dirty" and tap): print(" M unrelated")
     elif args[:2] == ["remote", "get-url"]: print(os.environ["RELEASE_TEST_TAP_ORIGIN"] if tap else "git@github.com:noih/reswho.git")
     elif args == ["rev-parse", "HEAD"]: print("taphead" if tap else "releasehead")
     elif args[:2] == ["merge-base", "--is-ancestor"]: pass
@@ -63,11 +67,9 @@ elif tool == "gh":
         if failure == "actions": fail()
     else: raise AssertionError(args)
 elif tool == "brew":
-    if args[:1] == ["--repository"]:
-        if failure == "missing-tap": fail()
-        print(root / "tap")
-    elif args[:1] not in (["style"], ["readall"], ["audit"]): raise AssertionError(args)
-    elif args[:1] == ["style"] and failure == "style": fail()
+    assert args[:1] == ["style"], args
+    assert pathlib.Path(args[1]).is_absolute() and pathlib.Path(args[1]).is_file(), args
+    if failure == "style": fail()
 elif tool == "cargo":
     if (failure == "gate" and args[:1] == ["test"]) or (failure == "publish" and args == ["publish", "--locked"]): fail()
 elif tool == "python3":
@@ -102,12 +104,18 @@ class ReleaseScriptTests(unittest.TestCase):
     def run_release(self, version=VERSION, failure="", tap_origin="git@github.com:noih/homebrew-tap.git"):
         temporary = tempfile.TemporaryDirectory(prefix="reswho-release-script-")
         self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name)
+        owned = Path(temporary.name).resolve()
+        root = owned / "reswho"
+        root.mkdir()
         for name in ("Cargo.toml", "Cargo.lock", "examples/extensions/example.json", "packaging/reswho.rb.template", "scripts/release"):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
-        (root / "tap/Formula").mkdir(parents=True)
+        if failure != "missing-tap":
+            (owned / "homebrew-tap/Formula").mkdir(parents=True)
+        managed_formula = owned / "managed-tap/Formula/reswho.rb"
+        managed_formula.parent.mkdir(parents=True)
+        managed_formula.write_text("managed tap sentinel\n")
         (root / "tmp").mkdir()
         (root / "bin").mkdir()
         (root / "fake.py").write_text(FAKE)
@@ -120,6 +128,8 @@ class ReleaseScriptTests(unittest.TestCase):
         env = dict(os.environ, PATH=str(root / "bin") + ":/usr/bin:/bin", HOME=str(root), TMPDIR=str(root / "tmp"), RELEASE_TEST_ROOT=str(root), RELEASE_TEST_FAILURE=failure, RELEASE_TEST_TAP_ORIGIN=tap_origin, CARGO_REGISTRY_TOKEN="NEVER_LOG_THIS_TOKEN")
         result = subprocess.run(["/bin/bash", str(root / "scripts/release"), version], cwd=root, env=env, text=True, capture_output=True, timeout=30)
         calls = [json.loads(line) for line in (root / "calls").read_text().splitlines()] if (root / "calls").exists() else []
+        self.assertEqual(managed_formula.read_text(), "managed tap sentinel\n")
+        self.assertFalse(any("managed-tap" in arg or "noih/tap" in arg for call in calls for arg in call))
         self.assertNotIn("NEVER_LOG_THIS_TOKEN", result.stdout + result.stderr + json.dumps(calls))
         self.assertEqual(list((root / "tmp").iterdir()), [], "owned script temporary directory leaked")
         return result, calls, root, original
@@ -129,10 +139,15 @@ class ReleaseScriptTests(unittest.TestCase):
             with self.subTest(origin=origin):
                 result, calls, root, _ = self.run_release(tap_origin=origin)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("push git@github.com:noih/homebrew-tap.git main\n", result.stdout)
+                tap = root.parent / "homebrew-tap"
+                push_line = next(line for line in result.stdout.splitlines() if line.startswith("  git -C "))
+                self.assertEqual(shlex.split(push_line), ["git", "-C", str(tap), "push", "git@github.com:noih/homebrew-tap.git", "main"])
+                self.assertIn(["git", "-C", str(tap), "add", "Formula/reswho.rb"], calls)
+                self.assertIn(["git", "-C", str(tap), "commit", "-m", "reswho " + VERSION], calls)
+                self.assertIn(["brew", "style", str(tap / "Formula/reswho.rb")], calls)
                 self.assertNotIn("push origin", result.stdout)
-                self.assertTrue((root / "tap/Formula/reswho.rb").exists())
-                self.assertFalse(any(c[:3] == ["git", "-C", str(root / "tap")] and c[3:4] == ["push"] for c in calls))
+                self.assertTrue((root.parent / "homebrew-tap/Formula/reswho.rb").exists())
+                self.assertFalse(any(c[:3] == ["git", "-C", str(root.parent / "homebrew-tap")] and c[3:4] == ["push"] for c in calls))
 
     def test_wrong_tap_origins_stop_before_version_or_publication(self):
         for origin in ("https://github.com/noih/homebrew-taps", "https://github.com/other/homebrew-tap", "https://example.com/noih/homebrew-tap", "https://github.com.evil/noih/homebrew-tap", "https://github.com/noih/homebrew-tap.git/extra", "https://github.com/noih/homebrew-tap-extra", "git@github.com:other/homebrew-tap.git", "git@example.com:noih/homebrew-tap.git", "git@github.com:noih/homebrew-tap.git/extra", "https://NEVER_LOG_THIS_TOKEN@github.com/noih/homebrew-tap"):
@@ -143,7 +158,7 @@ class ReleaseScriptTests(unittest.TestCase):
                 for path, content in original.items():
                     self.assertEqual((root / path).read_text(), content)
                 self.assertFalse(any(c[0] == "cargo" or c[:2] in (["git", "tag"], ["git", "push"]) for c in calls))
-                self.assertEqual(list((root / "tap/Formula").iterdir()), [])
+                self.assertEqual(list((root.parent / "homebrew-tap/Formula").iterdir()), [])
 
     def test_same_version_runs_without_empty_bump_commit(self):
         result, calls, root, original = self.run_release()
@@ -162,7 +177,7 @@ class ReleaseScriptTests(unittest.TestCase):
         listing = next(c for c in calls if c[:3] == ["gh", "run", "list"])
         self.assertIn("releasehead", listing)
         self.assertIn("v" + VERSION, listing)
-        self.assertTrue((root / "tap/Formula/reswho.rb").exists())
+        self.assertTrue((root.parent / "homebrew-tap/Formula/reswho.rb").exists())
         self.assertEqual(sum(c[:2] == ["git", "push"] for c in calls), 1)
 
     def test_argument_changes_package_lock_and_same_tree_example(self):
@@ -174,20 +189,27 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertIn(["git", "commit", "-m", "chore(release): prepare " + NEXT_VERSION], calls)
 
     def test_preflight_and_gate_failures_cannot_push(self):
-        for failure in ("dirty", "403", "actions-403", "local-tag", "existing-release", "missing-tap", "tap-drift", "gate", "style"):
+        for failure in ("dirty", "403", "actions-403", "local-tag", "existing-release", "missing-tap", "tap-wrong-root", "tap-dirty", "tap-drift", "gate", "style"):
             with self.subTest(failure=failure):
                 result, calls, root, original = self.run_release(NEXT_VERSION, failure)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(any(c[:2] == ["git", "push"] or c == ["cargo", "publish", "--locked"] for c in calls))
                 if failure not in ("gate", "style"):
-                    self.assertEqual((root / "Cargo.toml").read_text(), original["Cargo.toml"])
+                    for path, content in original.items():
+                        self.assertEqual((root / path).read_text(), content)
+                    self.assertFalse(any(c[0] in ("cargo", "curl") or c[:2] == ["git", "tag"] for c in calls))
+                    self.assertFalse((root.parent / "homebrew-tap/Formula/reswho.rb").exists())
+                if failure == "missing-tap":
+                    self.assertIn("create the sibling homebrew-tap developer checkout", result.stderr)
+                if failure == "tap-wrong-root":
+                    self.assertIn("tap directory must be its Git repository root", result.stderr)
 
     def test_partial_publication_and_invalid_assets_stop_before_tap(self):
         for failure in ("push", "publish", "actions", "checksum", "formula"):
             with self.subTest(failure=failure):
                 result, calls, root, _ = self.run_release(failure=failure)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertFalse((root / "tap/Formula/reswho.rb").exists())
+                self.assertFalse((root.parent / "homebrew-tap/Formula/reswho.rb").exists())
                 self.assertIn("Release stopped during", result.stderr)
                 if failure == "push":
                     self.assertNotIn(["cargo", "publish", "--locked"], calls)

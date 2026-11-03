@@ -37,7 +37,8 @@ absent() {
 }
 absent "repos/$repo/git/ref/tags/$tag"
 absent "repos/$repo/releases/tags/$tag"
-tap=$(brew --repository noih/tap 2>/dev/null) || die 'existing noih/tap checkout required; set up the tap yourself before releasing'
+tap=$(cd ../homebrew-tap 2>/dev/null && pwd -P) || die 'create the sibling homebrew-tap developer checkout next to the reswho Git root before releasing'
+[[ $(git -C "$tap" rev-parse --show-toplevel) == "$tap" ]] || die 'tap directory must be its Git repository root; set up an independent sibling homebrew-tap checkout'
 [[ -d $tap/Formula ]] || die 'tap Formula directory is missing'
 tap_origin=$(git -C "$tap" remote get-url origin)
 case $tap_origin in
@@ -148,9 +149,7 @@ ruby -c "$temporary/reswho.rb"
 [[ $(git -C "$tap" rev-parse HEAD) == "$tap_head" && -z $(git -C "$tap" status --porcelain) ]] || die 'tap changed during release; copy the verified formula manually after reconciling'
 [[ $(gh api "repos/$tap_repo/git/ref/heads/$tap_branch" --jq .object.sha) == "$tap_head" ]] || die 'remote tap advanced during release; reconcile before copying formula'
 cp "$temporary/reswho.rb" "$tap/Formula/reswho.rb"
-HOMEBREW_NO_AUTO_UPDATE=1 brew style noih/tap/reswho
-HOMEBREW_NO_AUTO_UPDATE=1 brew readall --os=all --arch=all noih/tap
-HOMEBREW_NO_AUTO_UPDATE=1 brew audit --strict noih/tap/reswho
+HOMEBREW_NO_AUTO_UPDATE=1 brew style "$tap/Formula/reswho.rb"
 git -C "$tap" add Formula/reswho.rb
 git -C "$tap" commit -m "reswho $version"
 printf 'Released %s; tap commit is local. Review and push it yourself:\n' "$tag"

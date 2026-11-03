@@ -32,7 +32,7 @@ cargo install reswho --version 1.0.0 --locked
 
 Before publication, build this checkout with `cargo build --release --locked --bin reswho`. This package distributes a CLI; its Rust library exists for shared implementation and tests and has no stable public API commitment. See [release preparation](docs/releasing.md) and [changelog](CHANGELOG.md).
 
-Maintainers: after reviewing a clean `main`, run `scripts/release 1.0.0` to prepare the requested version, verify, tag, push, publish the crate, wait for release assets, and commit the formula in the existing tap checkout. This command publishes; it is run by the maintainer, not during local preparation. The tap push remains a separate user action.
+Maintainers: after reviewing a clean `main`, run `scripts/release 1.0.0` to prepare the requested version, verify, tag, push, publish the crate, wait for release assets, and commit the formula in the sibling `../homebrew-tap` developer checkout (relative to this Git root). This command publishes; it is run by the maintainer, not during local preparation. The tap push remains a separate user action.
 
 ## Usage
 
