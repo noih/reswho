@@ -88,4 +88,4 @@ draft 建立後才建置 release binary；檢查與打包成功後以不含 `--c
 
 真正 Actions、crates.io upload、公開下載與 Homebrew 安裝都不在離線 fake-command 測試的證明範圍內。
 
-生成 formula 的 `brew style` 在使用者 push 前與 tag workflow 公開前各檢查一次，兩處都使用標準已安裝 Homebrew 工具。`brew readall` CLI 僅支援已安裝 tap；為避免修改真實 tap，未加入預發佈 readall，仍保留在複製 formula 後。離線準備禁止安裝依賴，本機 wrapper 的 gem 載入限制與 focused cop 結果需分開回報，不能宣稱完整 style／readall／audit 已通過。
+生成 formula 的 `brew style` 在使用者 push 前與 tag workflow 公開前各檢查一次，兩處都先複製到自有暫存 `Formula/reswho.rb`，使用標準已安裝 Homebrew 工具。Homebrew cop 的 Include 規則會略過一般 `dist/reswho.rb`；不能直接檢查 dist 路徑並以綠燈推論 cop 已執行。暫存 Formula 副本在結束時清除，不加入三個 Release assets。`brew readall` CLI 僅支援已安裝 tap；為避免修改真實 tap，未加入預發佈 readall，仍保留在複製 formula 後。離線準備禁止安裝依賴，本機 wrapper 的 gem 載入限制與 focused cop 結果需分開回報，不能宣稱完整 style／readall／audit 已通過。

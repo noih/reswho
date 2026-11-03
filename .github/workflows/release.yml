@@ -53,7 +53,11 @@ jobs:
           python3 scripts/package-release "$TAG" target/aarch64-apple-darwin/release/reswho "$RUNNER_TEMP/dist"
           ruby -c "$RUNNER_TEMP/dist/reswho.rb"
           (cd "$RUNNER_TEMP/dist" && shasum -a 256 -c ./*.sha256)
-          HOMEBREW_NO_AUTO_UPDATE=1 brew style "$RUNNER_TEMP/dist/reswho.rb"
+          formula_check=$(mktemp -d "$RUNNER_TEMP/reswho-formula.XXXXXX")
+          trap 'rm -rf "$formula_check"' EXIT
+          mkdir "$formula_check/Formula"
+          cp "$RUNNER_TEMP/dist/reswho.rb" "$formula_check/Formula/reswho.rb"
+          HOMEBREW_NO_AUTO_UPDATE=1 brew style "$formula_check/Formula/reswho.rb"
       - name: Upload complete assets and publish
         env:
           GH_TOKEN: ${{ github.token }}

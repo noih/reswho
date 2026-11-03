@@ -137,6 +137,7 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertTrue(gate < tag < push < publish < download)
         style = next(i for i,c in enumerate(calls) if c[:2] == ["brew", "style"])
         self.assertTrue(gate < style < tag < push)
+        self.assertEqual(Path(calls[style][2]).parts[-2:], ("Formula", "reswho.rb"))
         listing = next(c for c in calls if c[:3] == ["gh", "run", "list"])
         self.assertIn("releasehead", listing)
         self.assertIn("v" + VERSION, listing)

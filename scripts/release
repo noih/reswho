@@ -86,7 +86,9 @@ cargo publish --dry-run --locked --allow-dirty
 phase='generated formula verification before push'
 MACOSX_DEPLOYMENT_TARGET=15.0 cargo build --release --locked --target aarch64-apple-darwin --bin reswho
 python3 scripts/package-release "$tag" target/aarch64-apple-darwin/release/reswho "$temporary/preflight-dist"
-HOMEBREW_NO_AUTO_UPDATE=1 brew style "$temporary/preflight-dist/reswho.rb"
+mkdir "$temporary/Formula"
+cp "$temporary/preflight-dist/reswho.rb" "$temporary/Formula/reswho.rb"
+HOMEBREW_NO_AUTO_UPDATE=1 brew style "$temporary/Formula/reswho.rb"
 if ! git diff --quiet -- Cargo.toml Cargo.lock examples/extensions/example.json; then
   git add Cargo.toml Cargo.lock examples/extensions/example.json
   git commit -m "chore(release): prepare $version"
