@@ -2192,3 +2192,103 @@ fn narrow_inline_input_reserves_tail_before_long_or_unicode_units() {
         }
     }
 }
+
+#[test]
+fn generic_resource_list_and_details_show_units_without_process_queries() {
+    let mut source = snapshot();
+    let mut node = Node::group(
+        "group:fixturevolume".into(),
+        "Data volume".into(),
+        vec![],
+        Grouping::Category,
+    );
+    node.kind = "resource";
+    node.grouping = None;
+    node.resource = Some(crate::model::Resource {
+        provider: "fixture".into(),
+        version: "1.0.0".into(),
+        id: "disk0".into(),
+        kind: "storage.volume".into(),
+        label: "Data volume".into(),
+        path: Some("/Volumes/Data".into()),
+        metrics: vec![
+            crate::model::ResourceMetric {
+                key: "capacity".into(),
+                label: "Capacity".into(),
+                unit: "bytes".into(),
+                value: Some(9007199254740993u64.into()),
+            },
+            crate::model::ResourceMetric {
+                key: "temperature".into(),
+                label: "Temperature".into(),
+                unit: "vendor.celsius".into(),
+                value: None,
+            },
+        ],
+    });
+    source.root.children.push(node);
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(source));
+    select(&mut app, "group:fixturevolume");
+    let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let text = (0..30)
+        .map(|y| {
+            (0..160)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("Capacity: 9007199254740993 bytes"), "{text}");
+    app.open_details();
+    let details = app.details.as_ref().unwrap();
+    assert_eq!(details.query_pid(), None);
+    assert!(!details.needs_query);
+    let lines = details.lines().join("\n");
+    assert!(lines.contains("Temperature: ? vendor.celsius"));
+    assert!(lines.contains("/Volumes/Data"));
+    assert!(lines.contains("fixture/1.0.0"));
+}
+
+#[test]
+fn repair_empty_resource_provider_keeps_metric_scope_in_the_table() {
+    let mut source = snapshot();
+    source.root = Node::group(
+        "group:resourceprovider".into(),
+        "Volume provider".into(),
+        vec![],
+        Grouping::Resource,
+    );
+    source.scope = source.root.reference.clone();
+    let mut app = App::new(source.scope.clone(), 0);
+    app.update(Ok(source));
+    let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let text = (0..20)
+        .map(|y| {
+            (0..120)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("Volume provider") && text.contains("resources"),
+        "{text}"
+    );
+    let row = text
+        .lines()
+        .find(|line| line.contains("Volume provider"))
+        .unwrap();
+    assert!(
+        !row.contains("0 proc") && !row.contains("0 B") && !row.contains("0.0%"),
+        "{row}"
+    );
+}

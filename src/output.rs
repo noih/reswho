@@ -6,7 +6,7 @@ pub(crate) mod containers;
 #[cfg(test)]
 mod markdown_tests;
 
-pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-10.schema.json");
+pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-11.schema.json");
 
 pub const FORMAT_HELP: &str = "reswho-md/18 (collection prototype)\n\n\
 | Row | Fields, in order |\n\
@@ -19,7 +19,7 @@ pub const FORMAT_HELP: &str = "reswho-md/18 (collection prototype)\n\n\
 Container groups use container counts and runtime memory, not process RSS.\n\
 Host process totals exclude the separate Containers subtree; never add both scopes.\n\
 Docker uses the current context / DOCKER_CONTEXT / DOCKER_HOST; Apple Container uses the local user service when its CLI is on PATH.\n\
-Runtimes run in parallel with a shared 10s deadline and 256-container limit per runtime; --no-containers skips all. Partial inventory uses >=.\n\
+Runtimes run in parallel with a shared 10s deadline and 256-container limit per runtime; --no-containers skips container collectors. Partial inventory uses >=.\n\
 Docker Unix endpoints use fresh paired API samples; other Docker connections use CLI stats. Apple Container 1.6.1 uses fresh paired XPC counters, at most four requests in flight.\n\
 API/XPC samples use --sample-ms without cache or smoothing. Docker memory subtracts inactive file cache; Apple memory is raw memoryUsageBytes. Unsupported Apple versions retain inventory with unknown stats.\n\
 Container CPU 100% is one daemon logical core; sampling differs from host processes.\n\
@@ -31,7 +31,7 @@ Compose labels declare project ownership; ~ bind inference requires local transp
 Remote bind paths are not checked locally. Ambiguous candidates are shown in container details.\n\
 --from group:REF shows container mounts, start time, service and attribution candidates.\n\
 Runtime diagnostics omit raw CLI stderr which may contain endpoint credentials.\n\
-Grouping: [runtime], [container], [app], [repo], [checkout], [project], [bin], [system], [unknown]; categories have no tag.\n\
+Grouping: [resource], [runtime], [container], [app], [repo], [checkout], [project], [bin], [system], [unknown]; categories have no tag.\n\
 The whole-machine Resources row is omitted; its process count is in the Host CPU summary.\n\
 Other selected roots are paragraphs; child categories use ## headings with a ref/totals summary.\n\
 A sole System services wrapper is flattened in Markdown before --depth is applied.\n\
@@ -102,7 +102,7 @@ Group refs are deterministic, not display positions. PID refs query the current 
 JSON retains the original root and System services nodes; depth counts original tree edges.\n\
 JSON system.cpu_percent is whole-host 0-100%; process.cpu_percent and totals.known_cpu_percent use one-core 100%.\n\
 JSON totals are subtree aggregates, not extra usage; do not add parent totals to children.\n\
-JSON schema reswho/10 includes structured attribution and diagnostics, raw byte counts, unknown counts and sample timing.\n\
+JSON schema reswho/11 includes structured attribution and diagnostics, raw byte counts, unknown counts and sample timing.\n\
 Use --json-schema for the offline JSON Schema; see docs/json-format.md for version and identity rules.\n\
 Command arguments, environment, container-internal processes and review rules are not collected.\n";
 
@@ -241,6 +241,9 @@ fn collapsed_marker(node: &Node) -> String {
 
 fn group_values(node: &Node) -> String {
     let collapsed = collapsed_marker(node);
+    if matches!(node.grouping, Some(crate::model::Grouping::Resource)) || node.resource.is_some() {
+        return format!("{} · independent metrics{collapsed}", node.reference);
+    }
     if let Some(totals) = &node.container_totals {
         return containers::totals(&node.reference, totals, &collapsed);
     }
@@ -254,10 +257,51 @@ fn group_values(node: &Node) -> String {
     )
 }
 
+pub(crate) fn metric_text(metric: &crate::model::ResourceMetric) -> String {
+    format!(
+        "{}: {} {}",
+        metric.label,
+        metric
+            .value
+            .as_ref()
+            .map_or("?".into(), ToString::to_string),
+        metric.unit
+    )
+}
+
+pub(crate) fn role_text(role: &crate::model::Role) -> String {
+    format!(
+        "Role {}/{} · {} [{}] · {} {}",
+        role.provider,
+        role.version,
+        role.label,
+        role.key,
+        role.basis,
+        role.path.display()
+    )
+}
+
 fn write_node(text: &mut String, node: &Node, level: usize) {
     let indent = "    ".repeat(level.saturating_sub(1));
     let bullet = if level == 0 { "" } else { "- " };
-    if let Some(container) = &node.container {
+    if let Some(resource) = &node.resource {
+        let _ = writeln!(
+            text,
+            "{indent}{bullet}{} [resource:{}] {} · {}",
+            name_markdown(&node.name),
+            escaped(&resource.kind),
+            node.reference,
+            escaped(
+                &resource
+                    .metrics
+                    .iter()
+                    .take(2)
+                    .map(metric_text)
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            )
+        );
+    } else if let Some(container) = &node.container {
         let _ = writeln!(text, "{indent}{bullet}{}", containers::row(node, container));
     } else if let Some(process) = &node.process {
         let collapsed = collapsed_marker(node);
@@ -289,6 +333,28 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
         );
     }
     let mut notes = containers::notes(node, level == 0);
+    if let Some(resource) = &node.resource {
+        notes.push(format!(
+            "Provider {}/{} · id {}",
+            escaped(&resource.provider),
+            escaped(&resource.version),
+            code(&resource.id)
+        ));
+        if let Some(path) = &resource.path {
+            notes.push(format!("path: {}", code(&path.to_string_lossy())));
+        }
+        if level == 0 {
+            notes.extend(
+                resource
+                    .metrics
+                    .iter()
+                    .map(|metric| escaped(&metric_text(metric))),
+            );
+        }
+    }
+    if let Some(process) = &node.process {
+        notes.extend(process.roles.iter().map(|role| escaped(&role_text(role))));
+    }
     if level == 0
         && let Some(process) = &node.process
     {

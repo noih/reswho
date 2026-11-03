@@ -139,7 +139,7 @@ impl App {
         let Some(node) = self.node(self.selected) else {
             return;
         };
-        if node.process.is_none() {
+        if node.process.is_none() && node.resource.is_none() {
             return;
         }
         if let Some(snapshot) = &self.snapshot

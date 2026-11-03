@@ -4,8 +4,9 @@ use super::{
 };
 use crate::model::{DetailField, ExtensionAttribution, ExtensionDetails};
 use anyhow::{Result, bail};
-use serde::Deserialize;
-use serde_json::{Value, json};
+#[cfg(test)]
+use serde_json::Value;
+use serde_json::json;
 
 pub struct External {
     pub manifest: Manifest,
@@ -31,20 +32,29 @@ pub fn installed(state: &State, settings: &Resolved) -> Vec<External> {
         .collect()
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireResponse {
-    protocol_version: u32,
-    provider: String,
-    version: String,
-    contribution: Contribution,
-}
+type WireResponse = super::protocol::Response;
 
-fn observed(process: &Process) -> Value {
-    json!({"pid":process.pid,"started_unix_us":process.started_unix_us,"ppid":process.ppid,"uid":process.uid,"name":process.name,"executable":process.executable,"cwd":process.cwd})
+fn observed(process: &Process) -> Result<super::protocol::ObservedProcess> {
+    Ok(super::protocol::ObservedProcess {
+        pid: process.pid,
+        started_unix_us: process
+            .started_unix_us
+            .ok_or_else(|| anyhow::anyhow!("identity_unavailable"))?,
+        ppid: process.ppid,
+        uid: process.uid,
+        name: process.name.clone(),
+        executable: process.executable.clone(),
+        cwd: process.cwd.clone(),
+    })
 }
 
 impl Extension for External {
+    fn collects_containers(&self) -> bool {
+        self.manifest
+            .collect_scopes
+            .iter()
+            .any(|scope| scope == "containers")
+    }
     fn descriptor(&self) -> Descriptor {
         Descriptor {
             id: self.manifest.id.clone(),
@@ -52,7 +62,7 @@ impl Extension for External {
             protocol_version: self.manifest.protocol_version,
             source: "external",
             platforms: self.manifest.platforms.clone(),
-            capabilities: self.manifest.capabilities.clone(),
+            capabilities: self.manifest.known_capabilities(),
             enabled: self.manifest.incompatibility().is_none(),
             availability: "unknown",
         }
@@ -69,27 +79,55 @@ impl Extension for External {
                 .map(|definition| &definition.key),
         ) {
             if let Some(value) = context.settings.get(key) {
-                settings.insert(key, value);
+                settings.insert(key.clone(), value.clone());
             }
         }
-        let mut input = json!({"protocol_version":PROTOCOL_VERSION,"host":{"version":HOST_VERSION,"protocol_version":PROTOCOL_VERSION},"provider":self.manifest.id,"version":self.manifest.version,"settings":settings});
+        let mut input = super::protocol::Request {
+            protocol_version: PROTOCOL_VERSION,
+            host: super::protocol::Host {
+                version: HOST_VERSION.into(),
+                protocol_version: PROTOCOL_VERSION,
+                features: super::protocol::FEATURES
+                    .iter()
+                    .map(|feature| (*feature).into())
+                    .collect(),
+            },
+            provider: self.manifest.id.clone(),
+            version: self.manifest.version.clone(),
+            settings,
+            capability: request.capability(),
+            collect_scopes: vec![],
+            processes: None,
+            process: None,
+        };
         match request {
-            Request::Collect => input["capability"] = json!("collect"),
+            Request::Collect | Request::CollectResources => {
+                input.collect_scopes = self
+                    .manifest
+                    .collect_scopes
+                    .iter()
+                    .filter(|scope| {
+                        matches!(request, Request::Collect) || scope.as_str() == "resources"
+                    })
+                    .cloned()
+                    .collect();
+                if input.collect_scopes.is_empty() {
+                    bail!("unsupported_collect_scope");
+                }
+            }
             Request::Classify(processes) => {
                 if processes.len() > 16384 {
                     bail!("process request limit exceeded");
                 }
-                input["capability"] = json!("classify");
-                input["processes"] = processes
-                    .iter()
-                    .filter(|process| process.started_unix_us.is_some())
-                    .map(observed)
-                    .collect();
+                input.processes = Some(
+                    processes
+                        .iter()
+                        .filter(|process| process.started_unix_us.is_some())
+                        .map(observed)
+                        .collect::<Result<_>>()?,
+                );
             }
-            Request::Details { process, .. } => {
-                input["capability"] = json!("details");
-                input["process"] = observed(process);
-            }
+            Request::Details { process, .. } => input.process = Some(observed(process)?),
         }
         let bytes = serde_json::to_vec(&input)?;
         let output = crate::containers::command::run_bounded(
@@ -110,11 +148,69 @@ impl Extension for External {
         {
             bail!("extension response version or provider mismatch");
         }
-        match response.contribution {
-            Contribution::Collect {
-                mut runtime,
-                mut containers,
+        if !super::protocol::supported(&response.required_features) {
+            bail!("unsupported_required_feature");
+        }
+        let contribution = match response.contribution {
+            super::protocol::Contribution::Collect {
+                runtime,
+                containers,
+                resources,
             } => {
+                if !matches!(request, Request::Collect | Request::CollectResources)
+                    || (runtime.is_some() || containers.is_some())
+                        && !input
+                            .collect_scopes
+                            .iter()
+                            .any(|scope| scope == "containers")
+                    || resources.is_some()
+                        && !input
+                            .collect_scopes
+                            .iter()
+                            .any(|scope| scope == "resources")
+                    || runtime.is_some() != containers.is_some()
+                    || runtime.is_none() && resources.is_none()
+                {
+                    bail!("unexpected_collect_scope");
+                }
+                let resources = super::resources::convert(
+                    &self.manifest.id,
+                    &self.manifest.version,
+                    resources.unwrap_or_default(),
+                )?;
+                Contribution::Collected {
+                    runtime: runtime.map(Into::into),
+                    containers: containers
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(Into::into)
+                        .collect(),
+                    resources,
+                }
+            }
+            super::protocol::Contribution::Classify { proposals } => Contribution::Classify {
+                proposals: proposals.into_iter().map(Into::into).collect(),
+            },
+            super::protocol::Contribution::ParsedDetails { identity, fields } => {
+                Contribution::ParsedDetails {
+                    identity: identity.into(),
+                    fields: fields.into_iter().map(Into::into).collect(),
+                }
+            }
+        };
+        match contribution {
+            Contribution::Collected {
+                runtime,
+                mut containers,
+                resources,
+            } => {
+                let Some(mut runtime) = runtime else {
+                    return Ok(Contribution::Collected {
+                        runtime: None,
+                        containers,
+                        resources,
+                    });
+                };
                 if !matches!(runtime.status.as_str(), "available" | "unavailable")
                     || runtime.name != self.manifest.id
                     || containers.len() > 4096
@@ -152,9 +248,10 @@ impl Extension for External {
                     bail!("extension totals overflow");
                 }
                 scrub(&mut runtime.unavailable, &self.manifest.id);
-                Ok(Contribution::Collect {
-                    runtime,
+                Ok(Contribution::Collected {
+                    runtime: Some(runtime),
                     containers,
+                    resources,
                 })
             }
             Contribution::Classify { proposals } => {
@@ -164,7 +261,13 @@ impl Extension for External {
                 if proposals.len() > 16384 {
                     bail!("classification proposal limit exceeded");
                 }
+                let mut roles = HashSet::new();
                 for proposal in &proposals {
+                    if let ClassificationEvidence::Role { key, .. } = &proposal.evidence
+                        && !roles.insert((proposal.identity.pid, key.clone()))
+                    {
+                        bail!("duplicate_role");
+                    }
                     let process = processes
                         .iter()
                         .find(|process| {
@@ -173,6 +276,12 @@ impl Extension for External {
                         .ok_or_else(|| anyhow::anyhow!("classification identity mismatch"))?;
                     match &proposal.evidence {
                         ClassificationEvidence::Custom {
+                            key,
+                            label,
+                            path,
+                            basis,
+                        }
+                        | ClassificationEvidence::Role {
                             key,
                             label,
                             path,

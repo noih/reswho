@@ -1,7 +1,9 @@
 mod discovery;
 pub mod external;
 mod native;
+pub mod protocol;
 pub mod report;
+mod resources;
 pub mod state;
 use crate::{
     containers::{self, Container, Runtime},
@@ -152,6 +154,12 @@ pub enum ClassificationEvidence {
     AppBundle {
         path: PathBuf,
     },
+    Role {
+        key: String,
+        label: String,
+        path: PathBuf,
+        basis: String,
+    },
     Custom {
         key: String,
         label: String,
@@ -175,6 +183,7 @@ pub struct DetailProposal {
 #[derive(Clone, Copy)]
 pub enum Request<'a> {
     Collect,
+    CollectResources,
     Classify(&'a [Process]),
     Details {
         process: &'a Process,
@@ -185,7 +194,7 @@ pub enum Request<'a> {
 impl Request<'_> {
     fn capability(&self) -> Capability {
         match self {
-            Self::Collect => Capability::Collect,
+            Self::Collect | Self::CollectResources => Capability::Collect,
             Self::Classify(_) => Capability::Classify,
             Self::Details { .. } => Capability::Details,
         }
@@ -198,6 +207,11 @@ pub enum Contribution {
     Collect {
         runtime: Runtime,
         containers: Vec<Container>,
+    },
+    Collected {
+        runtime: Option<Runtime>,
+        containers: Vec<Container>,
+        resources: Vec<crate::model::Resource>,
     },
     Classify {
         proposals: Vec<ClassificationProposal>,
@@ -214,7 +228,7 @@ pub enum Contribution {
 impl Contribution {
     fn capability(&self) -> Capability {
         match self {
-            Self::Collect { .. } => Capability::Collect,
+            Self::Collect { .. } | Self::Collected { .. } => Capability::Collect,
             Self::Classify { .. } => Capability::Classify,
             Self::Details { .. } | Self::ParsedDetails { .. } => Capability::Details,
         }
@@ -229,6 +243,9 @@ pub struct Response {
 }
 
 pub trait Extension: Sync {
+    fn collects_containers(&self) -> bool {
+        true
+    }
     fn descriptor(&self) -> Descriptor;
     fn execute(&self, context: &Context<'_>, request: Request<'_>) -> Result<Contribution>;
 }
@@ -512,6 +529,25 @@ pub fn classify(
     context: &Context<'_>,
     processes: &[Process],
 ) -> Classifications {
+    let (accepted, custom, diagnostics, _) = classify_with_roles(providers, context, processes);
+    (accepted, custom, diagnostics)
+}
+
+pub const MAX_ROLES_PER_PROCESS: usize = 64;
+
+pub type ClassificationFacts = (
+    BTreeMap<u32, PathBuf>,
+    BTreeMap<u32, (PathBuf, crate::model::ExtensionAttribution)>,
+    Vec<Diagnostic>,
+    BTreeMap<u32, Vec<crate::model::Role>>,
+);
+
+pub fn classify_with_roles(
+    providers: &[&dyn Extension],
+    context: &Context<'_>,
+    processes: &[Process],
+) -> ClassificationFacts {
+    let mut roles: BTreeMap<u32, Vec<crate::model::Role>> = BTreeMap::new();
     let mut accepted = BTreeMap::new();
     let mut custom = BTreeMap::new();
     let mut diagnostics = Vec::new();
@@ -529,6 +565,27 @@ pub fn classify(
                 version,
                 contribution: Contribution::Classify { proposals },
             }) => {
+                let mut counts = BTreeMap::new();
+                let exceeded = proposals.iter().any(|proposal| {
+                    if !matches!(proposal.evidence, ClassificationEvidence::Role { .. }) {
+                        return false;
+                    }
+                    let count = counts
+                        .entry(proposal.identity.pid)
+                        .or_insert_with(|| roles.get(&proposal.identity.pid).map_or(0, Vec::len));
+                    *count += 1;
+                    *count > MAX_ROLES_PER_PROCESS
+                });
+                if exceeded {
+                    let _ = context.finish_phase::<()>(
+                        Some(&provider),
+                        "classify",
+                        validation_started.elapsed(),
+                        Err(anyhow::anyhow!("role_limit")),
+                    );
+                    diagnostics.push(invalid(&provider, "classify"));
+                    continue;
+                }
                 for proposal in proposals {
                     let process = processes.iter().find(|process| {
                         ProcessIdentity::observed(process) == Some(proposal.identity)
@@ -560,6 +617,33 @@ pub fn classify(
                                 ),
                             ));
                         }
+                        (
+                            Some(process),
+                            ClassificationEvidence::Role {
+                                key,
+                                label,
+                                path,
+                                basis,
+                            },
+                        ) if external::valid_custom(process, &key, &label, &path, &basis)
+                            && !roles.get(&process.pid).is_some_and(|roles| {
+                                roles
+                                    .iter()
+                                    .any(|role| role.provider == provider && role.key == key)
+                            }) =>
+                        {
+                            roles
+                                .entry(process.pid)
+                                .or_default()
+                                .push(crate::model::Role {
+                                    provider: provider.clone(),
+                                    version: version.clone(),
+                                    key,
+                                    label,
+                                    path,
+                                    basis,
+                                });
+                        }
                         _ => {
                             let _ = context.finish_phase::<()>(
                                 Some(&provider),
@@ -581,7 +665,7 @@ pub fn classify(
             _ => diagnostics.push(invalid(&label, "classify")),
         }
     }
-    (accepted, custom, diagnostics)
+    (accepted, custom, diagnostics, roles)
 }
 
 fn invalid(provider: &str, capability: &str) -> Diagnostic {
@@ -659,53 +743,88 @@ fn dispatch_many(
 }
 
 pub fn collect(providers: &[&dyn Extension], context: &Context<'_>) -> Result<crate::model::Node> {
-    let mut sources: Vec<(String, Runtime, Vec<Container>)> =
-        dispatch_many(providers, context, Request::Collect)
-            .into_iter()
-            .enumerate()
-            .map(|(index, (id, result))| {
-                let label = id
-                    .clone()
-                    .unwrap_or_else(|| format!("unidentified-{index}"));
-                let validation_started = Instant::now();
-                let result = result.and_then(|response| {
-                    if let Contribution::Collect { containers, .. } = &response.contribution {
-                        containers::validate_containers(containers)?;
-                    }
-                    Ok(response)
-                });
-                let result = context.finish_phase(
-                    id.as_deref(),
-                    "collect",
-                    validation_started.elapsed(),
-                    result,
-                );
-                match result {
-                    Ok(Response {
-                        contribution:
-                            Contribution::Collect {
-                                runtime,
-                                containers,
-                            },
-                        ..
-                    }) => (label, runtime, containers),
-                    _ => (
-                        label.clone(),
-                        Runtime {
-                            name: label.clone(),
-                            context: None,
-                            endpoint_ref: None,
-                            daemon_id: None,
-                            status: "unavailable".into(),
-                            inventory_complete: false,
-                            collection_ms: 0,
-                            unavailable: vec![invalid(&label, "collect")],
-                        },
-                        vec![],
-                    ),
-                }
-            })
-            .collect();
+    Ok(collect_scoped(providers, context, true)?.0)
+}
+
+pub fn collect_scoped(
+    providers: &[&dyn Extension],
+    context: &Context<'_>,
+    include_containers: bool,
+) -> Result<(crate::model::Node, crate::model::Node)> {
+    let mut resources = Vec::new();
+    let mut sources: Vec<(String, Runtime, Vec<Container>)> = dispatch_many(
+        providers,
+        context,
+        if include_containers {
+            Request::Collect
+        } else {
+            Request::CollectResources
+        },
+    )
+    .into_iter()
+    .enumerate()
+    .filter_map(|(index, (id, result))| {
+        let label = id
+            .clone()
+            .unwrap_or_else(|| format!("unidentified-{index}"));
+        let validation_started = Instant::now();
+        let result = result.and_then(|response| {
+            if let Contribution::Collect { containers, .. }
+            | Contribution::Collected { containers, .. } = &response.contribution
+            {
+                containers::validate_containers(containers)?;
+            }
+            Ok(response)
+        });
+        let result = context.finish_phase(
+            id.as_deref(),
+            "collect",
+            validation_started.elapsed(),
+            result,
+        );
+        match result {
+            Ok(Response {
+                contribution:
+                    Contribution::Collect {
+                        runtime,
+                        containers,
+                    },
+                ..
+            }) => Some((label, runtime, containers)),
+            Ok(Response {
+                contribution:
+                    Contribution::Collected {
+                        runtime,
+                        containers,
+                        resources: items,
+                    },
+                ..
+            }) => {
+                resources.extend(items);
+                runtime.map(|runtime| (label, runtime, containers))
+            }
+            _ if !include_containers
+                || !boundary(|| Ok(providers[index].collects_containers())).unwrap_or(false) =>
+            {
+                None
+            }
+            _ => Some((
+                label.clone(),
+                Runtime {
+                    name: label.clone(),
+                    context: None,
+                    endpoint_ref: None,
+                    daemon_id: None,
+                    status: "unavailable".into(),
+                    inventory_complete: false,
+                    collection_ms: 0,
+                    unavailable: vec![invalid(&label, "collect")],
+                },
+                vec![],
+            )),
+        }
+    })
+    .collect();
     let mut memory = 0u64;
     let mut cpu = 0.0;
     for (provider, runtime, containers) in &mut sources {
@@ -746,13 +865,17 @@ pub fn collect(providers: &[&dyn Extension], context: &Context<'_>) -> Result<cr
         );
     }
     context.cancel.check()?;
-    containers::build_all(
+    let containers = containers::build_all(
         sources
             .into_iter()
             .map(|(_, runtime, containers)| (runtime, containers))
             .collect(),
-    )
+    )?;
+    Ok((containers, resources::build(resources)))
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod protocol_tests;

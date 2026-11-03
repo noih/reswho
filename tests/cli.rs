@@ -221,7 +221,7 @@ fn lifecycle_commands_are_offline_and_updates_preserve_state_on_failure() {
     let config = dir.path().join("config.json");
     std::fs::write(&config, r#"{"version":1,"settings":{}}"#).unwrap();
     let manifest = dir.path().join("manifest.json");
-    let value = serde_json::json!({"id":"local","version":"1.0.0","engines":{"reswho":">99"},"protocol_version":1,"platforms":["macos"],"capabilities":["collect"],"executable":"/usr/bin/false"});
+    let value = serde_json::json!({"id":"local","version":"1.0.0","engines":{"reswho":">99"},"protocol_version":1,"platforms":["macos"],"capabilities":["collect"],"collect_scopes":["containers"],"executable":"/usr/bin/false"});
     std::fs::write(&manifest, value.to_string()).unwrap();
     let run = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_reswho"))

@@ -1,0 +1,36 @@
+{
+  "protocol_version": 1,
+  "provider": "fixture",
+  "version": "1.0.0",
+  "contribution": {
+    "capability": "collect",
+    "resources": [
+      {
+        "id": "disk0",
+        "kind": "storage.volume",
+        "label": "Data volume",
+        "path": "/Volumes/Data",
+        "metrics": [
+          {
+            "key": "capacity",
+            "label": "Capacity",
+            "unit": "bytes",
+            "value": 9007199254740993
+          },
+          {
+            "key": "temperature",
+            "label": "Temperature",
+            "unit": "vendor.celsius",
+            "value": -2.5
+          },
+          {
+            "key": "used",
+            "label": "Used",
+            "unit": "bytes",
+            "value": null
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -15,7 +15,7 @@ fn fixture(dir: &Path, id: &str, body: &str) -> External {
             .unwrap()
             .success()
     );
-    let mut manifest: Manifest = serde_json::from_value(json!({"id":id,"version":"1.0.0","engines":{"reswho":">=0.1.0 <0.2"},"protocol_version":1,"platforms":[std::env::consts::OS],"capabilities":["collect","classify","details"],"executable":executable})).unwrap();
+    let mut manifest: Manifest = serde_json::from_value(json!({"id":id,"version":"1.0.0","engines":{"reswho":">=0.1.0 <0.2"},"protocol_version":1,"platforms":[std::env::consts::OS],"capabilities":["collect","classify","details"],"collect_scopes":["containers"],"executable":executable})).unwrap();
     manifest.validate().unwrap();
     External { manifest }
 }
@@ -326,7 +326,7 @@ fn wire_validation_settings_scope_and_incompatible_versions_do_not_execute() {
 }
 
 #[test]
-fn external_collect_uses_runtime_dtos_and_failure_snapshots_match_schema9() {
+fn external_collect_adapters_and_failure_snapshots_match_current_schema() {
     let dir = tempfile::tempdir().unwrap();
     let body = "char input[8192]; fread(input,1,sizeof(input),stdin); puts(\"{\\\"protocol_version\\\":1,\\\"provider\\\":\\\"good\\\",\\\"version\\\":\\\"1.0.0\\\",\\\"contribution\\\":{\\\"capability\\\":\\\"collect\\\",\\\"runtime\\\":{\\\"name\\\":\\\"good\\\",\\\"context\\\":null,\\\"endpoint_ref\\\":\\\"fixture-local\\\",\\\"daemon_id\\\":null,\\\"status\\\":\\\"available\\\",\\\"inventory_complete\\\":true,\\\"collection_ms\\\":0,\\\"unavailable\\\":[]},\\\"containers\\\":[]}}\")";
     let good = fixture(dir.path(), "good", body);
@@ -393,10 +393,11 @@ fn fractional_collect_response_and_remaining_capabilities_survive_wire_decoding(
     wire["protocol_version"] = json!(1);
     let bytes = serde_json::to_vec(&wire).unwrap();
     let decoded: WireResponse = serde_json::from_slice(&bytes).unwrap();
-    let Contribution::Collect { containers, .. } = decoded.contribution else {
+    let super::super::protocol::Contribution::Collect { containers, .. } = decoded.contribution
+    else {
         panic!("expected collect");
     };
-    assert_eq!(containers[0].cpu_percent, Some(12.5));
+    assert_eq!(containers.unwrap()[0].cpu_percent, Some(12.5));
     let classify = json!({"protocol_version":1,"provider":"fractional","version":"1.0.0","contribution":{"capability":"classify","proposals":[]}});
     let precise: Value = serde_json::from_str("1.123456789012345678901").unwrap();
     let details = json!({"protocol_version":1,"provider":"fractional","version":"1.0.0","contribution":{"capability":"parsed_details","identity":{"pid":42,"started_unix_us":123},"fields":[{"key":"extensions.fractional.value","label":"Value","value":precise,"sensitive":false}]}});
@@ -419,5 +420,125 @@ fn fractional_collect_response_and_remaining_capabilities_survive_wire_decoding(
     assert!(attach_details(&[&healthy], &context, &mut process).is_empty());
     assert_eq!(process.extension_details[0].fields[0].value, precise);
     assert!(dispatch(&bad, &context, Request::Classify(&[])).is_err());
+    dir.close().unwrap();
+}
+
+#[test]
+fn required_unknown_features_and_scopes_skip_execution_and_preserve_raw_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let calls = dir.path().join("calls");
+    let body = format!(
+        "FILE *f=fopen({},\"a\"); fputs(\"called\",f); fclose(f);",
+        serde_json::to_string(calls.to_str().unwrap()).unwrap()
+    );
+    let external = fixture(dir.path(), "future", &body);
+    let settings = default_settings().unwrap();
+    let cancel = Cancellation::default();
+    for field in ["feature", "scope", "capability"] {
+        let mut future = External {
+            manifest: external.manifest.clone(),
+        };
+        match field {
+            "feature" => {
+                future.manifest.required_features = vec!["future.private_constraint".into()]
+            }
+            "scope" => future.manifest.collect_scopes = vec!["future.device".into()],
+            _ => future.manifest.capabilities.push("future.inspect".into()),
+        }
+        let encoded = serde_json::to_value(&future.manifest).unwrap();
+        let decoded: Manifest = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), encoded);
+        assert!(decoded.incompatibility().is_some());
+        let context = Context::new(&settings, &cancel);
+        assert!(dispatch(&future, &context, Request::Collect).is_err());
+        assert!(!calls.exists());
+        let state_path = dir.path().join(format!("{field}.json"));
+        State::mutate(&state_path, |state| state.install(decoded)).unwrap();
+        let state = State::load(&state_path).unwrap();
+        assert_eq!(
+            serde_json::to_value(&state.installed[0].manifest).unwrap(),
+            encoded
+        );
+        assert!(
+            !state
+                .list(&settings, true)
+                .last()
+                .unwrap()
+                .descriptor
+                .enabled
+        );
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn resource_only_requests_reject_unapproved_scopes_and_required_response_features() {
+    let dir = tempfile::tempdir().unwrap();
+    let response_path = dir.path().join("response.json");
+    let calls_path = dir.path().join("calls");
+    let body = format!(
+        "FILE *calls=fopen({},\"a\"); fputs(\"called\\n\",calls); fclose(calls); char input[8192]; memset(input,0,sizeof(input)); fread(input,1,sizeof(input)-1,stdin); if(strstr(input,\"\\\"capability\\\":\\\"collect\\\"\")) assert(strstr(input,\"\\\"collect_scopes\\\":[\\\"resources\\\"]\")); FILE *f=fopen({},\"r\"); int ch; while((ch=fgetc(f))!=EOF) putchar(ch); fclose(f)",
+        serde_json::to_string(calls_path.to_str().unwrap()).unwrap(),
+        serde_json::to_string(response_path.to_str().unwrap()).unwrap()
+    );
+    let mut external = fixture(dir.path(), "fixture", &body);
+    external.manifest.collect_scopes = vec!["containers".into(), "resources".into()];
+    let settings = default_settings().unwrap();
+    let cancel = Cancellation::default();
+    let valid: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/extensions/resources-additive.json"
+    ))
+    .unwrap();
+    for case in [
+        "valid",
+        "containers",
+        "empty_containers",
+        "required",
+        "capability",
+    ] {
+        let mut value = valid.clone();
+        match case {
+            "containers" => {
+                value["contribution"]["runtime"] = json!({"name":"fixture","context":null,"endpoint_ref":"local","daemon_id":null,"status":"available","inventory_complete":true,"collection_ms":0,"unavailable":[]})
+            }
+            "empty_containers" => value["contribution"]["containers"] = json!([]),
+            "required" => value["required_features"] = json!(["unknown.privacy"]),
+            "capability" => value["contribution"] = json!({"capability":"classify","proposals":[]}),
+            _ => {}
+        }
+        fs::write(&response_path, value.to_string()).unwrap();
+        let context = Context::new(&settings, &cancel);
+        let result = dispatch(&external, &context, Request::CollectResources);
+        assert_eq!(result.is_ok(), case == "valid", "{case}");
+    }
+    let role: Value =
+        serde_json::from_str(include_str!("../../../tests/fixtures/extensions/role.json")).unwrap();
+    for case in ["valid_role", "stale_role", "duplicate_role"] {
+        let mut value = role.clone();
+        if case == "stale_role" {
+            value["contribution"]["proposals"][0]["identity"]["started_unix_us"] = json!(124);
+        }
+        if case == "duplicate_role" {
+            let duplicate = value["contribution"]["proposals"][0].clone();
+            value["contribution"]["proposals"]
+                .as_array_mut()
+                .unwrap()
+                .push(duplicate);
+        }
+        fs::write(&response_path, value.to_string()).unwrap();
+        let context = Context::new(&settings, &cancel);
+        let process = process(Path::new("/tmp/work"));
+        let result = dispatch(&external, &context, Request::Classify(&[process]));
+        assert_eq!(result.is_ok(), case == "valid_role", "{case}");
+    }
+    let calls_before = fs::read_to_string(&calls_path).unwrap();
+    external.manifest.collect_scopes = vec!["containers".into()];
+    let context = Context::new(&settings, &cancel);
+    assert!(dispatch(&external, &context, Request::CollectResources).is_err());
+    assert_eq!(
+        fs::read_to_string(&calls_path).unwrap(),
+        calls_before,
+        "container-only provider executed"
+    );
     dir.close().unwrap();
 }

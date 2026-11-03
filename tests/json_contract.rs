@@ -288,15 +288,19 @@ fn schema_cli_is_offline_and_never_collects_resources() {
 }
 
 #[test]
-fn schema8_and9_remain_available_while_current_output_is_schema10() {
+fn schema8_9_10_remain_available_while_current_output_is_schema11() {
     let legacy_schema: Value =
         serde_json::from_str(include_str!("../schemas/reswho-8.schema.json")).unwrap();
     let legacy = jsonschema::validator_for(&legacy_schema).unwrap();
     let mut example: Value =
         serde_json::from_str(include_str!("../docs/examples/host.json")).unwrap();
-    assert_eq!(example["schema"], "reswho/10");
+    assert_eq!(example["schema"], "reswho/11");
     assert!(validator().is_valid(&example));
     assert!(!legacy.is_valid(&example));
+    example["schema"] = json!("reswho/10");
+    let ten: Value =
+        serde_json::from_str(include_str!("../schemas/reswho-10.schema.json")).unwrap();
+    assert!(jsonschema::validator_for(&ten).unwrap().is_valid(&example));
     example["schema"] = json!("reswho/9");
     let nine: Value =
         serde_json::from_str(include_str!("../schemas/reswho-9.schema.json")).unwrap();

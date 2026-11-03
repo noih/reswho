@@ -24,31 +24,32 @@ pub struct Limits {
     pub allowed: Option<Vec<Value>>,
 }
 
+pub(crate) fn decimal(number: &Number) -> (bool, String, i64) {
+    let text = number.to_string();
+    let negative = text.starts_with('-');
+    let text = text.trim_start_matches('-');
+    let (mantissa, exponent) = text.split_once(['e', 'E']).unwrap_or((text, "0"));
+    let exponent = exponent
+        .parse::<i64>()
+        .unwrap_or(if exponent.starts_with('-') {
+            i64::MIN / 2
+        } else {
+            i64::MAX / 2
+        });
+    let whole = mantissa.split('.').next().unwrap_or("").len() as i64;
+    let digits: String = mantissa.chars().filter(|ch| *ch != '.').collect();
+    let leading = digits.bytes().take_while(|byte| *byte == b'0').count();
+    let digits = digits[leading..].trim_end_matches('0').to_owned();
+    (
+        negative && !digits.is_empty(),
+        digits,
+        exponent
+            .saturating_add(whole)
+            .saturating_sub(leading as i64),
+    )
+}
+
 fn numeric_cmp(left: &Number, right: &Number) -> Ordering {
-    fn decimal(number: &Number) -> (bool, String, i64) {
-        let text = number.to_string();
-        let negative = text.starts_with('-');
-        let text = text.trim_start_matches('-');
-        let (mantissa, exponent) = text.split_once(['e', 'E']).unwrap_or((text, "0"));
-        let exponent = exponent
-            .parse::<i64>()
-            .unwrap_or(if exponent.starts_with('-') {
-                i64::MIN / 2
-            } else {
-                i64::MAX / 2
-            });
-        let whole = mantissa.split('.').next().unwrap_or("").len() as i64;
-        let digits: String = mantissa.chars().filter(|ch| *ch != '.').collect();
-        let leading = digits.bytes().take_while(|byte| *byte == b'0').count();
-        let digits = digits[leading..].trim_end_matches('0').to_owned();
-        (
-            negative && !digits.is_empty(),
-            digits,
-            exponent
-                .saturating_add(whole)
-                .saturating_sub(leading as i64),
-        )
-    }
     let (left_negative, left_digits, left_position) = decimal(left);
     let (right_negative, right_digits, right_position) = decimal(right);
     if left_negative != right_negative {

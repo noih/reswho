@@ -151,8 +151,15 @@ pub fn build_with_providers(
     context: &crate::extensions::Context<'_>,
     providers: &[&dyn crate::extensions::Extension],
 ) -> Result<Node> {
-    let (app_bundles, custom, diagnostics) =
-        crate::extensions::classify(providers, context, &processes);
+    let (app_bundles, custom, diagnostics, mut roles) =
+        crate::extensions::classify_with_roles(providers, context, &processes);
+    let processes: Vec<_> = processes
+        .into_iter()
+        .map(|mut process| {
+            process.roles = roles.remove(&process.pid).unwrap_or_default();
+            process
+        })
+        .collect();
     let mut seen = HashSet::new();
     let mut cache = projects::Discovery::default();
     let mut buckets: BTreeMap<String, (Assignment, Vec<Process>)> = BTreeMap::new();
@@ -422,6 +429,7 @@ fn process_node(
         attribution: None,
         diagnostics: Vec::new(),
         process: Some(process),
+        resource: None,
         container: None,
         runtime: None,
         container_totals: None,

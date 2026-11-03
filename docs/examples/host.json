@@ -1,5 +1,5 @@
 {
-  "schema": "reswho/10",
+  "schema": "reswho/11",
   "captured_unix_ms": 1700000000000,
   "sample_ms": 250,
   "collection_ms": 300,
@@ -180,19 +180,24 @@
                       "uptime_unknown": 0
                     },
                     "children": [],
-                    "omitted_children": 0
+                    "omitted_children": 0,
+                    "resource": null
                   }
                 ],
-                "omitted_children": 0
+                "omitted_children": 0,
+                "resource": null
               }
             ],
-            "omitted_children": 0
+            "omitted_children": 0,
+            "resource": null
           }
         ],
-        "omitted_children": 0
+        "omitted_children": 0,
+        "resource": null
       }
     ],
-    "omitted_children": 0
+    "omitted_children": 0,
+    "resource": null
   },
   "extensions": []
 }

@@ -19,6 +19,9 @@ pub(super) fn safe(value: &str) -> String {
 }
 
 fn metrics(node: &Node) -> [String; 3] {
+    if matches!(node.grouping, Some(crate::model::Grouping::Resource)) || node.resource.is_some() {
+        return ["-".into(), "-".into(), "-".into()];
+    }
     if let Some(process) = &node.process {
         return [
             output::percent(process.cpu_percent),
@@ -47,11 +50,37 @@ fn metrics(node: &Node) -> [String; 3] {
 }
 
 fn state_label(node: &Node) -> String {
+    if matches!(node.grouping, Some(crate::model::Grouping::Resource)) {
+        return "resources".into();
+    }
+    if let Some(resource) = &node.resource {
+        return resource
+            .metrics
+            .iter()
+            .take(2)
+            .map(output::metric_text)
+            .collect::<Vec<_>>()
+            .join(" · ");
+    }
     if let Some(container) = &node.container {
         return container.state.clone().unwrap_or("?".into());
     }
     if let Some(process) = &node.process {
-        return output::ports(process.network.as_ref());
+        let ports = output::ports(process.network.as_ref());
+        return if process.roles.is_empty() {
+            ports
+        } else {
+            format!(
+                "{} · {}",
+                ports,
+                process
+                    .roles
+                    .iter()
+                    .map(|role| format!("{}:{}", role.provider, role.label))
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            )
+        };
     }
     if let Some(totals) = &node.container_totals {
         let active = if totals.activity_unknown > 0 || !totals.inventory_complete {
@@ -106,6 +135,22 @@ pub(super) fn selected_paths(app: &App) -> String {
             if let Some(path) = path {
                 paths.push(format!("{label} {}", path.display()));
             }
+        }
+    } else if let Some(resource) = &node.resource {
+        paths.push(format!(
+            "{}/{} · {} · {}",
+            resource.provider,
+            resource.version,
+            resource.id,
+            resource
+                .metrics
+                .iter()
+                .map(output::metric_text)
+                .collect::<Vec<_>>()
+                .join(" · ")
+        ));
+        if let Some(path) = &resource.path {
+            paths.push(format!("path {}", path.display()));
         }
     } else if let Some(container) = &node.container {
         if let Some(path) = container

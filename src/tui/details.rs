@@ -20,6 +20,7 @@ enum Status {
 }
 
 pub(super) struct Details {
+    resource_ref: Option<String>,
     pid: u32,
     started: Option<u64>,
     node: Option<Node>,
@@ -32,6 +33,19 @@ pub(super) struct Details {
 
 impl Details {
     pub fn new(mut node: Node) -> Self {
+        if node.resource.is_some() {
+            return Self {
+                resource_ref: Some(node.reference.clone()),
+                pid: 0,
+                started: None,
+                node: Some(node),
+                status: Status::Ready,
+                needs_query: false,
+                vertical: 0,
+                height: Cell::new(1),
+                width: Cell::new(1),
+            };
+        }
         let process = node.process.as_mut().expect("process detail selection");
         let pid = process.pid;
         let started = process.started_unix_us;
@@ -39,6 +53,7 @@ impl Details {
         process.extension_details.clear();
         node.children.clear();
         Self {
+            resource_ref: None,
             pid,
             started,
             node: Some(node),
@@ -55,7 +70,8 @@ impl Details {
     }
 
     pub fn query_pid(&self) -> Option<u32> {
-        (!matches!(self.status, Status::Unavailable(_))).then_some(self.pid)
+        (self.resource_ref.is_none() && !matches!(self.status, Status::Unavailable(_)))
+            .then_some(self.pid)
     }
 
     pub fn retryable_error(&self) -> bool {
@@ -78,6 +94,25 @@ impl Details {
     }
 
     pub fn update(&mut self, result: &Result<Snapshot, String>) {
+        if let Some(reference) = &self.resource_ref {
+            match result {
+                Ok(snapshot) => match tree::select(&snapshot.root, reference) {
+                    Ok(node) => {
+                        self.node = Some(node);
+                        self.status = Status::Ready;
+                    }
+                    Err(_) => {
+                        self.node = None;
+                        self.status = Status::Unavailable("Resource no longer observed".into());
+                    }
+                },
+                Err(_) => {
+                    self.node = None;
+                    self.status = Status::Failed("Resource refresh failed".into());
+                }
+            }
+            return;
+        }
         if matches!(self.status, Status::Unavailable(_)) {
             return;
         }
@@ -125,7 +160,32 @@ impl Details {
             Status::Ready => {}
         }
         if let Some(node) = &self.node {
+            if let Some(resource) = &node.resource {
+                rows.push(DetailRow::heading(&resource.label));
+                rows.push(DetailRow::field(
+                    "Provider",
+                    format!("{}/{}", resource.provider, resource.version),
+                ));
+                rows.push(DetailRow::field("Identity", &resource.id));
+                rows.push(DetailRow::field("Kind", &resource.kind));
+                if let Some(path) = &resource.path {
+                    rows.push(DetailRow::field("Path", path.display().to_string()));
+                }
+                rows.extend(
+                    resource
+                        .metrics
+                        .iter()
+                        .map(|metric| DetailRow::text(output::metric_text(metric))),
+                );
+                return rows;
+            }
             let process = node.process.as_ref().expect("detail process");
+            rows.extend(
+                process
+                    .roles
+                    .iter()
+                    .map(|role| DetailRow::text(output::role_text(role))),
+            );
             rows.push(DetailRow::heading(&node.name));
             rows.push(DetailRow::text(format!(
                 "CPU/core {}  RAM {}  Uptime {}  PPID {}  UID {}",
@@ -276,8 +336,11 @@ impl Details {
         ])
         .areas(area);
         frame.render_widget(
-            Paragraph::new(format!("Process details · pid:{}", self.pid))
-                .style(Style::default().fg(Color::Cyan)),
+            Paragraph::new(self.resource_ref.as_ref().map_or_else(
+                || format!("Process details · pid:{}", self.pid),
+                |reference| format!("Resource details · {reference}"),
+            ))
+            .style(Style::default().fg(Color::Cyan)),
             title,
         );
         let body = Rect::new(

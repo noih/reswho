@@ -72,7 +72,7 @@ pub fn capture_reported(
             .filter(|provider| {
                 provider
                     .manifest
-                    .capabilities
+                    .known_capabilities()
                     .contains(&crate::extensions::Capability::Classify)
             })
             .map(|provider| provider as &dyn crate::extensions::Extension),
@@ -91,7 +91,7 @@ pub fn capture_reported(
             .filter(|provider| {
                 provider
                     .manifest
-                    .capabilities
+                    .known_capabilities()
                     .contains(&crate::extensions::Capability::Details)
             })
             .map(|provider| provider as &dyn crate::extensions::Extension)
@@ -107,7 +107,14 @@ pub fn capture_reported(
                 .as_ref()
                 .is_some_and(|old| old.pid == process.pid)
             {
-                node.process = Some(process.clone());
+                let mut updated = process.clone();
+                updated.roles = node
+                    .process
+                    .as_ref()
+                    .expect("selected process")
+                    .roles
+                    .clone();
+                node.process = Some(updated);
             }
             for child in &mut node.children {
                 attach(child, process);
@@ -116,15 +123,16 @@ pub fn capture_reported(
         attach(&mut root, process);
         root.diagnostics.extend(diagnostics);
     }
-    if options.containers {
+    {
         let mut providers: Vec<&dyn crate::extensions::Extension> = crate::extensions::BUILTINS
             .iter()
             .filter(|provider| {
                 use crate::extensions::{Builtin, Extension};
-                provider
-                    .descriptor()
-                    .capabilities
-                    .contains(&crate::extensions::Capability::Collect)
+                options.containers
+                    && provider
+                        .descriptor()
+                        .capabilities
+                        .contains(&crate::extensions::Capability::Collect)
                     && (!matches!(provider, Builtin::Apple) || containers::apple_available())
             })
             .map(|provider| provider as &dyn crate::extensions::Extension)
@@ -135,13 +143,26 @@ pub fn capture_reported(
                 .filter(|provider| {
                     provider
                         .manifest
-                        .capabilities
+                        .known_capabilities()
                         .contains(&crate::extensions::Capability::Collect)
+                        && (options.containers
+                            || provider
+                                .manifest
+                                .collect_scopes
+                                .iter()
+                                .any(|scope| scope == "resources"))
                 })
                 .map(|provider| provider as &dyn crate::extensions::Extension),
         );
-        match crate::extensions::collect(&providers, &context) {
-            Ok(containers) => root.children.push(containers),
+        match crate::extensions::collect_scoped(&providers, &context, options.containers) {
+            Ok((containers, resources)) => {
+                if options.containers {
+                    root.children.push(containers);
+                }
+                if !resources.children.is_empty() {
+                    root.children.push(resources);
+                }
+            }
             Err(error) => collection.warnings.push(crate::model::Diagnostic::new(
                 "collection_failed",
                 "containers",

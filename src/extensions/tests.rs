@@ -39,6 +39,16 @@ impl Fixture {
 }
 
 impl Extension for Fixture {
+    fn collects_containers(&self) -> bool {
+        matches!(
+            self.contribution,
+            Contribution::Collect { .. }
+                | Contribution::Collected {
+                    runtime: Some(_),
+                    ..
+                }
+        )
+    }
     fn descriptor(&self) -> Descriptor {
         Descriptor {
             id: self.id.into(),
@@ -734,7 +744,7 @@ fn capability_validation_failures_skip_later_calls_only_in_the_current_round() {
                         proposal: DetailProposal { identity, command },
                     })
                 }
-                Request::Collect => Ok(Contribution::Collect {
+                Request::Collect | Request::CollectResources => Ok(Contribution::Collect {
                     runtime: runtime("separate-runtime"),
                     containers: if self.kind == "overflow" {
                         vec![Container {
@@ -978,4 +988,249 @@ fn provider_timings_exclude_siblings_and_later_batches() {
     };
     assert!(duration("fast") < duration("slow") * 0.5, "{records:?}");
     assert!(duration("slow") < duration("later") * 0.75, "{records:?}");
+}
+
+#[test]
+fn supplemental_roles_coexist_on_apps_projects_without_reparenting_or_new_totals() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("go.mod"), "module fixture").unwrap();
+    let mut app = process();
+    app.cwd = Some(dir.path().into());
+    app.uid = Some(501);
+    let mut project = app.clone();
+    project.pid = 11;
+    project.executable = Some("/tmp/tool".into());
+    let processes = vec![app, project];
+    let role = |process: &Process, label: &str| ClassificationProposal {
+        identity: ProcessIdentity::observed(process).unwrap(),
+        evidence: ClassificationEvidence::Role {
+            key: "worker".into(),
+            label: label.into(),
+            path: process.cwd.clone().unwrap(),
+            basis: "cwd".into(),
+        },
+    };
+    let first = Fixture::new(
+        "first",
+        Contribution::Classify {
+            proposals: processes
+                .iter()
+                .map(|process| role(process, "First worker"))
+                .collect(),
+        },
+    );
+    let second = Fixture::new(
+        "second",
+        Contribution::Classify {
+            proposals: processes
+                .iter()
+                .map(|process| role(process, "Second worker"))
+                .collect(),
+        },
+    );
+    let settings = default_settings().unwrap();
+    let cancel = Cancellation::default();
+    let context = Context::new(&settings, &cancel);
+    let original =
+        crate::tree::build_with_providers(processes.clone(), &context, &[&Builtin::AppBundle])
+            .unwrap();
+    let root = crate::tree::build_with_providers(
+        processes.clone(),
+        &context,
+        &[&Builtin::AppBundle, &first, &second],
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&root.totals).unwrap(),
+        serde_json::to_value(&original.totals).unwrap()
+    );
+    for pid in [10, 11] {
+        let selected = crate::tree::select(&root, &format!("pid:{pid}")).unwrap();
+        let old = crate::tree::select(&original, &format!("pid:{pid}")).unwrap();
+        assert_eq!(selected.evidence, old.evidence);
+        assert_eq!(
+            serde_json::to_value(&selected.attribution).unwrap(),
+            serde_json::to_value(&old.attribution).unwrap()
+        );
+        let roles = &selected.process.as_ref().unwrap().roles;
+        assert_eq!(
+            roles
+                .iter()
+                .map(|role| role.provider.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        assert_eq!(roles[0].path, dir.path());
+        let snapshot = Snapshot {
+            schema: crate::model::JSON_SCHEMA_VERSION,
+            extensions: vec![],
+            captured_unix_ms: 0,
+            sample_ms: 1,
+            collection_ms: 1,
+            system: SystemSummary::default(),
+            scope: selected.reference.clone(),
+            warnings: vec![],
+            root: selected,
+        };
+        let md = crate::output::markdown(&snapshot);
+        assert!(md.contains("First worker") && md.contains("Second worker"));
+    }
+    for invalid in ["stale", "basis", "path"] {
+        let mut proposal = role(&processes[0], "Invalid");
+        match invalid {
+            "stale" => proposal.identity.started_unix_us += 1,
+            "basis" => {
+                if let ClassificationEvidence::Role { basis, .. } = &mut proposal.evidence {
+                    *basis = "command".into();
+                }
+            }
+            _ => {
+                if let ClassificationEvidence::Role { path, .. } = &mut proposal.evidence {
+                    *path = "/elsewhere".into();
+                }
+            }
+        }
+        let bad = Fixture::new(
+            "bad",
+            Contribution::Classify {
+                proposals: vec![proposal],
+            },
+        );
+        let fresh = Context::new(&settings, &cancel);
+        let (_, _, errors, roles) = classify_with_roles(&[&bad], &fresh, &processes);
+        assert!(roles.is_empty());
+        assert!(!errors.is_empty());
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn role_limit_rejects_entire_offending_source_and_retains_healthy_sources() {
+    let process = process();
+    let role = |key: String| ClassificationProposal {
+        identity: ProcessIdentity::observed(&process).unwrap(),
+        evidence: ClassificationEvidence::Role {
+            key,
+            label: "Worker".into(),
+            path: process.executable.clone().unwrap(),
+            basis: "executable".into(),
+        },
+    };
+    let full = Fixture::new(
+        "full",
+        Contribution::Classify {
+            proposals: (0..MAX_ROLES_PER_PROCESS)
+                .map(|index| role(index.to_string()))
+                .collect(),
+        },
+    );
+    let mut fallback = role("fallback".into());
+    fallback.evidence = ClassificationEvidence::Custom {
+        key: "fallback".into(),
+        label: "Unaccepted fallback".into(),
+        path: process.executable.clone().unwrap(),
+        basis: "executable".into(),
+    };
+    let overflow = Fixture::new(
+        "overflow",
+        Contribution::Classify {
+            proposals: vec![fallback, role("extra".into())],
+        },
+    );
+    let healthy = Fixture::new(
+        "healthy",
+        Contribution::Classify {
+            proposals: vec![ClassificationProposal {
+                identity: ProcessIdentity::observed(&process).unwrap(),
+                evidence: ClassificationEvidence::AppBundle {
+                    path: "/Applications/Demo.app".into(),
+                },
+            }],
+        },
+    );
+    let settings = default_settings().unwrap();
+    let cancel = Cancellation::default();
+    let context = Context::new(&settings, &cancel);
+    let (apps, custom, errors, roles) = classify_with_roles(
+        &[&full, &overflow, &healthy],
+        &context,
+        std::slice::from_ref(&process),
+    );
+    assert_eq!(roles[&process.pid].len(), MAX_ROLES_PER_PROCESS);
+    assert!(
+        roles[&process.pid]
+            .iter()
+            .all(|role| role.provider == "full")
+    );
+    assert!(custom.is_empty());
+    assert!(apps.contains_key(&process.pid));
+    assert_eq!(errors.len(), 1);
+    assert!(context.failed.lock().unwrap().contains("overflow"));
+    let records = context.report.lock().unwrap();
+    assert!(records.iter().any(|record| record.provider == "overflow"
+        && record.result == "failed"
+        && record.reason.as_deref() == Some("invalid_data")));
+    assert!(
+        records
+            .iter()
+            .any(|record| record.provider == "healthy" && record.result == "success")
+    );
+}
+
+#[test]
+fn repair_failed_collectors_only_invalidate_their_requested_scopes() {
+    for (dual, include_containers) in [(false, true), (true, true), (true, false)] {
+        let healthy = Fixture::new(
+            "healthy",
+            Contribution::Collect {
+                runtime: runtime("healthy"),
+                containers: vec![Container {
+                    id: "owned".into(),
+                    name: "healthy".into(),
+                    state: Some("running".into()),
+                    cpu_percent: Some(2.0),
+                    memory_bytes: Some(100),
+                    ..Default::default()
+                }],
+            },
+        );
+        let mut failing = Fixture::new(
+            "failing",
+            Contribution::Collected {
+                runtime: dual.then(|| runtime("failing")),
+                containers: vec![],
+                resources: vec![],
+            },
+        );
+        failing.fail = true;
+        let settings = default_settings().unwrap();
+        let cancel = Cancellation::default();
+        let context = Context::new(&settings, &cancel);
+        let providers: Vec<&dyn Extension> = if include_containers {
+            vec![&healthy, &failing]
+        } else {
+            vec![&failing]
+        };
+        let (containers, resources) =
+            collect_scoped(&providers, &context, include_containers).unwrap();
+        assert_eq!(
+            containers.children.len(),
+            usize::from(include_containers) + usize::from(dual && include_containers)
+        );
+        let totals = containers.container_totals.as_ref().unwrap();
+        assert_eq!(totals.inventory_complete, !dual || !include_containers);
+        assert_eq!(
+            totals.known_memory_bytes,
+            if include_containers { 100 } else { 0 }
+        );
+        assert!(resources.children.is_empty());
+        assert!(
+            context
+                .report
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|record| record.provider == "failing" && record.result == "failed")
+        );
+    }
 }

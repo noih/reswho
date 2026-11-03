@@ -1,4 +1,5 @@
 import fcntl
+import hashlib
 import os
 import pty
 import json
@@ -20,7 +21,7 @@ config_owner = tempfile.TemporaryDirectory(prefix="reswho-pty-")
 config_root = Path(config_owner.name)
 
 
-def verify(arguments, exit_key, marker, details=False, external=False):
+def verify(arguments, exit_key, marker, details=False, external=False, resource=False):
     master, slave = pty.openpty()
     process = None
     transcript = bytearray()
@@ -63,6 +64,13 @@ def verify(arguments, exit_key, marker, details=False, external=False):
             animation = transcript[previous:]
             assert any(glyph in animation for glyph in [b"/", b"-", b"\\"]), "spinner did not advance"
             assert b"sample" not in transcript, "long sample should still be pending"
+        if resource:
+            os.write(master, b"pd")
+            drain(0.4)
+            assert b"Resource details" in transcript and b"Capacity" in transcript and b"bytes" in transcript, "resource typed details missing"
+            assert b"Temperature" in transcript and b"celsius" in transcript, "unknown resource metric missing"
+            os.write(master, b"\x1b")
+            drain(0.2)
         if marker == b"sample" and details:
             os.write(master, b"pd")
             opened = len(transcript)
@@ -429,18 +437,21 @@ try:
     try:
         result = subprocess.run([str(ROOT / "target/debug/reswho"), "--config", str(config), "--no-containers", "--json", "--from", f"pid:{external_fixture.pid}"], check=True, capture_output=True, timeout=10)
         snapshot = json.loads(result.stdout)
-        assert snapshot["schema"] == "reswho/10"
+        assert snapshot["schema"] == "reswho/11"
         assert snapshot["root"]["attribution"]["extension"]["provider"] == "example"
+        assert snapshot["root"]["process"]["roles"][0]["label"] == "Workspace worker"
         assert snapshot["root"]["process"]["extension_details"][0]["fields"][0]["value"] == 400
         assert b"fixture-secret-value" not in result.stdout
         calls = [record for record in snapshot["extensions"] if record["provider"] == "example" and record["phase"] in ["classify", "details"]]
         assert len(calls) == 2 and all(record["result"] == "success" and record["duration_ms"] is not None for record in calls)
-        assert len(counter.read_text().splitlines()) == 2, "JSON profiling executed extra providers"
+        assert len(counter.read_text().splitlines()) == 3, "JSON profiling executed extra providers"
         markdown = subprocess.run([str(ROOT / "target/debug/reswho"), "--config", str(config), "--no-containers", "--md", "--profile", "--from", f"pid:{external_fixture.pid}"], check=True, capture_output=True, timeout=10)
         assert b"Extension timings" in markdown.stdout and b"Duration ms" in markdown.stdout
         assert b"Extension broken / read" in markdown.stdout
-        assert len(counter.read_text().splitlines()) == 4, "Markdown profiling executed extra providers"
+        assert len(counter.read_text().splitlines()) == 6, "Markdown profiling executed extra providers"
         verify(["--tui", "--config", str(config), "--from", f"pid:{external_fixture.pid}", "--sample-ms", "1000"], b"q", b"sample", details=True, external=True)
+        resource_ref = "group:" + hashlib.sha256(b"resource\0example\0example-volume").hexdigest()[:16]
+        verify(["--tui", "--config", str(config), "--from", resource_ref, "--sample-ms", "200"], b"q", b"sample", resource=True)
     finally:
         external_fixture.terminate()
         external_fixture.wait()

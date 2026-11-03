@@ -1,0 +1,24 @@
+{
+  "protocol_version": 1,
+  "provider": "fixture",
+  "version": "1.0.0",
+  "contribution": {
+    "capability": "classify",
+    "proposals": [
+      {
+        "identity": {
+          "pid": 42,
+          "started_unix_us": 123
+        },
+        "evidence": {
+          "kind": "role",
+          "key": "worker",
+          "label": "Database worker",
+          "path": "/tmp/work",
+          "basis": "cwd",
+          "annotation": "optional"
+        }
+      }
+    ]
+  }
+}

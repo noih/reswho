@@ -190,7 +190,7 @@ Disposable Rust tempfile roots（native source／binary、isolated state/config�
 
 rw-31＋rw-32 由同一 dev owner 實作，Phase4 FIFO 修復 b50f457 指定 scoped tests 通過後開始。固定 config-root/extensions/id/manifest.json discovery、origin ownership、batch 排序持久化、失效更新停用／tombstone、防 builtin 覆寫及 persistence-failure 隔離已接入。Native-only／guard runner 不變，沿用 Phase4 lifecycle 證據。Metadata/state 只在新 discovery／更新有變更時寫入；core config 不變。Legacy origin 採保守 explicit ownership，不接受同名 drop-in 自動接管。
 
-Current report 含 read／validate／register／collect／classify／details、provider／version／result／安全 reason code／duration_ms；未呼叫／skipped=null，真實呼叫只記一次，post-validation 可將結果改為失敗。Startup 與本輪能力 phase 分開，每輪替換，不留歷史。TUI e 獨立頁保留返回位置，主頁有 issue count；MD 一般精簡錯誤、--profile 計時表；snapshot reswho/10＋Schema，保留8／9，離線 extension metadata array 沿用並加 report。完整使用與 lifecycle 語意見 extension-protocol.md。
+Current report 含 read／validate／register／collect／classify／details、provider／version／result／安全 reason code／duration_ms；未呼叫／skipped=null，真實呼叫只記一次，post-validation 可將結果改為失敗。Startup 與本輪能力 phase 分開，每輪替換，不留歷史。TUI e 獨立頁保留返回位置，主頁有 issue count；MD 一般精簡錯誤、--profile 計時表；snapshot reswho/11＋Schema，保留8／9／10，離線 extension metadata array 沿用並加 report。完整使用與 lifecycle 語意見 extension-protocol.md。
 
 Focused discovery／timing／TUI 測試已通過：排序、restart／不重寫、update／disabled、folder deletion、壞更新不執行舊 manifest、tombstone／明確 reinstall、legacy conflict／builtin／FIFO、persistence failure 保留健康來源、offline default-root 零執行、post-validation failure／取消／skip／平行結果及 e 返回 selection／scroll／failed report。使用 owned temp roots／native fixtures，顯式 close；無 user config mutation、服務或 runtime 安裝。target cache 延用，不新增隔離 target。
 
@@ -215,7 +215,7 @@ Focused discovery／timing／TUI 測試已通過：排序、restart／不重寫�
 
 Ctrl-S 明確 Save；Ctrl-R Reset selected 刪除該 user override，改用 canonical default；編輯中 Esc 僅放棄目前輸入並回 browse，保留先前已接受的 draft；browse Esc 或 Cancel 放棄整份 draft 並回主頁，保留主樹 selection／scroll。未變更不寫檔。儲存使用啟動時選定的 `--config`／XDG／HOME 路徑，0600 同目錄暫存檔、fsync、atomic rename；新增目錄為0700。設定與 extension registry 的鎖分開，非阻塞 flock 避免 TUI 等待其他 saver。儲存前重讀版本1有效檔案，只合併修改 key；保留未知／未修改設定，不序列化預設值。與 baseline 同 key 不一致會拒絕；不同 key 的外部修改會合併。壞 JSON、未知格式／版本、非 regular file、hardlink、非本人檔案及不安全目錄不會被替換。明確拒絕路徑任一層 symlink 與 `..`；macOS 暫存設定請使用 `/private/tmp` 或實體路徑。錯誤提示不含設定原值，失敗保留 draft 與舊 effective settings。鎖只能協調遵守同一 flock 的 saver；手動編輯器不遵守鎖，應避免與 Save 同時寫檔。
 
-Save 先以既有 Contract／resolved policy 驗證；JSON number 啟用既有 serde_json 的 arbitrary_precision feature，保留大整數與有限長小數，bounds／options 比較使用十進位精確順序。成功後才將新 immutable settings 交給 worker 下一輪，既有採集保留其 Arc；更新刷新等待，不新增 collector、不重載 discovery，pause 狀態不變。資源 snapshot 維持 `reswho/10`。
+Save 先以既有 Contract／resolved policy 驗證；JSON number 啟用既有 serde_json 的 arbitrary_precision feature，保留大整數與有限長小數，bounds／options 比較使用十進位精確順序。成功後才將新 immutable settings 交給 worker 下一輪，既有採集保留其 Arc；更新刷新等待，不新增 collector、不重載 discovery，pause 狀態不變。資源 snapshot 使用 `reswho/11`；外部 protocol 版本獨立。
 
 開發驗證與限制：15個 settings、27個 TUI／worker、14個 extension dispatcher、2個 parser、10個 CLI、6個 Schema tests 全通過；fmt／Clippy 與正式 binary 的 `python3 tests/pty_smoke.py --settings-only` 通過。最初 PTY 斷言誤用精確 sample 毫秒及未重建的 terminal 差分文字，已改為最短取樣範圍與 SIGWINCH 重繪檢查；沒有未解決測試失敗。PTY 使用自有0700 temp root，驗證 draft／invalid／cancel／save／CLI reload／nochange／reset／conflict／malformed failure／resize／pause；不操作真實設定或服務。尚待 leader 指派獨立 review；未跑 full suite、live container 或效能量測。target 約8.5GiB（起始7.4GiB），為保留的專案 cache；剩餘磁碟約495GiB，下一階段邊界再檢視。PTY 的 child／handles 與 temp root 已驗證回收。
 

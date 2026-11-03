@@ -1,10 +1,12 @@
 use super::{Capability, Descriptor};
-use crate::settings::{Definition, Registry, Resolved, Use};
+use crate::settings::{Definition, Registry, Resolved};
 use anyhow::{Result, bail};
 use node_semver::{Range, Version};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::collections::BTreeMap;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
@@ -14,25 +16,21 @@ use std::{
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const HOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Manifest {
-    pub id: String,
-    pub version: String,
-    pub engines: BTreeMap<String, String>,
-    pub protocol_version: u32,
-    pub platforms: Vec<String>,
-    pub capabilities: Vec<Capability>,
-    pub executable: PathBuf,
-    #[serde(default)]
-    pub args: Vec<String>,
-    #[serde(default)]
-    pub definitions: Vec<Definition>,
-    #[serde(default)]
-    pub uses: Vec<Use>,
-}
+pub use super::protocol::Manifest;
 
 impl Manifest {
+    pub fn known_capabilities(&self) -> Vec<Capability> {
+        self.capabilities
+            .iter()
+            .filter_map(|capability| match capability.as_str() {
+                "collect" => Some(Capability::Collect),
+                "classify" => Some(Capability::Classify),
+                "details" => Some(Capability::Details),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn read(path: &Path) -> Result<Self> {
         let mut manifest: Self = parse_file(path)?;
         if !manifest.executable.is_absolute() {
@@ -74,9 +72,31 @@ impl Manifest {
             .ok_or_else(|| anyhow::anyhow!("engines.reswho is required"))?
             .parse::<Range>()
             .map_err(|_| anyhow::anyhow!("invalid engines.reswho npm range"))?;
+        if self
+            .capabilities
+            .iter()
+            .any(|capability| capability == "collect")
+            && self.collect_scopes.is_empty()
+        {
+            bail!("collect_scopes required for collect");
+        }
+        if self.collect_scopes.len() > 16
+            || self.required_features.len() > 64
+            || self
+                .collect_scopes
+                .iter()
+                .any(|scope| scope.is_empty() || scope.len() > 64)
+            || self.collect_scopes.iter().collect::<HashSet<_>>().len() != self.collect_scopes.len()
+        {
+            bail!("invalid extension feature limits");
+        }
         if self.platforms.is_empty()
             || self.capabilities.is_empty()
-            || self.capabilities.len() > 3
+            || self.capabilities.len() > 64
+            || self
+                .capabilities
+                .iter()
+                .any(|capability| capability.is_empty() || capability.len() > 64)
             || self.args.len() > 64
             || !self.executable.is_absolute()
             || self.definitions.len() + self.uses.len() > 256
@@ -103,6 +123,23 @@ impl Manifest {
     pub fn incompatibility(&self) -> Option<String> {
         if let Err(error) = self.validate_entrypoint() {
             return Some(error.to_string());
+        }
+        if !super::protocol::supported(&self.required_features) {
+            return Some("unsupported_required_feature".into());
+        }
+        if self
+            .capabilities
+            .iter()
+            .any(|capability| !matches!(capability.as_str(), "collect" | "classify" | "details"))
+        {
+            return Some("unsupported_capability".into());
+        }
+        if self
+            .collect_scopes
+            .iter()
+            .any(|scope| !matches!(scope.as_str(), "containers" | "resources"))
+        {
+            return Some("unsupported_collect_scope".into());
         }
         if self.protocol_version != PROTOCOL_VERSION {
             return Some("unsupported protocol version".into());
@@ -356,6 +393,17 @@ impl State {
                 compatible: true,
                 requires: format!("={HOST_VERSION}"),
                 reason: None,
+                declared_capabilities: descriptor
+                    .capabilities
+                    .iter()
+                    .map(|capability| format!("{capability:?}").to_lowercase())
+                    .collect(),
+                collect_scopes: if descriptor.capabilities.contains(&Capability::Collect) {
+                    vec!["containers".into()]
+                } else {
+                    vec![]
+                },
+                required_features: vec![],
                 descriptor,
                 report: vec![],
             })
@@ -375,10 +423,14 @@ impl State {
                 });
             if reason.is_none()
                 && !containers
+                && !manifest
+                    .collect_scopes
+                    .iter()
+                    .any(|scope| scope == "resources")
                 && manifest
                     .capabilities
                     .iter()
-                    .all(|capability| *capability == Capability::Collect)
+                    .all(|capability| capability == "collect")
             {
                 reason = Some("container collection disabled by --no-containers".into());
             }
@@ -390,10 +442,13 @@ impl State {
                     protocol_version: manifest.protocol_version,
                     source: "external",
                     platforms: manifest.platforms.clone(),
-                    capabilities: manifest.capabilities.clone(),
+                    capabilities: manifest.known_capabilities(),
                     enabled,
                     availability: "unknown",
                 },
+                declared_capabilities: manifest.capabilities.clone(),
+                collect_scopes: manifest.collect_scopes.clone(),
+                required_features: manifest.required_features.clone(),
                 explicit_enabled: entry.enabled,
                 compatible: manifest.incompatibility().is_none(),
                 requires: manifest.engines["reswho"].clone(),
@@ -418,6 +473,9 @@ impl State {
                         enabled: false,
                         availability: "unknown",
                     },
+                    declared_capabilities: vec![],
+                    collect_scopes: vec![],
+                    required_features: vec![],
                     explicit_enabled: false,
                     compatible: false,
                     requires: "unknown".into(),
@@ -460,6 +518,9 @@ impl State {
 pub struct Listing {
     #[serde(flatten)]
     pub descriptor: Descriptor,
+    pub declared_capabilities: Vec<String>,
+    pub collect_scopes: Vec<String>,
+    pub required_features: Vec<String>,
     pub explicit_enabled: bool,
     pub compatible: bool,
     pub requires: String,

@@ -6,10 +6,12 @@ mod diagnostic;
 pub use attribution::{Attribution, AttributionSource};
 pub use diagnostic::Diagnostic;
 
-pub const JSON_SCHEMA_VERSION: &str = "reswho/10";
+pub const JSON_SCHEMA_VERSION: &str = "reswho/11";
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Process {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<Role>,
     pub pid: u32,
     pub ppid: Option<u32>,
     pub uid: Option<u32>,
@@ -40,6 +42,35 @@ impl Process {
             && self.network.is_none()
             && (self.name.is_empty() || self.name == format!("process {}", self.pid))
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Role {
+    pub provider: String,
+    pub version: String,
+    pub key: String,
+    pub label: String,
+    pub basis: String,
+    pub path: PathBuf,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Resource {
+    pub provider: String,
+    pub version: String,
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub path: Option<PathBuf>,
+    pub metrics: Vec<ResourceMetric>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResourceMetric {
+    pub key: String,
+    pub label: String,
+    pub unit: String,
+    pub value: Option<serde_json::Number>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -141,6 +172,7 @@ impl Totals {
 #[serde(rename_all = "lowercase")]
 pub enum Grouping {
     Category,
+    Resource,
     Runtime,
     Container,
     App,
@@ -156,6 +188,7 @@ impl Grouping {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Category => "",
+            Self::Resource => "resource",
             Self::Runtime => "runtime",
             Self::Container => "container",
             Self::App => "app",
@@ -179,6 +212,7 @@ pub struct Node {
     pub attribution: Option<Attribution>,
     pub diagnostics: Vec<Diagnostic>,
     pub process: Option<Process>,
+    pub resource: Option<Resource>,
     pub container: Option<crate::containers::Container>,
     pub runtime: Option<crate::containers::Runtime>,
     pub container_totals: Option<crate::containers::ContainerTotals>,
@@ -203,6 +237,7 @@ impl Node {
             attribution: None,
             diagnostics: Vec::new(),
             process: None,
+            resource: None,
             container: None,
             runtime: None,
             container_totals: None,

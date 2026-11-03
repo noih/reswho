@@ -1,0 +1,20 @@
+{
+  "protocol_version": 1,
+  "host": {
+    "version": "0.1.0",
+    "protocol_version": 1,
+    "features": [
+      "roles",
+      "resources",
+      "collect_scopes"
+    ]
+  },
+  "provider": "fixture",
+  "version": "1.0.0",
+  "capability": "collect",
+  "collect_scopes": [
+    "resources"
+  ],
+  "settings": {},
+  "annotation": "optional"
+}

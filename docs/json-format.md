@@ -1,6 +1,6 @@
 # JSON 資料契約
 
-目前版本：`reswho/10`。規格檔：[reswho-10.schema.json](../schemas/reswho-10.schema.json)，使用 JSON Schema Draft 2020-12。它是 reswho 的資料契約，並非跨監控工具共用的資料模型。
+目前版本：`reswho/11`。規格檔：[reswho-11.schema.json](../schemas/reswho-11.schema.json)，使用 JSON Schema Draft 2020-12。它是 reswho 的資料契約，並非跨監控工具共用的資料模型。
 
 ```sh
 reswho --json --depth all > snapshot.json
@@ -293,4 +293,13 @@ Attribution source 的封閉 enum 新增 `extension`；其 `extension` 物件保
 
 ## reswho/10：目前 extension report
 
-目前 snapshot schema 為 reswho/10（`schemas/reswho-10.schema.json`）；Schema8／9 保留供舊資料使用。新增頂層 `extensions` 陣列，最多2048筆，每筆有 provider、nullable version、phase（read／validate／register／collect／classify／details）、result（success／failed／skipped／never_invoked）、nullable safe reason code 與 nullable duration_ms。實際嘗試使用非負數毫秒（可含小數），skipped／never_invoked 固定 null。Result 包含核心驗證，非單純 child exit。collection_ms 仍為整輪 wall time；重疊／平行 phase 不可加總。Report 只含 startup 與本輪資料，不保留跨輪執行歷史；不包含 raw stderr／panic／設定值或未要求的 command 資料。
+Extension report 於 reswho/10 加入；目前為 reswho/11，Schema8／9／10 保留供舊資料使用。新增頂層 `extensions` 陣列，最多2048筆，每筆有 provider、nullable version、phase（read／validate／register／collect／classify／details）、result（success／failed／skipped／never_invoked）、nullable safe reason code 與 nullable duration_ms。實際嘗試使用非負數毫秒（可含小數），skipped／never_invoked 固定 null。Result 包含核心驗證，非單純 child exit。collection_ms 仍為整輪 wall time；重疊／平行 phase 不可加總。Report 只含 startup 與本輪資料，不保留跨輪執行歷史；不包含 raw stderr／panic／設定值或未要求的 command 資料。
+
+
+## reswho/11：補充角色與一般資源
+
+`process.roles` 可省略或為最多64項的陣列（跨來源）；超限拒絕該來源整份 contribution，不裁切。role 保存 provider／version／key／label／basis／absolute path。它與 node.attribution 的主要歸屬分開；不重複 PID、不改父子關係或 totals。相同 provider/key 每 PID 唯一，不同 provider 並存，依登記順序呈現。
+
+Node 新增 nullable `resource`，`kind: "resource"` 的 leaf 使用非空 resource，process／container／runtime／container_totals 為 null，grouping 為 null。它位於 `group:resources` 的 provider 下；category／provider group 使用 `grouping: "resource"` 保存 metric scope，與 children 是否省略無關。Resource 包含 provider／version／id／kind／label／nullable path／metrics；metrics 是 key／label／unit／value。Number 保留精確 JSON，null 是未知，缺少整個 metric 是未觀測。Unit 是有界 identifier 字串，可擴充，不自動換算或聚合。Resource node 的 totals 固定為零／unknown uptime，不代表量到零個硬體程序；其語意是不屬於 PID 計量。Host 與 container totals 維持既有規則，完全不加 resource 指標。CPU／RAM／uptime sorting 不對 generic metrics 猜測映射。
+
+外部 wire protocol 的版本與 DTO 不受 snapshot schema 版本綁定，見 [extension protocol](extension-protocol.md)。
