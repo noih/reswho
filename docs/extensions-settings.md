@@ -50,10 +50,10 @@ Tenqo：rw-27。
 
 | Key | 預設值 | 語意 |
 | --- | ---: | --- |
-| `sampling.interval_ms` | 250 | 同一輪 CPU 配對取樣之間的最短等待；沿用目前 `--sample-ms` 的200–5000毫秒範圍 |
+| `sampling.interval_ms` | 250 | 同一輪 CPU 配對取樣之間的最短等待；200–5000毫秒範圍 |
 | `refresh.interval_ms` | 2000 | TUI 收到上一輪採集結果後，到下一輪自動採集的等待時間；須為正整數毫秒 |
 
-`--sample-ms 500` 對應本次 `sampling.interval_ms=500`，主機、Docker／Apple／Podman 的配對取樣都讀取相同值。不把實際樣本間隔當成固定500ms，仍以各來源的有效時間差計算 CPU。來源 API 無法控制取樣窗時須保留其實際口徑，不能宣稱已遵守同一取樣窗。
+`--set sampling.interval_ms=500` 對應本次 `sampling.interval_ms=500`，主機、Docker／Apple／Podman 的配對取樣都讀取相同值。不把實際樣本間隔當成固定500ms，仍以各來源的有效時間差計算 CPU。來源 API 無法控制取樣窗時須保留其實際口徑，不能宣稱已遵守同一取樣窗。
 
 Refresh 與 sampling 是不同用途。保持目前同時最多一輪採集、不補追趕積欠輪次的行為；暫停停止自動排程，手動刷新仍可執行一次。一次性 MD／JSON 不因 refresh 設定而持續執行。採集 deadline 與這兩個間隔也不是同一個設定。
 
@@ -75,7 +75,7 @@ Refresh 與 sampling 是不同用途。保持目前同時最多一輪採集、�
 | 2 | Docker／Apple 使用共同 extension 介面，清單可見；分類／詳情可補充 | 內建移轉無用量／身分／輸出退步，分類證據與既有PID去重，按需詳情與一致呈現 |
 | 3 | 開發者可用獨立程式擴充，用戶能登記並使用 | 版本化協定、持久安裝序與共用定義、跨次設定沿用、故障隔離／取消／界限、端到端外部範例與文件 |
 
-設定檔採 JSON 以沿用既有 serde_json；`--config PATH` 明確指定，預設為 `$XDG_CONFIG_HOME/reswho/config.json`，未設 XDG_CONFIG_HOME 時為 `$HOME/.config/reswho/config.json`。預設檔案不存在使用預設值；明確指定卻不存在則報錯。設定檔使用版本欄位與 key→value 的 settings 物件。`reswho settings`／`reswho settings --json` 為不採集資源的有效值查詢，呈現來源並遮蔽敏感值；初版手動編輯設定檔，不新增設定寫入 UI 或自動寫入預設值。現有 `--sample-ms` 保留，另以 `--refresh-ms` 對應刷新等待。查詢 help／JSON Schema 仍不依賴使用者設定可讀或有效。
+設定檔採 JSON 以沿用既有 serde_json；`--config PATH` 明確指定，預設為 `$XDG_CONFIG_HOME/reswho/config.json`，未設 XDG_CONFIG_HOME 時為 `$HOME/.config/reswho/config.json`。預設檔案不存在使用預設值；明確指定卻不存在則報錯。設定檔使用版本欄位與 key→value 的 settings 物件。`reswho settings`／`reswho settings --json` 為不採集資源的有效值查詢，呈現來源並遮蔽敏感值；TUI 主畫面按 `s` 可編輯設定草稿，Ctrl-S 儲存；CLI override 在 TUI 中鎖定，其他設定存檔不會寫入 override。查詢 help／JSON Schema 仍不依賴使用者設定可讀或有效。
 
 每階段由開發 owner 執行針對性測試，整合後依 TESTING.md 完成 fmt／Clippy／一般 Rust 測試；CLI／排程改動補受影響的 PTY 範圍。每階段一次獨立 review，修復只重驗受影響範圍。一般測試不得啟動真實容器服務，外部協定使用自有假程序／fixture；既有 native container probes 的未改動證據可沿用。
 
@@ -86,8 +86,8 @@ Refresh 與 sampling 是不同用途。保持目前同時最多一輪採集、�
 ```sh
 reswho settings
 reswho settings --json
-reswho settings --config /path/to/config.json --sample-ms 500
-reswho --tui --config /path/to/config.json --refresh-ms 3000
+reswho settings --config /path/to/config.json --set sampling.interval_ms=500
+reswho --tui --config /path/to/config.json --set refresh.interval_ms=3000
 ```
 
 設定檔範例（使用者自行保存，程式只讀）：
@@ -298,3 +298,21 @@ UI9 Current（基於d1f698d；stay／fixed）：依使用者最新裁定，foote
 
 
 UI12 Current（基於2432756；stay／fixed）：依使用者裁定，主樹 Right／l 展開收合分支、進入已展開分支的首個子列，或開啟程序／resource leaf 詳情。Left／h 先收合，否則回父層；詳情以 Left／h 或 Esc 返回原樹位置。d 保留父程序直接開詳情的用途，主 footer 改用簡短 → Open。Extensions Right／l 開詳情，Left／h 或 Esc 分兩層返回；內層保留 priority draft／選取／scroll，外層放棄 draft。Enter 不開詳情。Settings、搜尋、q／s 隔離及 Shift-Up／Down、Ctrl-S 行為保留。詳情原有折行／垂直捲動沒有水平平移；[／] 繼續捲動主樹底部路徑。
+
+### 本次執行的通用覆寫
+
+`--set KEY=VALUE` 可重複使用，適用 snapshot、TUI、`settings` 與離線 `extensions` 清單。優先序為 CLI > config > default。同 key 取命令列最後一次出現的值，再驗證有效值；子命令前後皆可放置。缺少 `=` 的項目一律報錯。
+
+只在第一個 `=` 分割。string 直接使用右側原文，保留空字串、空白與其餘 `=`，不需額外 JSON 引號；number／boolean 使用 JSON scalar，再依已註冊 contract 的 type、options、min、max、integer 驗證，保留精確整數與小數。shell 含空白時仍須引用整個參數。
+
+```sh
+reswho --set sampling.interval_ms=500 settings --set refresh.interval_ms=3000 --json
+reswho settings --set 'extensions.example.label=work = local'
+reswho --tui --set shared.mode=fast
+```
+
+extension／shared 範例須有可用 manifest 註冊對應定義；不會為停用 extension 臆造定義或執行 provider 取得型別。`source_priority` 不是註冊設定，不能以 `--set` 修改。未知 key 或無效 CLI 值會在 collector／provider 執行前拒絕，診斷只包含 key 與原因；config 的無效 extension 值仍沿用隔離行為。敏感值在設定預覽遮蔽，來源標示為 `cli`。
+
+`extensions install/enable/disable/remove` 在任何 mutation 前拒絕 `--set`。help／Schema 仍可離線讀取，不載入 config。舊版 `--sample-ms`／`--refresh-ms` 已移除，無 alias；JSON 的 `sample_ms` 欄位不變。
+
+Clap global append 在跨子命令時會保留較深層的參數集合，因此 CLI 在 Clap 語法檢查後依原始 argv 收集所有 `--set`，再交由 Registry 合併與驗證。

@@ -14,7 +14,7 @@ Interactive terminals open the TUI automatically; redirected output defaults to 
 
 JSON consumers: see the [data contract](docs/json-format.md), or run `reswho --json-schema` for the offline schema.
 
-Settings: main-view `s` opens a draft popup (Enter accepts a field, Esc cancels current input or discards the popup; Ctrl-S saves, Ctrl-R resets selected). `reswho settings --json` shows effective values offline. Use `--config PATH`, `--sample-ms` or `--refresh-ms`; see the [settings contract](docs/extensions-settings.md).
+Settings: main-view `s` opens a draft popup (Enter accepts a field, Esc cancels current input or discards the popup; Ctrl-S saves, Ctrl-R resets selected). `reswho settings --json` shows effective values offline. Use `--config PATH`, `--set KEY=VALUE`; see the [settings contract](docs/extensions-settings.md).
 
 `reswho extensions --json` lists built-in and installed external sources with versions and compatibility. Drop a native macOS binary and `manifest.json` into `<config-root>/extensions/<id>/` for startup discovery, or explicitly register a manifest with `reswho extensions install PATH`; contributor setup and the isolated example are in the [extension protocol](docs/extension-protocol.md). External programs run with your user permissions.
 

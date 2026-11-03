@@ -7,7 +7,6 @@ use reswho::{
     tree, tui,
 };
 use std::{
-    collections::BTreeMap,
     io::{self, IsTerminal, Write},
     path::PathBuf,
     sync::Arc,
@@ -26,7 +25,12 @@ Examples:
   reswho --md --from pid:1234           Read one PID's details
   reswho --md --from group:containers --depth all
   reswho --help-md                      Read the Markdown output guide
-  reswho settings --json                Inspect effective settings offline"
+  reswho settings --json                Inspect effective settings offline
+  reswho --set sampling.interval_ms=500 --md
+  reswho settings --set extensions.example.label=work
+
+--set accepts registered core, shared.* and extensions.<id>.* keys.
+Extension keys require available manifest definitions; strings are raw text."
 )]
 #[command(group(ArgGroup::new("format").args(["md", "json", "tui"])))]
 struct Args {
@@ -90,19 +94,12 @@ Sets initial TUI sort"
     #[arg(
         long,
         global = true,
-        help_heading = "Sampling/refresh",
+        value_name = "KEY=VALUE",
         next_line_help = true,
-        help = "Override minimum CPU sampling wait in ms (200..5000; default 250)"
+        help_heading = "Configuration",
+        help = "Override a registered setting; repeatable, last value wins"
     )]
-    sample_ms: Option<u64>,
-    #[arg(
-        long,
-        global = true,
-        help_heading = "Sampling/refresh",
-        next_line_help = true,
-        help = "Override TUI wait after each result in ms (positive; default 2000)"
-    )]
-    refresh_ms: Option<u64>,
+    set: Vec<String>,
     #[arg(
         long,
         global = true,
@@ -175,7 +172,27 @@ fn parse_depth(value: &str) -> Result<usize, String> {
 }
 
 fn run() -> Result<()> {
-    let args = Args::parse();
+    let arguments: Vec<_> = std::env::args_os().collect();
+    let mut args = Args::parse_from(&arguments);
+    args.set.clear();
+    let mut arguments = arguments.iter().skip(1);
+    while let Some(argument) = arguments.next() {
+        if argument == "--" {
+            break;
+        }
+        if argument == "--set" {
+            args.set.push(
+                arguments
+                    .next()
+                    .expect("Clap checked value")
+                    .to_str()
+                    .expect("Clap checked UTF-8")
+                    .to_owned(),
+            );
+        } else if let Some(value) = argument.to_str().and_then(|arg| arg.strip_prefix("--set=")) {
+            args.set.push(value.to_owned());
+        }
+    }
     if let Err(error) = args.validate_formats() {
         error.exit();
     }
@@ -187,6 +204,10 @@ fn run() -> Result<()> {
         action: Some(action),
     }) = &args.command
     {
+        anyhow::ensure!(
+            args.set.is_empty(),
+            "--set cannot be used with extension lifecycle actions"
+        );
         let path = extensions::state::State::path(args.config.as_deref())?;
         extensions::state::State::startup(&path)?;
         extensions::state::State::mutate(&path, |state| match action {
@@ -203,16 +224,8 @@ fn run() -> Result<()> {
             args.config.as_deref(),
         )?)?;
         let user = settings::Config::load(args.config.as_deref())?;
-        let mut overrides = BTreeMap::new();
-        for (key, value) in [
-            ("sampling.interval_ms", args.sample_ms),
-            ("refresh.interval_ms", args.refresh_ms),
-        ] {
-            if let Some(value) = value {
-                overrides.insert(key.into(), value.into());
-            }
-        }
         let registry = state.registry_reported()?;
+        let overrides = registry.parse_overrides(&args.set)?;
         let resolved = registry.resolve(&user, &overrides)?;
         for key in &resolved.report().unknown_keys {
             eprintln!("reswho: unknown setting {key} (not applied)");

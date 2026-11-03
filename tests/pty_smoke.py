@@ -291,7 +291,7 @@ def verify_schedule(mode):
         arguments = [str(ROOT / "target/debug/reswho"), "--no-containers", "--config", str(config),
                      "--from", f"pid:{fixture.pid}"]
         if mode == "pause":
-            arguments.extend(["--refresh-ms", "600"])
+            arguments.extend(["--set", "refresh.interval_ms=600"])
         process = subprocess.Popen(arguments, stdin=slave, stdout=slave, stderr=slave,
                                    env={**os.environ, "TERM": "xterm-256color"}, start_new_session=True)
         deadline = time.monotonic() + 10
@@ -375,7 +375,7 @@ def verify_settings():
 
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
-        process = subprocess.Popen([str(ROOT / "target/debug/reswho"), "--tui", "--no-containers", "--config", str(config)], stdin=slave, stdout=slave, stderr=slave, env={**os.environ, "TERM": "xterm-256color"}, start_new_session=True)
+        process = subprocess.Popen([str(ROOT / "target/debug/reswho"), "--tui", "--no-containers", "--config", str(config), "--set", "refresh.interval_ms=45000"], stdin=slave, stdout=slave, stderr=slave, env={**os.environ, "TERM": "xterm-256color"}, start_new_session=True)
         deadline = time.monotonic() + 10
         while b"sample" not in transcript and time.monotonic() < deadline:
             drain(0.1)
@@ -384,6 +384,12 @@ def verify_settings():
         send(b"ps")
         assert b"Settings" in transcript
         initial = config.read_bytes()
+        send(b"\x1b[H\r")
+        locked = frame_text()
+        assert b"45000" in locked and b"locked" in locked and re.search(rb"CLI\s+override\s+is\s+locked", locked), locked
+        send(b"\x12")
+        assert re.search(rb"CLI\s+override\s+is\s+locked", frame_text())
+        assert config.read_bytes() == initial
         send(b"\x1b[B\r\x15" + b"0\r")
         assert re.search(rb"Invalid\s+value", frame_text())
         send(b"\x1b[Z\r")
@@ -391,7 +397,7 @@ def verify_settings():
         assert config.read_bytes() == initial
         send(b"\t\t\r")
         assert config.read_bytes() == initial
-        send(b"s\x1b[H\r\x15" + b"45000\r")
+        send(b"s\x1b[H")
         send(b"\x1b[B\r\x15" + b"0\r")
         send(b"\x1b")
         browse = frame_text()
@@ -406,6 +412,11 @@ def verify_settings():
         send(b"\x13")
         saved = json.loads(config.read_text())
         assert saved["settings"]["sampling.interval_ms"] == 400, saved
+        assert saved["settings"]["refresh.interval_ms"] == 60000, saved
+        send(b"s\x1b[H")
+        retained = frame_text()
+        assert b"45000" in retained and b"locked" in retained, retained
+        send(b"\x1b[B\x1b")
         assert saved["settings"]["unknown.keep"] == "untouched"
         report = subprocess.run([str(ROOT / "target/debug/reswho"), "settings", "--config", str(config), "--json"], check=True, capture_output=True, timeout=5)
         assert json.loads(report.stdout)["settings"]["sampling.interval_ms"]["value"] == 400
@@ -480,7 +491,7 @@ def verify_settings():
         process.wait(timeout=5)
         assert process.returncode == 0
         assert termios.tcgetattr(slave) == before
-        print("PASS settings PTY draft/invalid/cancel/field-Esc/popup-Esc/save/reload/nochange/reset/conflict/failure/resize/pause/extensions-isolation/back")
+        print("PASS settings PTY CLI-lock/save-preserves-override/draft/invalid/cancel/field-Esc/popup-Esc/save/reload/nochange/reset/conflict/failure/resize/pause/extensions-isolation/back")
     finally:
         if process is not None and process.poll() is None:
             process.terminate()
@@ -519,7 +530,7 @@ def verify_help():
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
         process = subprocess.Popen(
-            [str(ROOT / "target/debug/reswho"), "--tui", "--no-containers", "--refresh-ms", "60000"],
+            [str(ROOT / "target/debug/reswho"), "--tui", "--no-containers", "--set", "refresh.interval_ms=60000"],
             stdin=slave, stdout=slave, stderr=slave,
             env={**os.environ, "TERM": "xterm-256color", "XDG_CONFIG_HOME": str(config_root)},
             start_new_session=True,
@@ -596,7 +607,7 @@ if "--settings-only" in sys.argv:
 try:
     if "--extensions-only" not in sys.argv and "--priority-only" not in sys.argv:
         verify(["--sort", "name"], b"q", b"sample")
-        verify(["--tui", "--sample-ms", "5000"], b"\x03", b"Loading resources...")
+        verify(["--tui", "--set", "sampling.interval_ms=5000"], b"\x03", b"Loading resources...")
         verify(["--tui", "--from", "pid:4294967295"], b"q", b"Unable to load resources")
 
         fixture = subprocess.Popen(
@@ -604,7 +615,7 @@ try:
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         try:
-            verify(["--tui", "--from", f"pid:{fixture.pid}", "--sample-ms", "1000"], b"q", b"sample", details=True)
+            verify(["--tui", "--from", f"pid:{fixture.pid}", "--set", "sampling.interval_ms=1000"], b"q", b"sample", details=True)
         finally:
             fixture.terminate()
             fixture.wait()
@@ -650,10 +661,10 @@ try:
         assert b"Extension timings" in markdown.stdout and b"Duration ms" in markdown.stdout
         assert b"Extension broken / read" in markdown.stdout
         assert len(counter.read_text().splitlines()) == 6, "Markdown profiling executed extra providers"
-        verify(["--tui", "--config", str(config), "--from", f"pid:{external_fixture.pid}", "--sample-ms", "1000"], b"q", b"sample", details=True, external=True)
+        verify(["--tui", "--config", str(config), "--from", f"pid:{external_fixture.pid}", "--set", "sampling.interval_ms=1000"], b"q", b"sample", details=True, external=True)
         verify_priority(config)
         resource_ref = "group:" + hashlib.sha256(b"resource\0example\0example-volume").hexdigest()[:16]
-        verify(["--tui", "--config", str(config), "--from", resource_ref, "--sample-ms", "200"], b"q", b"sample", resource=True)
+        verify(["--tui", "--config", str(config), "--from", resource_ref, "--set", "sampling.interval_ms=200"], b"q", b"sample", resource=True)
     finally:
         external_fixture.terminate()
         external_fixture.wait()

@@ -178,11 +178,11 @@ Runtime：`name`（目前 docker / podman / apple）、`context`、`endpoint_ref
 
 Port：`protocol` 來源字串、`container_port`（uint16）、`host_ip`（string/null）、`host_port`（uint16/null）。這是發布設定，不是觀測到的 listener／流量。
 
-本機 Unix endpoint 的 Linux Docker stats 使用同輪兩次 one-shot，間隔沿用 `--sample-ms`（預設250ms）；`cpu_percent` 是該輪樣本間的平均，沒有跨輪平滑。SSH／TCP 等端點或不支援的 API 版本沿用 CLI 的取樣方式。`sample_ms` 仍只描述主機取樣階段，不代表容器的實際取樣窗。這些來源差異不改變 JSON 欄位結構；版本目前為 `reswho/12`，指標語意保留。
+本機 Unix endpoint 的 Linux Docker stats 使用同輪兩次 one-shot，間隔沿用 `--set sampling.interval_ms=…`（預設250ms）；`cpu_percent` 是該輪樣本間的平均，沒有跨輪平滑。SSH／TCP 等端點或不支援的 API 版本沿用 CLI 的取樣方式。`sample_ms` 仍只描述主機取樣階段，不代表容器的實際取樣窗。這些來源差異不改變 JSON 欄位結構；版本目前為 `reswho/12`，指標語意保留。
 
 Podman 使用同輪兩次 raw CLI counters，等待有效 `sampling.interval_ms`；CPU 以 CPUNano／SystemNano 差計算，memory basis 為 `podman_cgroup_usage_bytes`。SystemNano 不遞增或重驗失敗時為 unknown；macOS machine／remote bind 不推論本機路徑。實測限4.9.4 nested Linux，詳見 [容器採集](containers.md)。
 
-Apple Container 1.6.1 以同輪兩次 XPC counters 與回應的 monotonic 時間差計算 CPU，等待沿用 `--sample-ms`，無跨輪資料。未知版本只提供 inventory 並回報 unsupported；不以慢速 CLI stats 偷換取樣方式。`apple` endpoint 依本機使用者服務識別，daemon_id 為 null。
+Apple Container 1.6.1 以同輪兩次 XPC counters 與回應的 monotonic 時間差計算 CPU，等待沿用 `--set sampling.interval_ms=…`，無跨輪資料。未知版本只提供 inventory 並回報 unsupported；不以慢速 CLI stats 偷換取樣方式。`apple` endpoint 依本機使用者服務識別，daemon_id 為 null。
 
 Mount：`kind` 來源類型（Apple virtiofs 映射為 bind）、`source` 與 `destination` 路徑。遠端 daemon 的路徑不是本機路徑；不自動在本機解析。
 

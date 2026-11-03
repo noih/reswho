@@ -48,7 +48,6 @@ fn help_is_available_without_resource_collection() {
             "Output:",
             "Selection/expansion:",
             "Sorting:",
-            "Sampling/refresh:",
             "Configuration:",
         ] {
             assert!(text.contains(heading), "missing {heading}");
@@ -107,6 +106,7 @@ fn settings_are_offline_and_cli_overrides_are_explicit() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.json");
     std::fs::write(&path, r#"{"version":1,"settings":{"sampling.interval_ms":400,"refresh.interval_ms":3000,"future.token":"SECRET"}}"#).unwrap();
+    let before = std::fs::read(&path).unwrap();
     let run = |extra: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_reswho"))
             .args(["settings", "--json", "--config"])
@@ -131,11 +131,17 @@ fn settings_are_offline_and_cli_overrides_are_explicit() {
     );
     assert!(!String::from_utf8_lossy(&result.stdout).contains("SECRET"));
     assert!(!String::from_utf8_lossy(&result.stderr).contains("SECRET"));
-    let result = run(&["--sample-ms", "500", "--refresh-ms", "6000"]);
+    let result = run(&[
+        "--set",
+        "sampling.interval_ms=500",
+        "--set",
+        "refresh.interval_ms=6000",
+    ]);
     let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
     assert_eq!(report["settings"]["sampling.interval_ms"]["value"], 500);
     assert_eq!(report["settings"]["sampling.interval_ms"]["source"], "cli");
     assert_eq!(report["settings"]["refresh.interval_ms"]["value"], 6000);
+    assert_eq!(before, std::fs::read(&path).unwrap());
 }
 
 #[test]
@@ -170,9 +176,15 @@ fn config_failures_defaults_and_help_do_not_collect() {
     assert!(String::from_utf8_lossy(&invalid.stderr).contains("sampling.interval_ms"));
     assert!(!String::from_utf8_lossy(&invalid.stderr).contains("SECRET"));
     assert!(
-        run(&["settings", "--config", path, "--sample-ms", "400"])
-            .status
-            .success()
+        run(&[
+            "settings",
+            "--config",
+            path,
+            "--set",
+            "sampling.interval_ms=400"
+        ])
+        .status
+        .success()
     );
     for flag in ["--help", "--help-md", "--json-schema"] {
         assert!(run(&[flag, "--config", path]).status.success());
@@ -476,7 +488,7 @@ fn dropin_default_root_discovers_without_executing_and_does_not_rewrite_config()
     std::fs::write(
         &source,
         format!(
-            "#include <stdio.h>\nint main(void){{FILE *f=fopen({:?},\"w\");fclose(f);return 1;}}",
+            "#include <stdio.h>\nint main(void){{FILE *f=fopen({:?},\"w\");int c;while((c=getchar())!=EOF)fputc(c,f);fclose(f);return 1;}}",
             marker
         ),
     )
@@ -490,16 +502,25 @@ fn dropin_default_root_discovers_without_executing_and_does_not_rewrite_config()
             .unwrap()
             .success()
     );
-    std::fs::write(package.join("manifest.json"),serde_json::json!({"id":"drop","version":"1.0.0","engines":{"reswho":"*"},"protocol_version":1,"platforms":["macos"],"capabilities":["classify"],"executable":"provider"}).to_string()).unwrap();
-    let run = || {
+    let mut manifest = serde_json::json!({"id":"drop","version":"1.0.0","engines":{"reswho":"*"},"protocol_version":1,"platforms":["macos"],"capabilities":["classify"],"executable":"provider"});
+    manifest["definitions"] = serde_json::json!([
+        {"key":"extensions.drop.label","type":"string","default":"default","description":"Label","sensitive":false},
+        {"key":"extensions.drop.secret","type":"string","default":"default","description":"Secret","sensitive":true},
+        {"key":"extensions.drop.enabled","type":"boolean","default":true,"description":"Enabled","sensitive":false},
+        {"key":"extensions.drop.count","type":"number","integer":true,"min":0,"default":1,"description":"Count","sensitive":false},
+        {"key":"extensions.drop.ratio","type":"number","min":0,"max":1,"default":0.5,"description":"Ratio","sensitive":false},
+        {"key":"shared.mode","type":"string","options":["fast","slow"],"default":"fast","description":"Mode","sensitive":false}
+    ]);
+    std::fs::write(package.join("manifest.json"), manifest.to_string()).unwrap();
+    let run = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_reswho"))
             .env("XDG_CONFIG_HOME", dir.path())
             .env("PATH", "")
-            .args(["extensions", "--json"])
+            .args(args)
             .output()
             .unwrap()
     };
-    let output = run();
+    let output = run(&["extensions", "--json"]);
     assert!(output.status.success());
     let rows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let row = rows
@@ -520,10 +541,111 @@ fn dropin_default_root_discovers_without_executing_and_does_not_rewrite_config()
     );
     let state = dir.path().join("reswho/extensions.json");
     let before = std::fs::read(&state).unwrap();
-    assert!(run().status.success());
-    assert_eq!(before, std::fs::read(state).unwrap());
+    assert!(run(&["extensions", "--json"]).status.success());
+    assert_eq!(before, std::fs::read(&state).unwrap());
     assert!(!dir.path().join("reswho/config.json").exists());
     assert!(!marker.exists());
+    let overrides = [
+        "--set",
+        "extensions.drop.label= a=b ",
+        "--set",
+        "extensions.drop.secret=SECRET=value",
+        "--set",
+        "extensions.drop.enabled=false",
+        "--set",
+        "extensions.drop.count=18446744073709551615",
+        "--set",
+        "extensions.drop.ratio=0.12345678901234567890123456789",
+        "--set",
+        "shared.mode=slow",
+        "--set",
+        "sampling.interval_ms=200",
+    ];
+    assert!(
+        run(&[&["extensions", "--json"][..], &overrides].concat())
+            .status
+            .success()
+    );
+    assert!(!marker.exists(), "offline overrides executed provider");
+    let output = run(&[&["settings", "--json"][..], &overrides].concat());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let values = &report["settings"];
+    assert_eq!(values["extensions.drop.label"]["value"], " a=b ");
+    assert_eq!(values["extensions.drop.secret"]["value"], "[redacted]");
+    assert_eq!(values["extensions.drop.enabled"]["value"], false);
+    assert_eq!(
+        values["extensions.drop.count"]["value"].to_string(),
+        "18446744073709551615"
+    );
+    assert_eq!(
+        values["extensions.drop.ratio"]["value"].to_string(),
+        "0.12345678901234567890123456789"
+    );
+    assert_eq!(values["shared.mode"]["value"], "slow");
+    for key in [
+        "extensions.drop.label",
+        "extensions.drop.secret",
+        "extensions.drop.enabled",
+        "extensions.drop.count",
+        "extensions.drop.ratio",
+        "shared.mode",
+    ] {
+        assert_eq!(values[key]["source"], "cli");
+    }
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("SECRET"));
+    let output = run(&[
+        "settings",
+        "--json",
+        "--set",
+        "extensions.drop.label=",
+        "--set",
+        "extensions.drop.count=0",
+    ]);
+    let empty: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(empty["settings"]["extensions.drop.label"]["value"], "");
+    assert_eq!(empty["settings"]["extensions.drop.count"]["value"], 0);
+    for invalid in [
+        "extensions.drop.enabled=SECRET",
+        "extensions.drop.count=0.5",
+        "extensions.drop.ratio=2",
+        "shared.mode=SECRET",
+        "extensions.drop.absent=SECRET",
+    ] {
+        let output = run(&["--no-containers", "--json", "--set", invalid]);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("SECRET"));
+        assert!(!marker.exists(), "invalid CLI executed provider");
+    }
+    let output = run(&[&["--no-containers", "--json"][..], &overrides].concat());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let request: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&marker).unwrap()).unwrap();
+    let sent = request["settings"].as_object().unwrap();
+    assert_eq!(sent.len(), 6);
+    for (key, value) in sent {
+        if key == "extensions.drop.secret" {
+            assert_eq!(value, "SECRET=value");
+        } else {
+            assert_eq!(value, &values[key]["value"]);
+        }
+    }
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("SECRET"));
+    assert!(!dir.path().join("reswho/config.json").exists());
+    assert_eq!(before, std::fs::read(&state).unwrap());
+    assert!(run(&["extensions", "disable", "drop"]).status.success());
+    let output = run(&["settings", "--set", "extensions.drop.label=unused"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unknown setting"));
     dir.close().unwrap();
 }
 
@@ -594,4 +716,61 @@ fn promoted_builtin_keeps_old_registry_usable_without_duplicate_inventory() {
     assert_eq!(saved["installed"][1]["removed"], true);
     assert_eq!(std::fs::read_to_string(&config).unwrap(), config_bytes);
     dir.close().unwrap();
+}
+
+#[test]
+fn generic_overrides_preserve_order_and_reject_obsolete_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_reswho"))
+            .env("XDG_CONFIG_HOME", dir.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let output = run(&[
+        "--set",
+        "sampling.interval_ms=SECRET",
+        "--set=refresh.interval_ms=6000",
+        "settings",
+        "--json",
+        "--set",
+        "sampling.interval_ms=400",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["settings"]["sampling.interval_ms"]["value"], 400);
+    assert_eq!(report["settings"]["refresh.interval_ms"]["value"], 6000);
+    for flag in ["--sample-ms", "--refresh-ms"] {
+        let output = run(&["settings", flag, "400"]);
+        assert_eq!(output.status.code(), Some(2));
+    }
+    for args in [
+        vec!["--set", "source_priority=SECRET"],
+        vec!["--set", "sampling.interval_ms=SECRET"],
+        vec!["--set", "sampling.interval_ms=0"],
+        vec!["--set", "sampling.interval_ms=200.5"],
+        vec!["--set", "SECRET", "--set", "sampling.interval_ms=400"],
+    ] {
+        let output = run(&args);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("SECRET"));
+    }
+    for action in ["install", "enable", "disable", "remove"] {
+        let output = run(&[
+            "--set",
+            "sampling.interval_ms=400",
+            "extensions",
+            action,
+            "absent",
+        ]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("--set cannot be used"));
+        assert!(!dir.path().join("reswho/extensions.json").exists());
+    }
 }

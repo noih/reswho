@@ -344,6 +344,35 @@ fn valid_namespace(key: &str, provider: &str) -> bool {
 }
 
 impl Registry {
+    pub fn parse_overrides(&self, arguments: &[String]) -> Result<BTreeMap<String, Value>> {
+        let mut effective = BTreeMap::new();
+        for argument in arguments {
+            let (key, value) = argument
+                .split_once('=')
+                .ok_or_else(|| anyhow::anyhow!("invalid --set: expected KEY=VALUE"))?;
+            effective.insert(key, value);
+        }
+        effective
+            .into_iter()
+            .map(|(key, raw)| {
+                let definition = self
+                    .definition(key)
+                    .ok_or_else(|| anyhow::anyhow!("{key}: unknown setting"))?;
+                let value = if definition.contract.value_type == ValueType::String {
+                    Value::String(raw.to_owned())
+                } else {
+                    serde_json::from_str(raw)
+                        .map_err(|_| anyhow::anyhow!("{key}: invalid JSON scalar"))?
+                };
+                definition
+                    .contract
+                    .validate(&value)
+                    .map_err(|error| anyhow::anyhow!("{key}: {error}"))?;
+                Ok((key.to_owned(), value))
+            })
+            .collect()
+    }
+
     pub fn definitions(&self) -> impl Iterator<Item = &Definition> {
         self.definitions.values()
     }

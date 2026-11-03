@@ -18,7 +18,7 @@ PATH 有 `container` 時加入 `apple (local)`，用 `--version` 與 `list --all
 
 已驗證 1.6.1 的 XPC stats 協定：直接向本機使用者的 apiserver 送出唯讀 containerStats，最多4個在途請求，單筆最多2秒且受整輪 deadline 限制。C bridge 僅處理 libxpc 的 block callback 與至多64KiB stats 資料，Rust 每5ms檢查完成／取消；釋放 request 時取消 connection，晚到的 callback 有獨立存活期，不引用 Rust stack。不產生 helper process、不使用跨輪 cache。
 
-每輪取兩次累積 cpuUsageUsec，中間等待 `--sample-ms`，用實際回應的 monotonic 時差換算單核心 CPU%；memory 原樣使用 memoryUsageBytes，標示 `apple_xpc_memory_usage_bytes`，不混用 Docker 的 cache-adjusted 口徑。再次列出 inventory，比對 id、creationDate、startedDate 及 running；觀測到改變或無法重驗就丟棄用量。CLI 的日期精度有限且不是原子快照，不能排除兩次觀測間未呈現的狀態變化。
+每輪取兩次累積 cpuUsageUsec，中間等待 `--set sampling.interval_ms=…`，用實際回應的 monotonic 時差換算單核心 CPU%；memory 原樣使用 memoryUsageBytes，標示 `apple_xpc_memory_usage_bytes`，不混用 Docker 的 cache-adjusted 口徑。再次列出 inventory，比對 id、creationDate、startedDate 及 running；觀測到改變或無法重驗就丟棄用量。CLI 的日期精度有限且不是原子快照，不能排除兩次觀測間未呈現的狀態變化。
 
 XPC 訊息格式沒有跨版本穩定承諾，因此目前僅1.6.1走此路徑，其他版本保留 inventory 與 unsupported 診斷，不追加慢速 CLI stats。Apple 原生 id 可為名稱；ref 保留 runtime／使用者 endpoint 範圍，不與 Docker 同名容器合併。stopped 為 inactive，stopping／unknown 維持活動性未知。
 
@@ -56,7 +56,7 @@ Compose labels 與 ports／mounts 沿用共同 adapter；macOS 上 Podman machin
 
 - 容器行：`name [container] group:REF · CPU  memory  uptime  state  published ports`。
 - runtime／專案群組顯示 `active / containers`，JSON 的 `container_totals` 分開記錄 `active_containers`、`inactive_containers`、`activity_unknown`；原 `totals` 只統計主機程序。全機 Resources 不加上 Containers 子樹用量，避免 VM 與內部用量重複計算。
-- 支援直接 API 時，先取得所有容器第一筆 one-shot，再等待一次 `--sample-ms`（預設250ms），取得第二筆。CPU 使用計數差值；缺值、計數回退、核心數變動、無效或不遞增時間戳皆不冒充0。沒有跨輪平均／平滑；實際每個容器的取樣窗可能因查詢耗時而更長。
+- 支援直接 API 時，先取得所有容器第一筆 one-shot，再等待一次 `--set sampling.interval_ms=…`（預設250ms），取得第二筆。CPU 使用計數差值；缺值、計數回退、核心數變動、無效或不遞增時間戳皆不冒充0。沒有跨輪平均／平滑；實際每個容器的取樣窗可能因查詢耗時而更長。
 - CPU 100% 為 daemon 的一個 logical core；memory 扣除 cgroup v1 `total_inactive_file` 或 v2 `inactive_file`，非主機程序 RSS。API 的整數 bytes 標為 `docker_api_linux_cache_adjusted`；CLI fallback 使用 `docker stats --no-stream --no-trunc` 的四捨五入值，標為 `docker_cli_linux_cache_adjusted_rounded`。`memory_basis` 保持開放字串，不更動 JSON schema 版本。
 - 採集所有生命週期狀態的容器；只對 running／paused 取得 stats。created／exited／dead／stopped 的 CPU／memory／uptime 不適用，以 `-` 顯示，不計入 unknown 與 oldest；JSON 原指標維持 null，不偽造零值。running／paused／restarting 計入 active；removing、未知或缺失狀態的活動性維持未知，不能當成 inactive。啟動時間原字串仍保留。
 - 完整且全為 inactive 的群組用量與 oldest 為 `-`；若仍有狀態不明的成員，用量保持 `?`／部分總和。活動性未知或 inventory 不完整時，active 計數保留 `?`／`>=`。
