@@ -2,13 +2,11 @@
 
 ## 1.1.1
 
-- Add source-qualified project, tool-role and Playwright session hints to existing
-  process/group summaries, with group coverage and unchanged resource accounting.
-- Codex session-log hints describe verified writable handles and exact metadata
-  titles; current-session guarantees remain unsupported. Claude registry state
-  cannot reliably prove a current session and is omitted.
-- JSON `reswho/13` adds optional `hints` and tag `hint` fields. Markdown moves to
-  `reswho-md/21`; hints are attributes, not resources or tree levels.
+- Add concise process summaries with project, tool-role, and Playwright session hints.
+- Show verified Codex session-log IDs and available titles in details.
+- Improve summary readability and selection highlighting.
+
+Session-log associations do not identify the active conversation.
 
 ## 1.1.0
 
