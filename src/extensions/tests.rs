@@ -986,41 +986,60 @@ fn current_phase_reports_acceptance_failures_skips_and_parallel_durations() {
 }
 
 #[test]
-fn provider_timings_exclude_siblings_and_later_batches() {
-    struct Delayed(&'static str, u64);
-    impl Extension for Delayed {
-        fn descriptor(&self) -> Descriptor {
-            Fixture::new(self.0, Contribution::Classify { proposals: vec![] }).descriptor()
-        }
-        fn execute(&self, _: &Context<'_>, _: Request<'_>) -> Result<Contribution> {
-            std::thread::sleep(Duration::from_millis(self.1));
-            Ok(Contribution::Classify { proposals: vec![] })
-        }
-    }
+fn phase_validation_preserves_independent_provider_timings() {
     let settings = default_settings().unwrap();
     let cancel = Cancellation::default();
     let context = Context::new(&settings, &cancel);
-    let fast = Delayed("fast", 1);
-    let slow = Delayed("slow", 150);
-    let filler = Delayed("filler", 0);
-    let filler2 = Delayed("filler2", 0);
-    let later = Delayed("later", 300);
-    assert!(
-        classify(&[&fast, &slow, &filler, &filler2, &later], &context, &[])
-            .2
-            .is_empty()
-    );
+    let started = Instant::now();
+    let timings = [
+        ("first", "classify", Some(1.0)),
+        ("sibling", "classify", Some(150.0)),
+        ("later_batch", "classify", Some(300.0)),
+        ("first", "details", Some(20.0)),
+        ("disabled", "classify", None),
+    ];
+    *context.report.lock().unwrap() = timings
+        .iter()
+        .map(|&(provider, phase, duration_ms)| report::Record {
+            provider: provider.into(),
+            phase: phase.into(),
+            result: if duration_ms.is_some() {
+                "success"
+            } else {
+                "skipped"
+            }
+            .into(),
+            reason: None,
+            duration_ms,
+            argv: None,
+            started: duration_ms.map(|_| started),
+        })
+        .collect();
+
+    for (provider, phase, validation_ms) in [
+        ("first", "classify", 2),
+        ("later_batch", "classify", 7),
+        ("first", "details", 4),
+        ("disabled", "classify", 9),
+    ] {
+        context
+            .finish_phase(
+                Some(provider),
+                phase,
+                Duration::from_millis(validation_ms),
+                Ok(()),
+            )
+            .unwrap();
+    }
     let records = context.report.lock().unwrap();
-    let duration = |id| {
+    assert_eq!(
         records
             .iter()
-            .find(|record| record.provider == id)
-            .unwrap()
-            .duration_ms
-            .unwrap()
-    };
-    assert!(duration("fast") < duration("slow") * 0.5, "{records:?}");
-    assert!(duration("slow") < duration("later") * 0.75, "{records:?}");
+            .map(|record| record.duration_ms)
+            .collect::<Vec<_>>(),
+        [Some(3.0), Some(150.0), Some(307.0), Some(24.0), None],
+        "{records:?}"
+    );
 }
 
 #[test]
