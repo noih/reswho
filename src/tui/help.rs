@@ -52,7 +52,16 @@ impl Help {
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
         let count = paragraph.line_count(width.saturating_sub(2));
         let tab_height = if width < 60 { 1 } else { 2 };
-        let height = (count + tab_height + 4).min(u16::MAX as usize) as u16;
+        let mut groups = vec!["↑↓ Scroll", "Tab/Shift-Tab page", "Esc/? close"];
+        let footer_height = super::view::hint_lines(&groups, width.saturating_sub(2)).len();
+        let limit = area.height.saturating_sub(2).max(10).min(area.height);
+        if count + tab_height + 3 + footer_height <= usize::from(limit) {
+            groups.remove(0);
+        }
+        let footer_lines = super::view::hint_lines(&groups, width.saturating_sub(2));
+        let footer_height = footer_lines.len() as u16;
+        let height =
+            (count + tab_height + 3 + usize::from(footer_height)).min(u16::MAX as usize) as u16;
         let popup = panel(
             area,
             width,
@@ -66,7 +75,7 @@ impl Help {
             Constraint::Length(tab_height as u16),
             Constraint::Min(0),
             Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(footer_height),
         ])
         .areas(inner);
         let mut labels = Vec::new();
@@ -96,20 +105,17 @@ impl Help {
         self.max_scroll.set(max);
         self.height.set(body.height as usize);
         frame.render_widget(paragraph.scroll((scroll as u16, 0)), body);
-        let mut hint = if inner.width < 60 {
-            "↑↓ Scroll  Tab Page  Esc Close".to_owned()
-        } else if max > 0 {
-            "↑↓/Pg scroll  Tab/Shift-Tab page  Esc/? close".to_owned()
-        } else {
-            "Tab/Shift-Tab page  Esc/? close".to_owned()
-        };
+        let mut hint = footer_lines;
         if max > 0 && inner.width >= 80 {
-            hint.push_str(&format!(
-                "  {}–{}/{}",
-                scroll + 1,
-                (scroll + body.height as usize).min(count),
-                count
-            ));
+            hint.last_mut()
+                .expect("help controls")
+                .spans
+                .push(Span::raw(format!(
+                    " · {}–{}/{}",
+                    scroll + 1,
+                    (scroll + body.height as usize).min(count),
+                    count
+                )));
         }
         frame.render_widget(Paragraph::new(hint), footer);
     }
@@ -132,7 +138,7 @@ impl Help {
                 (
                     "Find / sort",
                     &[
-                        ("/", "Search name, PID, ref or path"),
+                        ("/", "Search name, version, PID, ref or path"),
                         ("Enter / Esc", "Keep / clear search"),
                         (
                             "c / m / u",
@@ -165,7 +171,7 @@ impl Help {
                             "Back; d also closes process / resource details",
                         ),
                         ("↑↓ / k j", "Scroll content"),
-                        ("PgUp / PgDn", "Scroll content faster"),
+                        ("PgUp / PgDn", "Page by visible content height"),
                         (
                             "Home / End",
                             "Process / resource details: first / last line",
@@ -178,29 +184,28 @@ impl Help {
                     &[
                         ("↑↓ / k j", "Select setting"),
                         ("Enter / Space", "Edit value; Enter accepts input"),
-                        ("← / →", "Cycle choices; Space toggles booleans"),
-                        ("Tab/Shift-Tab", "Focus setting, Cancel or Save"),
-                        ("PgUp / PgDn", "Show / scroll selected setting info"),
+                        ("→ / ←", "Open details / back; Space toggles booleans"),
+                        ("↑↓ / PgUp PgDn", "Scroll lines / page by visible height"),
                         ("Ctrl-U", "Clear current input"),
                         ("Ctrl-S", "Save draft"),
                         ("Ctrl-R", "Reset selected setting to default"),
-                        ("Esc", "Undo current input; otherwise discard popup"),
+                        ("Esc", "Back from details; undo input; discard list"),
                         ("CLI lock", "Restart without the CLI override to edit"),
                     ],
                 ),
                 (
                     "Extensions · e from main",
                     &[
-                        ("↑↓ / k j", "Select source; highest priority first"),
-                        ("Shift-↑↓", "Move source priority"),
-                        ("Ctrl-S", "Save priority for the next capture"),
-                        ("Ctrl-R", "Reset draft priority to system defaults"),
+                        ("Tab / Shift-Tab", "Sources / Ownership"),
+                        ("Space", "Enable/disable selected extension draft"),
+                        ("↑↓ / k j", "Select row; priority is highest first"),
+                        ("Shift-↑↓", "Move within the selected priority mode"),
+                        ("Ctrl-S", "Save for next capture; stay in this tab"),
+                        ("Ctrl-R", "Reset order only; keep enable/disable drafts"),
                         ("→ / l / d", "Open source details"),
-                        (
-                            "← / h / Esc",
-                            "Back from details keeps draft; from inventory discards",
-                        ),
-                        ("PgUp / PgDn", "Scroll inventory / details"),
+                        ("← / h", "Back from details; no action in list"),
+                        ("Esc", "Back from details; list cancels unsaved changes"),
+                        ("PgUp / PgDn", "List: 4 rows; details: visible height"),
                     ],
                 ),
             ],

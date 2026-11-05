@@ -1,129 +1,181 @@
-use super::{
-    settings::readable,
-    state::App,
-    view::{panel, safe},
-};
-use crate::extensions::state::Listing;
+mod save;
+
+use super::{settings::readable, state::App, view::safe};
+use crate::extensions::inventory::Listing;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout},
-    style::{Color, Style},
+    layout::{Constraint, Layout, Margin},
+    style::{Color, Modifier, Style},
     text::Line,
-    widgets::{Block, Clear, Padding, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Block, Clear, Padding, Paragraph, Row, Table, Tabs, Wrap},
 };
 
-fn providers(app: &App) -> Vec<&Listing> {
-    let mut entries: Vec<_> = app
-        .inventory
-        .iter()
-        .filter(|entry| !entry.descriptor.capabilities.is_empty())
-        .collect();
-    if let Some(order) = app.priority_draft.as_ref().or_else(|| {
-        app.settings
-            .as_ref()
-            .map(|p| &p.context.baseline.source_priority)
-    }) {
-        entries.sort_by_key(|entry| {
-            order
-                .iter()
-                .position(|id| id == &entry.descriptor.id)
-                .unwrap_or(order.len())
-        });
-    }
-    entries
+fn core(id: &str) -> bool {
+    matches!(id, "app_bundle" | "bin" | "command")
 }
 
-fn priority_changed(app: &App) -> bool {
-    let Some(draft) = &app.priority_draft else {
-        return false;
-    };
-    let mut baseline = app
-        .settings
-        .as_ref()
-        .map(|p| p.context.baseline.source_priority.clone())
-        .unwrap_or_default();
-    if draft.is_empty() {
-        return !baseline.is_empty();
+fn toggleable(entry: &Listing) -> bool {
+    !core(&entry.descriptor.id)
+}
+
+fn defaults(app: &App, ownership: bool) -> Vec<String> {
+    if !ownership {
+        return ["app_bundle", "bin", "command"]
+            .into_iter()
+            .map(String::from)
+            .chain(app.inventory.iter().map(|e| e.descriptor.id.clone()))
+            .collect();
     }
-    for entry in &app.inventory {
-        if !baseline.contains(&entry.descriptor.id) {
-            baseline.push(entry.descriptor.id.clone());
+    use crate::extensions::Extension;
+    let mut registrations = vec![crate::core::registration()];
+    registrations.extend(crate::extensions::BUILTINS.iter().map(|e| e.registration()));
+    registrations.extend(app.inventory.iter().map(|e| e.registration.clone()));
+    let mut dimensions: Vec<_> = registrations
+        .into_iter()
+        .flat_map(|r| r.ownership)
+        .collect();
+    dimensions.sort_by(|a, b| (a.priority, &a.dimension).cmp(&(b.priority, &b.dimension)));
+    let mut ids = Vec::new();
+    for dimension in dimensions {
+        if !ids.contains(&dimension.dimension) {
+            ids.push(dimension.dimension);
         }
     }
-    draft != &baseline
+    ids
 }
 
-fn selected(app: &App, entries: &[&Listing]) -> usize {
-    entries
-        .iter()
-        .position(|entry| Some(&entry.descriptor.id) == app.extension_selected.as_ref())
+pub(super) fn order(app: &App, ownership: bool) -> Vec<String> {
+    let draft = if ownership {
+        &app.ownership_draft
+    } else {
+        &app.priority_draft
+    };
+    complete_order(app, ownership, draft.as_ref())
+}
+
+fn complete_order(app: &App, ownership: bool, draft: Option<&Vec<String>>) -> Vec<String> {
+    let mut ids = draft.cloned().unwrap_or_else(|| {
+        app.settings
+            .as_ref()
+            .map(|p| {
+                if ownership {
+                    p.context.baseline.ownership_priority.clone()
+                } else {
+                    p.context.baseline.source_priority.clone()
+                }
+            })
+            .unwrap_or_default()
+    });
+    for id in defaults(app, ownership) {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+fn selected(app: &App, ids: &[String]) -> usize {
+    ids.iter()
+        .position(|id| Some(id) == app.extension_selected.as_ref())
         .unwrap_or(0)
+}
+
+pub(super) fn open(app: &mut App) {
+    app.extensions_page = true;
+    key(app, KeyCode::Null.into());
+}
+
+fn clear(app: &mut App) {
+    app.priority_draft = None;
+    app.ownership_draft = None;
+    app.builtin_draft.clear();
+    app.priority_error = None;
+    app.extensions_page = false;
+    app.priority_mode = 0;
+    app.extension_selections = Default::default();
+    *app.extension_tables.borrow_mut() = Default::default();
 }
 
 pub(super) fn key(app: &mut App, key: KeyEvent) -> bool {
     if app.priority_draft.is_none() {
-        let mut order = app
-            .settings
-            .as_ref()
-            .map(|popup| popup.context.baseline.source_priority.clone())
-            .unwrap_or_default();
-        if let Some(popup) = app.settings.as_mut() {
-            if let Err(error) = popup.context.reload() {
-                app.priority_error = Some(error.to_string());
-            }
-            order = popup.context.baseline.source_priority.clone();
+        if let Some(popup) = app.settings.as_mut()
+            && popup.context.reload().is_err()
+        {
+            app.priority_error =
+                Some("Cannot read config safely; repair the file before saving".into());
         }
-        for entry in &app.inventory {
-            if !order.contains(&entry.descriptor.id) {
-                order.push(entry.descriptor.id.clone());
-            }
-        }
-        app.priority_draft = Some(order);
+        app.priority_draft = Some(
+            app.settings
+                .as_ref()
+                .map(|p| p.context.baseline.source_priority.clone())
+                .unwrap_or_default(),
+        );
+        app.ownership_draft = Some(
+            app.settings
+                .as_ref()
+                .map(|p| p.context.baseline.ownership_priority.clone())
+                .unwrap_or_default(),
+        );
     }
-    let entries = providers(app);
-    let index = selected(app, &entries);
     if app.extension_details {
-        match key.code {
+        let delta = match key.code {
             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
                 app.extension_details = false;
+                return false;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                app.extension_details_scroll = app.extension_details_scroll.saturating_add(1)
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                app.extension_details_scroll = app.extension_details_scroll.saturating_sub(1)
-            }
-            KeyCode::PageDown => {
-                app.extension_details_scroll = app.extension_details_scroll.saturating_add(4)
-            }
-            KeyCode::PageUp => {
-                app.extension_details_scroll = app.extension_details_scroll.saturating_sub(4)
-            }
-            KeyCode::Home => app.extension_details_scroll = 0,
-            _ => {}
-        }
+            KeyCode::Down | KeyCode::Char('j') => 1,
+            KeyCode::Up | KeyCode::Char('k') => -1,
+            KeyCode::PageDown => app.extension_details_height.get().max(1) as isize,
+            KeyCode::PageUp => -(app.extension_details_height.get().max(1) as isize),
+            KeyCode::Home => isize::MIN,
+            KeyCode::End => isize::MAX,
+            _ => return false,
+        };
+        app.extension_details_scroll.set(
+            usize::from(app.extension_details_scroll.get())
+                .saturating_add_signed(delta)
+                .min(usize::from(app.extension_details_max.get())) as u16,
+        );
         return false;
     }
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
-        app.priority_draft = Some(Vec::new());
-        app.priority_error = None;
+    if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+        let ids = order(app, app.priority_mode == 1);
+        app.extension_selections[usize::from(app.priority_mode)] =
+            ids.get(selected(app, &ids)).cloned();
+        app.priority_mode = (app.priority_mode + 1) % 2;
+        app.extension_selected = app.extension_selections[usize::from(app.priority_mode)].clone();
         return false;
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
-        let draft = app.priority_draft.as_ref().expect("priority draft");
-        if let Some(popup) = app.settings.as_mut() {
-            match popup.context.save_priority(draft) {
-                Ok(applied) => {
-                    popup.applied = applied;
-                    app.priority_error = None;
-                    app.priority_draft = None;
-                    app.extensions_page = false;
-                }
-                Err(error) => app.priority_error = Some(error.to_string()),
-            }
+        save::save(app);
+        return false;
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
+        if app.priority_mode == 1 {
+            app.ownership_draft = Some(Vec::new());
         } else {
-            app.priority_error = Some("No settings context; cannot save priority".into());
+            app.priority_draft = Some(Vec::new());
+        }
+        app.priority_error = None;
+        return false;
+    }
+    let ids = order(app, app.priority_mode == 1);
+    let index = selected(app, &ids);
+    if key.code == KeyCode::Char(' ') && app.priority_mode == 0 {
+        if let Some(id) = ids.get(index)
+            && let Some(entry) = app.inventory.iter().find(|e| &e.descriptor.id == id)
+            && toggleable(entry)
+        {
+            let enabled = enabled(app, entry);
+            let baseline = baseline_enabled(app, entry);
+            let draft = &mut app.builtin_draft;
+            if !enabled == baseline {
+                draft.remove(id);
+            } else {
+                draft.insert(id.clone(), !enabled);
+            }
+            app.priority_error = None;
         }
         return false;
     }
@@ -133,57 +185,72 @@ pub(super) fn key(app: &mut App, key: KeyEvent) -> bool {
         let other = if key.code == KeyCode::Up {
             index.saturating_sub(1)
         } else {
-            (index + 1).min(entries.len().saturating_sub(1))
+            (index + 1).min(ids.len().saturating_sub(1))
         };
-        if let (Some(current), Some(target)) = (entries.get(index), entries.get(other)) {
-            let current_id = current.descriptor.id.clone();
-            let target_id = target.descriptor.id.clone();
-            let order = app.priority_draft.as_mut().expect("priority draft");
-            if order.is_empty() {
-                order.extend(
-                    app.inventory
-                        .iter()
-                        .map(|entry| entry.descriptor.id.clone()),
-                );
+        if index == other {
+            return false;
+        }
+        if let Some(id) = ids.get(index) {
+            let mut moved = ids.clone();
+            moved.swap(index, other);
+            let baseline = app
+                .settings
+                .as_ref()
+                .map(|p| {
+                    if app.priority_mode == 1 {
+                        p.context.baseline.ownership_priority.clone()
+                    } else {
+                        p.context.baseline.source_priority.clone()
+                    }
+                })
+                .unwrap_or_default();
+            let mut effective = baseline.clone();
+            for id in defaults(app, app.priority_mode == 1) {
+                if !effective.contains(&id) {
+                    effective.push(id);
+                }
             }
-            if let (Some(a), Some(b)) = (
-                order.iter().position(|id| id == &current_id),
-                order.iter().position(|id| id == &target_id),
-            ) {
-                order.swap(a, b);
+            if moved == effective {
+                moved = baseline;
             }
-            app.extension_selected = Some(current_id);
+            if app.priority_mode == 1 {
+                app.ownership_draft = Some(moved);
+            } else {
+                app.priority_draft = Some(moved);
+            }
+            app.extension_selected = Some(id.clone());
             app.priority_error = None;
         }
         return false;
     }
     let next = match key.code {
-        KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
-            app.priority_draft = None;
-            app.priority_error = None;
-            app.extensions_page = false;
+        KeyCode::Esc => {
+            clear(app);
             return false;
         }
-        KeyCode::Down | KeyCode::Char('j') => (index + 1).min(entries.len().saturating_sub(1)),
+        KeyCode::Down | KeyCode::Char('j') => (index + 1).min(ids.len().saturating_sub(1)),
         KeyCode::Up | KeyCode::Char('k') => index.saturating_sub(1),
         KeyCode::Home => 0,
-        KeyCode::End => entries.len().saturating_sub(1),
-        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('d') if !entries.is_empty() => {
+        KeyCode::End => ids.len().saturating_sub(1),
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('d') if !ids.is_empty() => {
+            app.extension_selected = ids.get(index).cloned();
             app.extension_details = true;
-            app.extension_details_scroll = 0;
+            app.extension_details_scroll.set(0);
+            app.extension_details_height.set(1);
+            app.extension_details_max.set(u16::MAX);
             return false;
         }
         KeyCode::PageDown => {
-            app.extensions_scroll = app.extensions_scroll.saturating_add(2);
-            return false;
+            app.extensions_scroll = app.extensions_scroll.saturating_add(1);
+            (index + 4).min(ids.len().saturating_sub(1))
         }
         KeyCode::PageUp => {
-            app.extensions_scroll = app.extensions_scroll.saturating_sub(2);
-            return false;
+            app.extensions_scroll = app.extensions_scroll.saturating_sub(1);
+            index.saturating_sub(4)
         }
         _ => return false,
     };
-    app.extension_selected = entries.get(next).map(|entry| entry.descriptor.id.clone());
+    app.extension_selected = ids.get(next).cloned();
     false
 }
 
@@ -208,14 +275,29 @@ fn timing(app: &App, id: &str, phase: &str) -> String {
         .map_or("—".into(), |ms| format!("{ms:.1}ms"))
 }
 
+fn baseline_enabled(app: &App, entry: &Listing) -> bool {
+    let Some(popup) = &app.settings else {
+        return entry.explicit_enabled;
+    };
+    let id = &entry.descriptor.id;
+    !popup.context.baseline.disabled_builtins.contains(id)
+}
+
+fn enabled(app: &App, entry: &Listing) -> bool {
+    app.builtin_draft
+        .get(&entry.descriptor.id)
+        .copied()
+        .unwrap_or_else(|| baseline_enabled(app, entry))
+}
+
 fn state(app: &App, entry: &Listing) -> String {
     let failed = app
         .extensions
         .iter()
         .any(|record| record.provider == entry.descriptor.id && record.issue());
-    let enabled = if !entry.explicit_enabled {
+    let enabled = if !enabled(app, entry) {
         "Disabled"
-    } else if !entry.descriptor.enabled {
+    } else if entry.reason.is_some() {
         "Blocked"
     } else {
         "Enabled"
@@ -226,35 +308,32 @@ fn state(app: &App, entry: &Listing) -> String {
 fn details(app: &App, entry: &Listing) -> Vec<Line<'static>> {
     let descriptor = &entry.descriptor;
     let mut lines = vec![
-        format!("{}  {}", name(&descriptor.id), descriptor.version),
+        name(&descriptor.id),
         format!("ID: {}", descriptor.id),
+        format!(
+            "Capabilities: {}",
+            descriptor
+                .capabilities
+                .iter()
+                .map(|c| format!("{c:?}").to_lowercase())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        format!(
+            "Source rank: {}",
+            order(app, false)
+                .iter()
+                .position(|id| id == &descriptor.id)
+                .map_or(0, |i| i + 1)
+        ),
         format!(
             "State: {} | Availability: {}",
             state(app, entry),
             descriptor.availability
         ),
-        format!(
-            "Source: {} | Compatible: {} | Requires: {}",
-            if descriptor.source == "builtin" {
-                "Built-in"
-            } else {
-                "External"
-            },
-            if entry.compatible { "Yes" } else { "No" },
-            entry.requires
-        ),
     ];
-    if let Some(installed) = app.extension_registry.as_ref().and_then(|registry| {
-        registry
-            .installed
-            .iter()
-            .find(|installed| installed.manifest.id == descriptor.id)
-    }) {
-        lines.push(format!("Path: {}", installed.manifest.executable.display()));
-        lines.push(format!(
-            "Origin: {}",
-            serde_json::to_string(&installed.origin).unwrap_or_default()
-        ));
+    if let Some(error) = &app.priority_error {
+        lines.push(format!("Save: {error}"));
     }
     if let Some(reason) = &entry.reason {
         lines.push(format!("Reason: {reason}"));
@@ -295,186 +374,311 @@ fn details(app: &App, entry: &Listing) -> Vec<Line<'static>> {
 }
 
 pub(super) fn draw(frame: &mut Frame, app: &App) {
-    let entries = providers(app);
-    let index = selected(app, &entries);
+    let entries: Vec<_> = app.inventory.iter().collect();
+    let ids = order(app, app.priority_mode == 1);
+    let index = selected(app, &ids);
+    let popup = frame
+        .area()
+        .inner(Margin::new(1, if frame.area().height < 14 { 0 } else { 1 }));
+    frame.render_widget(Clear, popup);
+    let title = if app.extension_details && app.priority_mode == 1 {
+        " Ownership details "
+    } else if app.extension_details {
+        " Source details "
+    } else {
+        " Extensions "
+    };
+    let block = Block::bordered()
+        .title(title)
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let groups = if app.extension_details {
+        vec!["↑↓ Scroll", "←/Esc Back"]
+    } else {
+        let action = if app.priority_mode == 1 {
+            ""
+        } else {
+            ids.get(index)
+                .and_then(|id| entries.iter().find(|entry| entry.descriptor.id == *id))
+                .filter(|entry| toggleable(entry))
+                .map_or("", |entry| {
+                    if enabled(app, entry) {
+                        "Space Disable"
+                    } else {
+                        "Space Enable"
+                    }
+                })
+        };
+        vec![
+            "Tab Switch",
+            action,
+            "Shift↑↓ Move",
+            "→ Details",
+            "Ctrl-S Save",
+            if inner.width < 65 {
+                "Ctrl-R Reset"
+            } else {
+                "Ctrl-R Reset order"
+            },
+            "Esc Cancel",
+        ]
+    };
+    let footer = super::view::hint_lines(&groups, inner.width);
+    let footer_height = footer
+        .len()
+        .min(usize::from(inner.height.saturating_sub(3))) as u16;
+    let footer = Paragraph::new(footer).style(Style::default().fg(Color::Gray));
     let system: Vec<_> = app
         .extensions
         .iter()
-        .filter(|record| {
-            record.issue()
-                && !entries
-                    .iter()
-                    .any(|entry| entry.descriptor.id == record.provider)
-        })
+        .filter(|r| r.issue() && !entries.iter().any(|e| e.descriptor.id == r.provider))
         .collect();
-    let diagnostic_height = if system.is_empty() {
+    let compact = inner.height < 9;
+    let diagnostic_height = if app.extension_details
+        || system.is_empty()
+        || (compact && app.priority_error.is_some())
+    {
         0
+    } else if compact && footer_height > 3 {
+        1
     } else {
-        (system.len() as u16 + 1).min(3)
+        2
     };
-    let footer = Paragraph::new(if app.extension_details {
-        "←/Esc Back"
-    } else if frame.area().width < 71 {
-        "Ctrl-S Save  Ctrl-R Reset\nShift↑↓ Move  → Open  Esc Back"
-    } else {
-        "Shift ↑/↓ Move  Ctrl-S Save  Ctrl-R Reset  → Details  ←/Esc discard"
-    })
-    .wrap(Wrap { trim: false })
-    .style(Style::default().fg(Color::Gray));
-    let footer_height = footer
-        .line_count(frame.area().width.min(98).saturating_sub(4))
-        .min(usize::from(u16::MAX)) as u16;
-    let desired = if app.extension_details {
-        entries.get(index).map_or(6, |entry| {
-            Paragraph::new(details(app, entry))
-                .wrap(Wrap { trim: false })
-                .line_count(frame.area().width.min(98).saturating_sub(4))
-                .min(usize::from(u16::MAX - 2 - footer_height)) as u16
-                + 2
-                + footer_height
-        })
-    } else {
-        (entries.len() as u16).saturating_add(5 + footer_height + diagnostic_height)
-    };
-    let popup = panel(frame.area(), 98, desired.max(10));
-    frame.render_widget(Clear, popup);
-    let block = Block::bordered().title(if app.extension_details {
-        " Extension details "
-    } else if priority_changed(app) {
-        " Extensions * "
-    } else {
-        " Extensions "
-    });
-    let block = block.padding(Padding::horizontal(1));
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-    let [priority_area, body, footer_area] = Layout::vertical([
-        Constraint::Length(if app.extension_details { 0 } else { 1 }),
+    let [caption, body, diagnostics, status, footer_area] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Min(1),
+        Constraint::Length(diagnostic_height),
+        Constraint::Length(
+            if app.extension_details || (compact && diagnostic_height > 0) {
+                0
+            } else {
+                1
+            },
+        ),
         Constraint::Length(footer_height),
     ])
     .areas(inner);
-    if !app.extension_details {
-        frame.render_widget(Paragraph::new("Priority · highest first"), priority_area);
-    }
-
+    let tabs = ["Sources", "Ownership"];
+    frame.render_widget(
+        Tabs::new(tabs)
+            .select(usize::from(app.priority_mode))
+            .style(Style::default().fg(Color::Gray))
+            .highlight_style(
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        caption,
+    );
     if app.extension_details {
-        if let Some(entry) = entries.get(index) {
-            let paragraph = Paragraph::new(details(app, entry)).wrap(Wrap { trim: false });
-            let max_scroll = paragraph
+        if let Some(id) = ids.get(index) {
+            let lines = if app.priority_mode == 0
+                && !core(id)
+                && let Some(entry) = entries
+                    .iter()
+                    .find(|e| &e.descriptor.id == id)
+                    .filter(|e| toggleable(e))
+            {
+                details(app, entry)
+            } else {
+                vec![
+                    Line::raw(safe(&format!("ID: {id}"))),
+                    Line::raw(format!("Rank: {} (highest first)", index + 1)),
+                    Line::raw(if app.priority_mode == 1 {
+                        "Ownership: main placement across dimensions"
+                    } else if core(id) {
+                        "Core · fixed enabled; source priority is editable"
+                    } else {
+                        "Unknown · unavailable; enable/disable unavailable"
+                    }),
+                ]
+            };
+            let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+            let max = paragraph
                 .line_count(body.width)
                 .saturating_sub(usize::from(body.height))
                 .min(usize::from(u16::MAX)) as u16;
-            frame.render_widget(
-                paragraph.scroll((app.extension_details_scroll.min(max_scroll), 0)),
-                body,
-            );
+            app.extension_details_height.set(body.height);
+            app.extension_details_max.set(max);
+            let scroll = app.extension_details_scroll.get().min(max);
+            app.extension_details_scroll.set(scroll);
+            frame.render_widget(paragraph.scroll((scroll, 0)), body);
         }
     } else {
-        let diagnostic_height = if system.is_empty() {
-            0
-        } else {
-            (system.len() as u16 + 1).min(3)
-        };
-        let [table, summary, diagnostics] = Layout::vertical([
-            Constraint::Min(2),
-            Constraint::Length(1),
-            Constraint::Length(diagnostic_height),
-        ])
-        .areas(body);
-        let narrow = inner.width < 65;
-        let rows = entries.iter().map(|entry| {
-            let descriptor = &entry.descriptor;
-            let cells = if narrow {
-                vec![name(&descriptor.id), state(app, entry)]
+        let narrow = inner.width < 117;
+        let baseline_order = complete_order(app, app.priority_mode == 1, None);
+        let rank_width = inner.width.saturating_sub(1) * 55 / 100;
+        let mut rows = Vec::new();
+        for (i, id) in ids.iter().enumerate() {
+            let entry = entries
+                .iter()
+                .find(|e| &e.descriptor.id == id)
+                .filter(|e| toggleable(e));
+            let marker = if baseline_order.get(i) != Some(id)
+                || (app.priority_mode == 0 && app.builtin_draft.contains_key(id))
+            {
+                "* "
             } else {
-                vec![
-                    name(&descriptor.id),
-                    descriptor.version.clone(),
-                    state(app, entry),
-                    timing(app, &descriptor.id, "collect"),
-                    timing(app, &descriptor.id, "classify"),
-                    timing(app, &descriptor.id, "details"),
-                ]
+                "  "
             };
-            Row::new(cells).style(
-                if app
-                    .extensions
-                    .iter()
-                    .any(|record| record.provider == descriptor.id && record.issue())
-                {
-                    Style::default().fg(Color::Yellow)
-                } else {
-                    Style::default()
-                },
-            )
-        });
-        let widths = if narrow {
-            vec![Constraint::Percentage(52), Constraint::Percentage(48)]
-        } else {
-            vec![
-                Constraint::Min(17),
-                Constraint::Length(9),
-                Constraint::Length(18),
-                Constraint::Length(10),
-                Constraint::Length(10),
-                Constraint::Length(10),
-            ]
-        };
-        let header = Row::new(if narrow {
-            vec!["Name", "State"]
-        } else {
-            vec!["Name", "Version", "State", "Collect", "Classify", "Details"]
-        })
-        .style(Style::default().fg(Color::Yellow));
-        frame.render_stateful_widget(
-            Table::new(rows, widths)
-                .header(header)
-                .row_highlight_style(Style::default().fg(Color::White).bg(Color::DarkGray))
-                .highlight_symbol("> "),
-            table,
-            &mut TableState::default().with_selected(Some(index)),
-        );
-        frame.render_widget(
-            Paragraph::new(app.priority_error.clone().unwrap_or_else(|| {
-                entries.get(index).map_or("No providers".into(), |entry| {
-                    format!(
-                        "{} · {}",
-                        name(&entry.descriptor.id),
-                        entry.descriptor.source
-                    )
-                })
-            }))
-            .style(Style::default().fg(if app.priority_error.is_some() {
-                Color::Yellow
+            let cells = if app.priority_mode == 1 {
+                let prefix = format!("{marker}{}  ", i + 1);
+                let label: String = safe(&name(id))
+                    .chars()
+                    .take(usize::from(rank_width).saturating_sub(prefix.len()))
+                    .collect();
+                vec![format!("{prefix}{label}"), safe(id)]
             } else {
-                Color::Gray
-            })),
-            summary,
-        );
-        if !system.is_empty() {
-            let mut lines = vec![Line::styled(
-                format!("System diagnostics ({}) · PgDn", system.len()),
-                Style::default().fg(Color::Yellow),
-            )];
-            lines.extend(system.iter().map(|record| {
+                let state = if core(id) {
+                    "Fixed".into()
+                } else {
+                    entry.map_or("Unavailable".into(), |entry| state(app, entry))
+                };
+                let id_width = if narrow {
+                    inner.width.saturating_sub(10)
+                } else {
+                    24
+                };
+                let label: String = safe(id)
+                    .chars()
+                    .take(usize::from(id_width).saturating_sub(marker.len()))
+                    .collect();
+                let mut cells = vec![format!("{marker}{label}"), state];
+                if !narrow {
+                    let entry = entry.filter(|_| !core(id));
+                    cells.extend([
+                        entry.map_or("—".into(), |e| {
+                            e.descriptor
+                                .capabilities
+                                .iter()
+                                .map(|c| format!("{c:?}").to_lowercase())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        }),
+                        (i + 1).to_string(),
+                        entry.map_or("—".into(), |_| timing(app, id, "collect")),
+                        entry.map_or("—".into(), |_| timing(app, id, "classify")),
+                        entry.map_or("—".into(), |_| timing(app, id, "details")),
+                    ]);
+                }
+                cells
+            };
+            rows.push(Row::new(cells));
+        }
+        let (widths, headers) = if app.priority_mode == 1 {
+            (
+                vec![Constraint::Length(rank_width), Constraint::Min(0)],
+                vec!["Rank / Name", "ID"],
+            )
+        } else if narrow {
+            (
+                vec![Constraint::Min(10), Constraint::Length(8)],
+                vec!["ID", "State"],
+            )
+        } else {
+            (
+                vec![
+                    Constraint::Length(24),
+                    Constraint::Length(17),
+                    Constraint::Length(17),
+                    Constraint::Length(4),
+                    Constraint::Length(10),
+                    Constraint::Length(10),
+                    Constraint::Length(10),
+                ],
+                vec![
+                    "ID",
+                    "State",
+                    "Capabilities",
+                    "Rank",
+                    "Collect",
+                    "Classify",
+                    "Details",
+                ],
+            )
+        };
+        if ids.is_empty() {
+            let mut diagnostics = vec![Line::raw("System diagnostics")];
+            diagnostics.extend(app.extensions.iter().filter(|r| r.issue()).map(|r| {
                 Line::raw(safe(&format!(
-                    "{}: {} {}",
-                    record.provider,
-                    record.phase,
-                    record.reason.as_deref().unwrap_or(&record.result)
+                    "{}: {}",
+                    r.provider,
+                    r.reason.as_deref().unwrap_or(&r.result)
                 )))
             }));
-            let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-            let max_scroll = paragraph
-                .line_count(diagnostics.width)
-                .saturating_sub(usize::from(diagnostics.height))
-                .min(usize::from(u16::MAX)) as u16;
-            frame.render_widget(
-                paragraph.scroll((app.extensions_scroll.min(max_scroll), 0)),
-                diagnostics,
+            frame.render_widget(Paragraph::new(diagnostics).wrap(Wrap { trim: false }), body);
+        } else {
+            let mut tables = app.extension_tables.borrow_mut();
+            let table = &mut tables[usize::from(app.priority_mode)];
+            table.select(Some(index));
+            frame.render_stateful_widget(
+                Table::new(rows, widths)
+                    .header(Row::new(headers).style(Style::default().fg(Color::Yellow)))
+                    .row_highlight_style(Style::default().fg(Color::White).bg(Color::DarkGray)),
+                body,
+                table,
             );
         }
+        let summary = app.priority_error.clone().unwrap_or_else(|| {
+            ids.get(index).map_or("No sources".into(), |id| {
+                if app.priority_mode == 1 {
+                    format!("{} · dimension · highest first", name(id))
+                } else if core(id) {
+                    "Core · fixed enabled · → Details".into()
+                } else {
+                    entries
+                        .iter()
+                        .find(|e| &e.descriptor.id == id)
+                        .filter(|e| toggleable(e))
+                        .map_or_else(
+                            || "Unknown · unavailable · → Details".into(),
+                            |_| format!("{} · → Details", name(id)),
+                        )
+                }
+            })
+        });
+        frame.render_widget(
+            Paragraph::new(safe(&summary)).style(Style::default().fg(
+                if app.priority_error.is_some() {
+                    Color::Yellow
+                } else {
+                    Color::Gray
+                },
+            )),
+            status,
+        );
+    }
+    if diagnostic_height > 0 {
+        let [heading, content] = Layout::vertical([
+            Constraint::Length(u16::from(diagnostic_height > 1)),
+            Constraint::Min(0),
+        ])
+        .areas(diagnostics);
+        frame.render_widget(
+            Paragraph::new("System diagnostics").style(Style::default().fg(Color::Yellow)),
+            heading,
+        );
+        let lines: Vec<_> = system
+            .iter()
+            .map(|r| {
+                Line::raw(safe(&format!(
+                    "{}: {}",
+                    r.provider,
+                    r.reason.as_deref().unwrap_or(&r.result)
+                )))
+            })
+            .collect();
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        let max_scroll = paragraph
+            .line_count(content.width)
+            .saturating_sub(usize::from(content.height))
+            .min(usize::from(u16::MAX)) as u16;
+        frame.render_widget(
+            paragraph.scroll((app.extensions_scroll.min(max_scroll), 0)),
+            content,
+        );
     }
     frame.render_widget(footer, footer_area);
 }

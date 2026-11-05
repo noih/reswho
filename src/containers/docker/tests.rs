@@ -15,6 +15,8 @@ impl Fake {
                     Ok(Output {
                         stdout: format!("{value}\n").into_bytes(),
                         issue: None,
+                        timed_out: false,
+                        exit_code: None,
                     })
                 })
                 .collect(),
@@ -26,6 +28,8 @@ impl Fake {
         self.replies[index] = Ok(Output {
             stdout: value.into_bytes(),
             issue: None,
+            timed_out: false,
+            exit_code: None,
         });
     }
 }
@@ -157,6 +161,8 @@ fn missing_cli_inventory_errors_and_stats_errors_keep_unknowns() {
         stdout: format!("{{\"id\":\"{id}\",\"cpu\":\"0.00%\",\"memory\":\"0B / 0B\"}}")
             .into_bytes(),
         issue: Some("stats timeout".into()),
+        timed_out: false,
+        exit_code: None,
     });
     fake.replies.pop_back();
     let (runtime, containers) = collect(&mut fake, Some("default".into()), None, now());
@@ -354,4 +360,271 @@ fn unsupported_endpoints_and_old_engines_keep_cli_collection() {
         );
     }
     assert_eq!(server.paths.lock().unwrap().len(), 1);
+}
+
+fn failing_runner(
+    program: std::path::PathBuf,
+    budget_ms: u64,
+) -> crate::containers::command::RuntimeCommand {
+    crate::containers::command::RuntimeCommand {
+        cancel: crate::snapshot::Cancellation::default(),
+        program,
+        deadline: Instant::now() + std::time::Duration::from_millis(budget_ms),
+        sample_interval: std::time::Duration::from_millis(10),
+        api_version: None,
+    }
+}
+
+fn assert_cli_failure(
+    program: std::path::PathBuf,
+    host: String,
+    expected: crate::model::FailureReason,
+    budget: u64,
+    root: &std::path::Path,
+) {
+    let (runtime, containers) = collect(
+        &mut failing_runner(program, budget),
+        None,
+        Some(host),
+        now(),
+    );
+    assert_eq!(runtime.status, "unavailable");
+    assert!(containers.is_empty());
+    let [failure] = runtime.unavailable.as_slice() else {
+        panic!("{:?}", runtime.unavailable)
+    };
+    assert_eq!(failure.code, "collection_failed");
+    assert_eq!(failure.reason, Some(expected));
+    assert!(
+        failure
+            .message
+            .contains(&format!("reason {}: ", expected.code()))
+    );
+    let json = serde_json::to_string(&runtime).unwrap();
+    assert!(json.contains(&format!("\"reason\":\"{}\"", expected.code())));
+    assert!(!json.contains("private-credential"));
+    assert!(!json.contains(root.to_str().unwrap()));
+}
+
+#[test]
+fn cli_failures_report_structured_reasons_without_stderr_or_endpoint() {
+    use crate::containers::command::failure_fixtures::cli;
+    use crate::model::FailureReason;
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let missing = format!("unix://{}", root.join("missing.sock").display());
+    for (program, host, expected, budget) in [
+        (
+            cli(root, "docker", "echo private-credential >&2; exit 1"),
+            missing.clone(),
+            FailureReason::EndpointNotFound,
+            2000,
+        ),
+        (
+            root.join("missing-cli"),
+            missing.clone(),
+            FailureReason::CliNotFound,
+            2000,
+        ),
+        (
+            cli(root, "slow", "exec /bin/sleep 5"),
+            missing.clone(),
+            FailureReason::Timeout,
+            150,
+        ),
+        (
+            cli(root, "garbled", "echo not-json"),
+            missing.clone(),
+            FailureReason::DaemonError,
+            2000,
+        ),
+        (
+            cli(root, "remote", "exit 1"),
+            "ssh://user@private-host".into(),
+            FailureReason::Unknown,
+            2000,
+        ),
+    ] {
+        assert_cli_failure(program, host, expected, budget, root);
+    }
+    directory.close().unwrap();
+}
+
+#[test]
+fn cli_failures_classify_owned_socket_states() {
+    use crate::containers::command::failure_fixtures::{Endpoints, cli};
+    let endpoints = Endpoints::new();
+    let root = endpoints.directory.path();
+    let failing = cli(root, "docker", "echo private-credential >&2; exit 1");
+    for (host, expected) in endpoints.cases() {
+        assert_cli_failure(failing.clone(), host, expected, 2000, root);
+    }
+    endpoints.directory.close().unwrap();
+}
+
+#[test]
+fn api_failures_report_structured_reasons() {
+    use crate::containers::command::failure_fixtures::Endpoints;
+    use crate::containers::http::tests::{Reply, Server};
+    use crate::model::FailureReason;
+    let id = "c".repeat(64);
+    let endpoints = Endpoints::new();
+    let rejecting = Server::new(|_| {
+        Reply::Raw(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 18\r\nConnection: close\r\n\r\nprivate-credential".to_vec())
+    });
+    let stalled = Server::new(|_| Reply::Stall);
+    let mut cases: Vec<_> = endpoints
+        .cases()
+        .into_iter()
+        .map(|(host, reason)| (host, reason, 2000))
+        .collect();
+    cases.push((
+        format!("unix://{}", rejecting.socket.display()),
+        FailureReason::DaemonError,
+        2000,
+    ));
+    cases.push((
+        format!("unix://{}", stalled.socket.display()),
+        FailureReason::Timeout,
+        300,
+    ));
+    for (host, expected, budget) in cases {
+        let mut runner = api_runner(Fake::new(Vec::new()));
+        runner.transport.deadline = Instant::now() + std::time::Duration::from_millis(budget);
+        let source = Source {
+            args: Vec::new(),
+            host: host.clone(),
+            context: None,
+        };
+        let mut probe = crate::containers::command::Probe::new(&runner);
+        let batch = stats(
+            &mut runner,
+            &source,
+            std::slice::from_ref(&id),
+            &mut Vec::new(),
+            &mut probe,
+        );
+        let [failure] = batch.unavailable.as_slice() else {
+            panic!("{host}: {:?}", batch.unavailable)
+        };
+        assert_eq!(failure.operation, "docker.stats");
+        assert_eq!(failure.reason, Some(expected), "{host}");
+        assert!(!failure.message.contains("private-credential"));
+    }
+    drop((rejecting, stalled));
+    endpoints.directory.close().unwrap();
+}
+
+#[test]
+fn api_sample_failures_after_version_carry_reasons() {
+    use crate::containers::http::tests::{Reply, Server};
+    use crate::model::FailureReason;
+    let id = "d".repeat(64);
+    let version = || Reply::Json(serde_json::json!({"ApiVersion": "1.56", "Os": "linux"}));
+    let rejecting = Server::new(move |path| {
+        if path.ends_with("/version") {
+            version()
+        } else {
+            Reply::Raw(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 18\r\nConnection: close\r\n\r\nprivate-credential".to_vec())
+        }
+    });
+    let stalled = Server::new(move |path| {
+        if path.ends_with("/version") {
+            version()
+        } else {
+            Reply::Stall
+        }
+    });
+    for (server, expected, budget) in [
+        (&rejecting, FailureReason::DaemonError, 2000),
+        (&stalled, FailureReason::Timeout, 600),
+    ] {
+        let mut runner = api_runner(Fake::new(Vec::new()));
+        runner.transport.deadline = Instant::now() + std::time::Duration::from_millis(budget);
+        let source = Source {
+            args: Vec::new(),
+            host: format!("unix://{}", server.socket.display()),
+            context: None,
+        };
+        let mut probe = crate::containers::command::Probe::new(&runner);
+        let batch = stats(
+            &mut runner,
+            &source,
+            std::slice::from_ref(&id),
+            &mut Vec::new(),
+            &mut probe,
+        );
+        assert!(!batch.unavailable.is_empty(), "{expected:?}");
+        for diagnostic in &batch.unavailable {
+            assert_eq!(diagnostic.reason, Some(expected), "{diagnostic:?}");
+            assert!(!diagnostic.message.contains("private-credential"));
+        }
+        assert!(batch.metrics.is_empty());
+        assert_eq!(probe.probes, 0);
+    }
+    drop((rejecting, stalled));
+}
+
+#[test]
+fn canceled_collection_reports_canceled_without_probing() {
+    use crate::containers::command::failure_fixtures::cli;
+    use crate::model::FailureReason;
+    let directory = tempfile::tempdir().unwrap();
+    let mut runner = failing_runner(cli(directory.path(), "docker", "exit 1"), 2000);
+    runner.cancel.cancel();
+    let host = format!("unix://{}", directory.path().join("missing.sock").display());
+    let (runtime, _) = collect(&mut runner, None, Some(host), now());
+    let [failure] = runtime.unavailable.as_slice() else {
+        panic!("{:?}", runtime.unavailable)
+    };
+    assert_eq!(failure.reason, Some(FailureReason::Canceled));
+    assert!(failure.os_error.is_none());
+    directory.close().unwrap();
+}
+
+#[test]
+fn vm_desktop_configuration_uses_existing_info_and_excludes_remote_endpoints() {
+    let home = std::env::var_os("HOME").unwrap();
+    let host = format!(
+        "unix://{}/.docker/run/docker.sock",
+        std::path::Path::new(&home).display()
+    );
+    for (host, local) in [(host, true), ("tcp://remote:2376".into(), false)] {
+        let id = "a".repeat(64);
+        let mut runner = configured(&id, &host);
+        runner.replies[1] = Ok(Output {
+            stdout: br#"{"id":"daemon","os":"linux","cpus":8,"memory":8589934592}"#.to_vec(),
+            issue: None,
+            timed_out: false,
+            exit_code: None,
+        });
+        let (runtime, containers) = collect(&mut runner, Some("fixture".into()), None, now());
+        assert_eq!(runtime.host_scope.is_some(), local);
+        assert_eq!(
+            containers[0].metrics_scope.as_deref(),
+            local.then_some("in_vm")
+        );
+        if let Some(config) = runtime.configuration {
+            assert_eq!(config.cpus, Some(8));
+            assert_eq!(config.memory_bytes, Some(8589934592));
+            assert_eq!(config.scope, "vm");
+        }
+        assert!(
+            runner.calls[1]
+                .iter()
+                .any(|a| a.contains(".NCPU") && a.contains(".MemTotal"))
+        );
+    }
+}
+
+fn collect(
+    runner: &mut impl Runner,
+    context: Option<String>,
+    host: Option<String>,
+    now: OffsetDateTime,
+) -> (Runtime, Vec<Container>) {
+    crate::extensions::collection::assert_adapter(
+        "docker",
+        super::collect(runner, context, host, now),
+    )
 }

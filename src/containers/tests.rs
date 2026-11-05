@@ -6,6 +6,9 @@ use crate::{
 
 fn runtime(endpoint: &str) -> Runtime {
     Runtime {
+        metrics_scope: None,
+        host_scope: None,
+        configuration: None,
         name: "docker".into(),
         context: Some("custom".into()),
         endpoint_ref: Some(endpoint.into()),
@@ -78,7 +81,7 @@ fn container_scope_counts_once_and_remains_queryable_after_collapse() {
     assert!(md.contains("1 unknown"));
     assert!(!md.contains("2 processes"));
     assert_eq!(
-        serde_json::to_value(snapshot).unwrap()["root"]["container_totals"]["containers"],
+        serde_json::to_value(snapshot).unwrap()["selections"][0]["root"]["container_totals"]["containers"],
         2
     );
 }
@@ -120,7 +123,7 @@ fn compose_and_bind_inference_retain_evidence_and_conflicts() {
         destination: "/workspace".into(),
     }];
     let mut detail = attribution::Evidence::default();
-    let mut discovery = tree::projects::Discovery::default();
+    let mut discovery = crate::extensions::host::projects::Discovery::default();
     attribution::classify(&mut item, &detail, true, &mut discovery);
     assert!(matches!(
         item.project.as_ref().unwrap().source,
@@ -190,7 +193,7 @@ fn partial_inventory_and_container_markdown_preserve_semantics() {
     assert!(md.contains("> ~ Container project inferred:"), "{md}");
     let json = serde_json::to_value(&snapshot).unwrap();
     assert_eq!(
-        json["root"]["children"][0]["children"][0]["evidence"],
+        json["selections"][0]["root"]["children"][0]["children"][0]["evidence"],
         serde_json::json!([
             "Container project inferred: bind path + project marker",
             "container project path /a/space and`tick"
@@ -225,7 +228,7 @@ fn partial_inventory_and_container_markdown_preserve_semantics() {
 fn absent_or_ambiguous_paths_never_force_project_ownership() {
     let mut item = container("one");
     let detail = attribution::Evidence::default();
-    let mut discovery = tree::projects::Discovery::default();
+    let mut discovery = crate::extensions::host::projects::Discovery::default();
     for source in ["relative/project", "/", "/a/nonexistent/project"] {
         item.mounts = vec![Mount {
             kind: "bind".into(),
@@ -315,7 +318,7 @@ fn compose_group_notes_use_one_line_without_losing_pathless_evidence() {
     assert!(md.contains("> compose\n"), "{md}");
     let json = serde_json::to_value(&snapshot).unwrap();
     assert_eq!(
-        json["root"]["children"][0]["children"][0]["evidence"],
+        json["selections"][0]["root"]["children"][0]["children"][0]["evidence"],
         serde_json::json!(["compose"])
     );
 }
@@ -420,9 +423,18 @@ fn json_contract_preserves_container_attribution_and_scopes() {
                 .collect();
             assert!(errors.is_empty(), "{}", errors.join("\n"));
             if matches!(snapshot.root.grouping, Some(Grouping::Project)) {
-                assert_eq!(value["root"]["attribution"]["path"], "/example/space_中文");
-                assert_eq!(value["root"]["attribution"]["source"], "compose");
-                assert_eq!(value["root"]["attribution"]["inferred"], false);
+                assert_eq!(
+                    value["selections"][0]["root"]["attribution"]["path"],
+                    "/example/space_中文"
+                );
+                assert_eq!(
+                    value["selections"][0]["root"]["attribution"]["source"],
+                    "compose"
+                );
+                assert_eq!(
+                    value["selections"][0]["root"]["attribution"]["inferred"],
+                    false
+                );
             }
         }
     }
@@ -455,4 +467,109 @@ fn multiple_runtimes_keep_identity_totals_and_partial_inventory_separate() {
     assert_eq!(totals.memory_unknown, 0);
     assert_eq!(totals.known_memory_bytes, 100);
     assert!(!totals.inventory_complete);
+}
+
+#[test]
+fn runtime_failure_reason_and_hint_reach_markdown_and_json() {
+    let mut failed = runtime("endpoint-a");
+    failed.status = "unavailable".into();
+    failed.unavailable.push(crate::model::Diagnostic::failure(
+        "collection_failed",
+        "docker",
+        "info: container CLI command failed (exit status: 1); stderr withheld",
+        crate::model::FailureReason::PermissionDenied,
+        Some(libc::EPERM),
+    ));
+    let snapshot = Snapshot {
+        schema: crate::model::JSON_SCHEMA_VERSION,
+        extensions: vec![],
+        captured_unix_ms: 0,
+        sample_ms: 250,
+        collection_ms: 300,
+        system: SystemSummary::default(),
+        scope: "group:containers".into(),
+        warnings: vec![],
+        root: build_all(vec![(failed, vec![])]).unwrap(),
+    };
+    let md = output::markdown(&snapshot);
+    assert!(
+        md.contains("> ! info: container CLI command failed (exit status: 1); stderr withheld · reason permission\\_denied: endpoint socket access denied; allow socket access (sandbox or file mode)"),
+        "{md}"
+    );
+    let json = serde_json::to_value(&snapshot).unwrap();
+    let diagnostic = &json["selections"][0]["root"]["children"][0]["runtime"]["unavailable"][0];
+    assert_eq!(diagnostic["reason"], "permission_denied");
+    assert_eq!(diagnostic["os_error"], libc::EPERM);
+}
+
+#[test]
+fn repair_vm_aggregate_scope_survives_selection_projection_and_depth() {
+    for scopes in [
+        [Some("in_vm"), Some("in_vm"), Some("in_vm")],
+        [Some("in_vm"), Some("host"), Some("in_vm")],
+        [Some("in_vm"), None, Some("in_vm")],
+        [None, Some("in_vm"), Some("in_vm")],
+        [None, None, None],
+        [Some("host"), Some("host"), Some("host")],
+    ] {
+        let expected_scope = scopes
+            .iter()
+            .all(|s| *s == scopes[0])
+            .then_some(scopes[0])
+            .flatten();
+        let expected = expected_scope == Some("in_vm");
+        let items = scopes
+            .into_iter()
+            .enumerate()
+            .map(|(i, scope)| {
+                let mut item = container(&i.to_string());
+                item.metrics_scope = scope.map(Into::into);
+                item.project = Some(Project {
+                    name: "site".into(),
+                    path: None,
+                    source: ProjectSource::Compose,
+                });
+                item
+            })
+            .collect();
+        let mut source = runtime("endpoint-a");
+        source.metrics_scope = Some("in_vm".into());
+        let root = build_all(vec![(source, items)]).unwrap();
+        let project_ref = root.children[0].children[0].reference.clone();
+        for reference in ["group:containers", project_ref.as_str()] {
+            let selected = tree::select(&root, reference).unwrap();
+            let totals = serde_json::to_value(&selected.container_totals).unwrap();
+            let snapshot = Snapshot {
+                schema: crate::model::JSON_SCHEMA_VERSION,
+                extensions: vec![],
+                captured_unix_ms: 1,
+                sample_ms: 1,
+                collection_ms: 1,
+                system: Default::default(),
+                scope: reference.into(),
+                warnings: vec![],
+                root: selected,
+            };
+            for depth in [0, 1] {
+                let md = output::markdown_with_depth(&snapshot, depth);
+                assert_eq!(
+                    md.contains("in-VM usage: CPU"),
+                    expected,
+                    "{scopes:?} {reference} depth={depth}: {md}"
+                );
+                let mut trimmed = snapshot.clone();
+                trimmed.project(&[]);
+                tree::limit_depth(&mut trimmed.root, depth);
+                assert_eq!(output::metrics_scope(&trimmed.root), expected_scope);
+                crate::tui::tests::assert_aggregate_metrics_scope(trimmed.clone(), expected);
+                let value = serde_json::to_value(&trimmed).unwrap();
+                let actual = &value["selections"][0]["root"]["container_totals"];
+                assert_eq!(actual["metrics_scope"].as_str(), expected_scope);
+                assert_eq!(actual, &totals);
+                assert_eq!(trimmed.root.reference, reference);
+                let schema: serde_json::Value = serde_json::from_str(output::JSON_SCHEMA).unwrap();
+                assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&value));
+            }
+        }
+    }
 }

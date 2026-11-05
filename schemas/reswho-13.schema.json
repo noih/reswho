@@ -1,0 +1,2852 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:reswho:snapshot:13",
+  "title": "reswho snapshot v13",
+  "description": "Read-only resource snapshot. See docs/json-format.md for semantic invariants beyond JSON Schema.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "reswho/13"
+    },
+    "captured_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "sample_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "collection_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "system": {
+      "$ref": "#/$defs/system"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/diagnostic"
+      }
+    },
+    "selections": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/selection"
+      }
+    },
+    "extensions": {
+      "type": "array",
+      "maxItems": 2048,
+      "items": {
+        "type": "object",
+        "required": [
+          "provider",
+          "phase",
+          "result",
+          "reason",
+          "duration_ms"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "phase": {
+            "enum": [
+              "collect",
+              "classify",
+              "details"
+            ]
+          },
+          "result": {
+            "enum": [
+              "success",
+              "failed",
+              "skipped",
+              "never_invoked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 128
+          },
+          "duration_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "argv": {
+            "type": "object",
+            "properties": {
+              "candidates": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "reads": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "duration_ms": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "candidates",
+              "reads",
+              "bytes",
+              "duration_ms"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "result": {
+                  "enum": [
+                    "skipped",
+                    "never_invoked"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "duration_ms": {
+                  "type": "null"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "duration_ms": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "captured_unix_ms",
+    "sample_ms",
+    "collection_ms",
+    "system",
+    "warnings",
+    "selections",
+    "extensions"
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "diagnostic": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "enum": [
+            "unavailable",
+            "permission_denied",
+            "not_found",
+            "io_error",
+            "identity_changed",
+            "identity_unverified",
+            "sample_unavailable",
+            "collection_note",
+            "collection_failed",
+            "command_failed",
+            "invalid_data",
+            "limit_exceeded",
+            "unsupported",
+            "parent_chain_incomplete"
+          ]
+        },
+        "operation": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.]*$"
+        },
+        "message": {
+          "type": "string"
+        },
+        "os_error": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -2147483648,
+              "maximum": 2147483647
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "enum": [
+            "cli_not_found",
+            "endpoint_not_found",
+            "permission_denied",
+            "connection_refused",
+            "daemon_error",
+            "timeout",
+            "canceled",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "operation",
+        "message",
+        "os_error"
+      ],
+      "additionalProperties": true
+    },
+    "attribution": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "enum": [
+            "app_bundle",
+            "bundle_id",
+            "git_root",
+            "git_common_dir",
+            "manifest",
+            "executable",
+            "compose",
+            "bind_workdir",
+            "bind_project",
+            "extension"
+          ]
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "checkout_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "manifest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bundle_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inferred": {
+          "type": "boolean"
+        },
+        "via_pid": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "extension": {
+          "$ref": "#/$defs/extensionAttribution"
+        }
+      },
+      "required": [
+        "source",
+        "path",
+        "checkout_path",
+        "manifest",
+        "bundle_id",
+        "inferred",
+        "via_pid"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "bundle_id"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "bundle_id": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "via_pid": {
+                "type": "integer"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "inferred": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "enum": [
+                  "app_bundle",
+                  "git_root",
+                  "git_common_dir",
+                  "manifest",
+                  "executable",
+                  "bind_workdir",
+                  "bind_project"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "manifest"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "manifest": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "enum": [
+                  "bind_workdir",
+                  "bind_project"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "inferred": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "git_root"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "checkout_path": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "extension"
+              }
+            },
+            "required": [
+              "source"
+            ]
+          },
+          "then": {
+            "required": [
+              "extension"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^/"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "socket": {
+      "type": "object",
+      "properties": {
+        "fd": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "protocol": {
+          "enum": [
+            "tcp",
+            "udp"
+          ]
+        },
+        "local": {
+          "type": "string"
+        },
+        "remote": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tcp_state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "fd",
+        "protocol",
+        "local",
+        "remote",
+        "tcp_state"
+      ],
+      "additionalProperties": true
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "sockets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/socket"
+          }
+        },
+        "unavailable": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        }
+      },
+      "required": [
+        "complete",
+        "sockets",
+        "unavailable"
+      ],
+      "additionalProperties": true
+    },
+    "process": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "ppid": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "uid": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "started_unix_us": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "uptime_seconds": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "original_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/nameSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "version": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/version"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "executable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cpu_percent": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resident_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "network": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/network"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unavailable": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        },
+        "command": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/process_command"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "extension_details": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/extensionDetails"
+          }
+        },
+        "roles": false,
+        "tag_report": {
+          "$ref": "#/$defs/tagReport"
+        },
+        "host_resource": {
+          "$ref": "#/$defs/hostResource"
+        }
+      },
+      "required": [
+        "pid",
+        "ppid",
+        "uid",
+        "started_unix_us",
+        "uptime_seconds",
+        "name",
+        "original_name",
+        "name_source",
+        "version",
+        "executable",
+        "cwd",
+        "cpu_percent",
+        "resident_bytes",
+        "network",
+        "unavailable"
+      ],
+      "additionalProperties": true
+    },
+    "totals": {
+      "type": "object",
+      "properties": {
+        "processes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "known_cpu_percent": {
+          "type": "number",
+          "minimum": 0
+        },
+        "known_resident_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "cpu_unknown": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "memory_unknown": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "oldest_uptime_seconds": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "uptime_unknown": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      },
+      "required": [
+        "processes",
+        "known_cpu_percent",
+        "known_resident_bytes",
+        "cpu_unknown",
+        "memory_unknown",
+        "oldest_uptime_seconds",
+        "uptime_unknown"
+      ],
+      "additionalProperties": true
+    },
+    "system": {
+      "type": "object",
+      "properties": {
+        "cpu_percent": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_cpus": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memory_total_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memory_used_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "swap_used_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "cpu_percent",
+        "logical_cpus",
+        "memory_total_bytes",
+        "memory_used_bytes",
+        "swap_used_bytes"
+      ],
+      "additionalProperties": true
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "context": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endpoint_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "daemon_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "available",
+            "unavailable"
+          ]
+        },
+        "inventory_complete": {
+          "type": "boolean"
+        },
+        "collection_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "unavailable": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        },
+        "configuration": {
+          "$ref": "#/$defs/resourceConfiguration"
+        },
+        "metrics_scope": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "name",
+        "context",
+        "endpoint_ref",
+        "daemon_id",
+        "status",
+        "inventory_complete",
+        "collection_ms",
+        "unavailable"
+      ],
+      "additionalProperties": true
+    },
+    "port": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "string"
+        },
+        "container_port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "host_ip": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host_port": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "protocol",
+        "container_port",
+        "host_ip",
+        "host_port"
+      ],
+      "additionalProperties": true
+    },
+    "mount": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "destination": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "destination"
+      ],
+      "additionalProperties": true
+    },
+    "project": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "enum": [
+            "compose",
+            "bind_workdir",
+            "bind_project"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "source"
+      ],
+      "additionalProperties": true
+    },
+    "container": {
+      "type": "object",
+      "properties": {
+        "runtime": {
+          "type": "string"
+        },
+        "endpoint_ref": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "uptime_seconds": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cpu_percent": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memory_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memory_basis": {
+          "type": "string"
+        },
+        "ports": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/port"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/mount"
+          }
+        },
+        "project": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/project"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "service": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unavailable": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        },
+        "configuration": {
+          "$ref": "#/$defs/resourceConfiguration"
+        },
+        "metrics_scope": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "runtime",
+        "endpoint_ref",
+        "id",
+        "name",
+        "state",
+        "started_at",
+        "uptime_seconds",
+        "cpu_percent",
+        "memory_bytes",
+        "memory_basis",
+        "ports",
+        "mounts",
+        "project",
+        "candidates",
+        "service",
+        "unavailable"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "created",
+                  "exited",
+                  "dead"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cpu_percent": {
+                "type": "null"
+              },
+              "memory_bytes": {
+                "type": "null"
+              },
+              "uptime_seconds": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "container_totals": {
+      "type": "object",
+      "properties": {
+        "metrics_scope": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "containers": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "active_containers": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "inactive_containers": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "activity_unknown": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "inventory_complete": {
+          "type": "boolean"
+        },
+        "known_cpu_percent": {
+          "type": "number",
+          "minimum": 0
+        },
+        "known_memory_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "cpu_unknown": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "memory_unknown": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "oldest_uptime_seconds": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "uptime_unknown": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      },
+      "required": [
+        "containers",
+        "active_containers",
+        "inactive_containers",
+        "activity_unknown",
+        "inventory_complete",
+        "known_cpu_percent",
+        "known_memory_bytes",
+        "cpu_unknown",
+        "memory_unknown",
+        "oldest_uptime_seconds",
+        "uptime_unknown"
+      ],
+      "additionalProperties": true
+    },
+    "node": {
+      "type": "object",
+      "properties": {
+        "reference": {
+          "type": "string",
+          "pattern": "^(pid:[1-9][0-9]*|group:[a-zA-Z0-9_.-]+)$"
+        },
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "group",
+            "process",
+            "container",
+            "resource"
+          ]
+        },
+        "grouping": {
+          "anyOf": [
+            {
+              "enum": [
+                "category",
+                "runtime",
+                "container",
+                "app",
+                "repo",
+                "checkout",
+                "project",
+                "work",
+                "bin",
+                "system",
+                "unknown",
+                "resource"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "attribution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attribution"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        },
+        "process": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/process"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "container": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/container"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtime": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/runtime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "container_totals": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/container_totals"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "totals": {
+          "$ref": "#/$defs/totals"
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node"
+          }
+        },
+        "omitted_children": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "resource": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/resource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "version": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/version"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host_resources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "reference": {
+                "type": "string",
+                "pattern": "^pid:[1-9][0-9]*$"
+              },
+              "identity": {
+                "type": "object",
+                "properties": {
+                  "pid": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  },
+                  "started_unix_us": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 18446744073709551615
+                  }
+                },
+                "required": [
+                  "pid",
+                  "started_unix_us"
+                ],
+                "additionalProperties": false
+              },
+              "cpu_percent": {
+                "anyOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "resident_bytes": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 18446744073709551615
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "reference",
+              "identity",
+              "cpu_percent",
+              "resident_bytes"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "reference",
+        "name",
+        "kind",
+        "grouping",
+        "evidence",
+        "attribution",
+        "diagnostics",
+        "process",
+        "container",
+        "runtime",
+        "container_totals",
+        "totals",
+        "children",
+        "omitted_children",
+        "resource",
+        "version"
+      ],
+      "additionalProperties": true,
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "process"
+            },
+            "reference": {
+              "pattern": "^pid:[1-9][0-9]*$"
+            },
+            "grouping": {
+              "type": "null"
+            },
+            "process": {
+              "$ref": "#/$defs/process"
+            },
+            "container": {
+              "type": "null"
+            },
+            "runtime": {
+              "type": "null"
+            },
+            "container_totals": {
+              "type": "null"
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/node"
+                  },
+                  {
+                    "properties": {
+                      "kind": {
+                        "const": "process"
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "resource": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "container"
+            },
+            "reference": {
+              "pattern": "^group:"
+            },
+            "grouping": {
+              "const": "container"
+            },
+            "process": {
+              "type": "null"
+            },
+            "container": {
+              "$ref": "#/$defs/container"
+            },
+            "runtime": {
+              "type": "null"
+            },
+            "container_totals": {
+              "type": "null"
+            },
+            "children": {
+              "maxItems": 0
+            },
+            "omitted_children": {
+              "const": 0
+            },
+            "resource": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "group"
+            },
+            "reference": {
+              "pattern": "^group:"
+            },
+            "grouping": {
+              "enum": [
+                "category",
+                "runtime",
+                "app",
+                "repo",
+                "checkout",
+                "project",
+                "work",
+                "bin",
+                "system",
+                "unknown",
+                "resource"
+              ]
+            },
+            "process": {
+              "type": "null"
+            },
+            "container": {
+              "type": "null"
+            },
+            "resource": {
+              "type": "null"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "grouping": {
+                    "const": "runtime"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "runtime": {
+                    "$ref": "#/$defs/runtime"
+                  },
+                  "container_totals": {
+                    "$ref": "#/$defs/container_totals"
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "runtime": {
+                    "type": "null"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "grouping": {
+                    "enum": [
+                      "app",
+                      "repo",
+                      "checkout",
+                      "work",
+                      "bin",
+                      "system",
+                      "unknown"
+                    ]
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "container_totals": {
+                    "type": "null"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "resource"
+            },
+            "grouping": {
+              "type": "null"
+            },
+            "resource": {
+              "$ref": "#/$defs/resource"
+            },
+            "process": {
+              "type": "null"
+            },
+            "container": {
+              "type": "null"
+            },
+            "runtime": {
+              "type": "null"
+            },
+            "container_totals": {
+              "type": "null"
+            },
+            "children": {
+              "maxItems": 0
+            },
+            "totals": {
+              "properties": {
+                "processes": {
+                  "const": 0
+                },
+                "known_cpu_percent": {
+                  "const": 0
+                },
+                "known_resident_bytes": {
+                  "const": 0
+                },
+                "cpu_unknown": {
+                  "const": 0
+                },
+                "memory_unknown": {
+                  "const": 0
+                },
+                "uptime_unknown": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "process_command": {
+      "type": "object",
+      "properties": {
+        "argv": {
+          "anyOf": [
+            {
+              "type": "array",
+              "maxItems": 4096,
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entrypoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "redacted_indices": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4095
+          }
+        },
+        "unavailable": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        }
+      },
+      "required": [
+        "argv",
+        "entrypoint",
+        "redacted_indices",
+        "unavailable"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "argv": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "entrypoint": {
+                "type": "null"
+              },
+              "redacted_indices": {
+                "maxItems": 0
+              },
+              "unavailable": {
+                "minItems": 1
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "unavailable": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "extensionAttribution": {
+      "type": "object",
+      "required": [
+        "provider",
+        "key",
+        "label",
+        "basis"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9_-]+$"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "basis": {
+          "enum": [
+            "cwd",
+            "executable"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "detailField": {
+      "type": "object",
+      "required": [
+        "key",
+        "label",
+        "value",
+        "sensitive"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^extensions\\.[a-z0-9_-]+\\.[a-zA-Z0-9_.-]+$",
+          "maxLength": 256
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "value": {
+          "type": [
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ],
+          "maxLength": 16384
+        },
+        "sensitive": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "extensionDetails": {
+      "type": "object",
+      "required": [
+        "provider",
+        "fields"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "pattern": "^[a-z0-9_-]+$"
+        },
+        "fields": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/detailField"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "metric": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_./%\\-]+$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_./%\\-]+$"
+        },
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "unit",
+        "value"
+      ],
+      "additionalProperties": true
+    },
+    "resource": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_./%\\-]+$"
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_./%\\-]+$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384,
+              "pattern": "^/"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metrics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/metric"
+          },
+          "maxItems": 64
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "path",
+        "metrics",
+        "provider"
+      ],
+      "additionalProperties": false
+    },
+    "role": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "path": {
+          "type": "string"
+        },
+        "basis": {
+          "enum": [
+            "cwd",
+            "executable"
+          ]
+        }
+      },
+      "required": [
+        "provider",
+        "key",
+        "label",
+        "path",
+        "basis"
+      ],
+      "additionalProperties": false
+    },
+    "tag": {
+      "type": "object",
+      "properties": {
+        "dimension": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.:/-]+$"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_.:/-]+$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 4096
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "basis": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "supplementary_to": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.:/-]+$"
+        },
+        "evidence_chain": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 16384,
+          "items": {
+            "type": "object",
+            "properties": {
+              "identity": {
+                "type": "object",
+                "properties": {
+                  "pid": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  },
+                  "started_unix_us": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 18446744073709551615
+                  }
+                },
+                "required": [
+                  "pid",
+                  "started_unix_us"
+                ],
+                "additionalProperties": false
+              },
+              "executable": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "identity",
+              "executable"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "host_resource": {
+          "$ref": "#/$defs/hostResource"
+        }
+      },
+      "required": [
+        "dimension",
+        "id",
+        "label",
+        "path",
+        "basis"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "dimension": {
+                "const": "version"
+              }
+            },
+            "required": [
+              "dimension"
+            ]
+          },
+          "then": {
+            "required": [
+              "subject",
+              "value"
+            ],
+            "properties": {
+              "path": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "subject"
+                  ]
+                },
+                {
+                  "required": [
+                    "value"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "dimension": {
+                "enum": [
+                  "name",
+                  "work"
+                ]
+              }
+            },
+            "required": [
+              "dimension"
+            ]
+          },
+          "then": {
+            "properties": {
+              "path": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "required": [
+                  "supplementary_to"
+                ]
+              },
+              {
+                "required": [
+                  "evidence_chain"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "required": [
+              "supplementary_to",
+              "evidence_chain"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "tagSelector": {
+      "type": "object",
+      "properties": {
+        "dimension": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.:/-]+$"
+        },
+        "tag_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9_.:/-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9_-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "dimension"
+      ],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "tag_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9_.:/-]+$"
+            }
+          },
+          "required": [
+            "tag_id"
+          ]
+        },
+        {
+          "properties": {
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9_-]+$"
+            }
+          },
+          "required": [
+            "source"
+          ]
+        }
+      ]
+    },
+    "tagProposal": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_.:/-]+$"
+        },
+        "identity": {
+          "type": "object",
+          "properties": {
+            "pid": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4294967295
+            },
+            "started_unix_us": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            }
+          },
+          "required": [
+            "pid",
+            "started_unix_us"
+          ],
+          "additionalProperties": false
+        },
+        "change": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "operation": {
+                  "const": "add"
+                },
+                "tag": {
+                  "$ref": "#/$defs/tag"
+                }
+              },
+              "required": [
+                "operation",
+                "tag"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "operation": {
+                  "const": "exclude"
+                },
+                "selector": {
+                  "$ref": "#/$defs/tagSelector"
+                }
+              },
+              "required": [
+                "operation",
+                "selector"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "operation": {
+                  "const": "withdraw"
+                },
+                "proposal_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$"
+                }
+              },
+              "required": [
+                "operation",
+                "proposal_id"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "identity",
+        "change"
+      ],
+      "additionalProperties": false
+    },
+    "tagReport": {
+      "type": "object",
+      "properties": {
+        "effective": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[A-Za-z0-9_.:/-]+$"
+              },
+              "tag": {
+                "$ref": "#/$defs/tag"
+              }
+            },
+            "required": [
+              "source",
+              "tag"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 4096
+        },
+        "proposals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[A-Za-z0-9_.:/-]+$"
+              },
+              "proposal": {
+                "$ref": "#/$defs/tagProposal"
+              }
+            },
+            "required": [
+              "source",
+              "proposal"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 65536
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[A-Za-z0-9_.:/-]+$"
+              },
+              "proposal_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "pattern": "^[A-Za-z0-9_.:/-]+$"
+              },
+              "status": {
+                "enum": [
+                  "effective",
+                  "excluded",
+                  "superseded",
+                  "withdrawn",
+                  "recorded",
+                  "rejected"
+                ]
+              },
+              "by_source": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "pattern": "^[A-Za-z0-9_.:/-]+$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9_.:/-]+$"
+              }
+            },
+            "required": [
+              "source",
+              "proposal_id",
+              "status",
+              "by_source",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 65536
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          },
+          "maxItems": 2048
+        }
+      },
+      "required": [
+        "effective",
+        "proposals",
+        "decisions",
+        "diagnostics"
+      ],
+      "additionalProperties": false
+    },
+    "summaryNode": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/node"
+        },
+        {
+          "properties": {
+            "process": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "tag_report": false,
+                    "roles": false,
+                    "extension_details": false,
+                    "command": {
+                      "type": "null"
+                    }
+                  }
+                }
+              ]
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/summaryNode"
+              },
+              "maxItems": 4294967295
+            }
+          }
+        }
+      ]
+    },
+    "version": {
+      "type": "object",
+      "properties": {
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "basis": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "subject",
+        "value",
+        "basis",
+        "source"
+      ],
+      "additionalProperties": true
+    },
+    "selection": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "pattern": "^(pid:[1-9][0-9]*|group:[a-zA-Z0-9_.-]+)$"
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/node"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nested_in": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(pid:[1-9][0-9]*|group:[a-zA-Z0-9_.-]+)$"
+          }
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        }
+      },
+      "required": [
+        "selector",
+        "root",
+        "nested_in",
+        "diagnostics"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "selector": {
+                "pattern": "^pid:"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "root": {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "kind": {
+                        "const": "process"
+                      },
+                      "process": {
+                        "type": "object",
+                        "required": [
+                          "tag_report"
+                        ]
+                      },
+                      "children": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/$defs/summaryNode"
+                        },
+                        "maxItems": 4294967295
+                      }
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "root": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/summaryNode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "root": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "diagnostics": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "nameSource": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "enum": [
+            "work",
+            "name"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "basis": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "reason",
+        "source",
+        "basis"
+      ],
+      "additionalProperties": true
+    },
+    "resourceConfiguration": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "cpus": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memory_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cpu_overhead": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "scope",
+        "cpus",
+        "memory_bytes",
+        "cpu_overhead"
+      ],
+      "additionalProperties": false
+    },
+    "hostResource": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "confidence": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "responsible": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "identity": {
+                  "type": "object",
+                  "properties": {
+                    "pid": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 4294967295
+                    },
+                    "started_unix_us": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 18446744073709551615
+                    }
+                  },
+                  "required": [
+                    "pid",
+                    "started_unix_us"
+                  ],
+                  "additionalProperties": false
+                },
+                "executable": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                }
+              },
+              "required": [
+                "identity",
+                "executable"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 65,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "diagnostics": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        },
+        "configuration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/resourceConfiguration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "scope",
+        "label",
+        "confidence",
+        "responsible",
+        "evidence",
+        "diagnostics",
+        "configuration"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

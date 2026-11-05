@@ -1,10 +1,11 @@
-mod discovery;
-pub mod external;
-mod native;
-pub mod protocol;
+pub(crate) mod builtin;
+pub(crate) mod collection;
+pub mod details;
+pub mod host;
+pub mod inventory;
+pub mod placement;
 pub mod report;
 mod resources;
-pub mod state;
 pub mod tags;
 use crate::{
     containers::{self, Container, Runtime},
@@ -34,10 +35,6 @@ pub enum Capability {
 #[derive(Serialize)]
 pub struct Descriptor {
     pub id: String,
-    pub version: String,
-    pub protocol_version: u32,
-    pub source: &'static str,
-    pub platforms: Vec<String>,
     pub capabilities: Vec<Capability>,
     pub enabled: bool,
     pub availability: &'static str,
@@ -49,6 +46,7 @@ pub struct Context<'a> {
     pub deadline: Instant,
     failed: Mutex<HashSet<String>>,
     pub report: Arc<Mutex<Vec<report::Record>>>,
+    pub(crate) argv: Mutex<crate::collect::ArgvPrefix>,
 }
 
 impl<'a> Context<'a> {
@@ -59,6 +57,7 @@ impl<'a> Context<'a> {
             deadline: Instant::now() + Duration::from_secs(10),
             failed: Mutex::new(HashSet::new()),
             report: Arc::default(),
+            argv: Mutex::default(),
         }
     }
     fn finish_phase<T>(
@@ -88,24 +87,23 @@ impl<'a> Context<'a> {
     }
     pub(crate) fn reject_details_identity(&self, process: &Process, validation: Duration) {
         for details in &process.extension_details {
-            let rejected = {
-                let mut records = self.report.lock().expect("report lock");
-                if let Some(record) = records.iter_mut().rev().find(|record| {
-                    record.provider == details.provider
-                        && record.version.as_deref() == Some(details.version.as_str())
-                        && record.phase == "details"
-                }) && record.result == "success"
+            let rejected =
                 {
-                    record.result = "failed".into();
-                    record.reason = Some("identity_changed".into());
-                    if let Some(duration) = &mut record.duration_ms {
-                        *duration += validation.as_secs_f64() * 1000.0;
+                    let mut records = self.report.lock().expect("report lock");
+                    if let Some(record) = records.iter_mut().rev().find(|record| {
+                        record.provider == details.provider && record.phase == "details"
+                    }) && record.result == "success"
+                    {
+                        record.result = "failed".into();
+                        record.reason = Some("identity_changed".into());
+                        if let Some(duration) = &mut record.duration_ms {
+                            *duration += validation.as_secs_f64() * 1000.0;
+                        }
+                        true
+                    } else {
+                        false
                     }
-                    true
-                } else {
-                    false
-                }
-            };
+                };
             if rejected {
                 let _ = self.finish::<()>(
                     Some(&details.provider),
@@ -136,9 +134,9 @@ impl<'a> Context<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessIdentity {
-    #[serde(deserialize_with = "protocol::integer")]
+    #[serde(deserialize_with = "crate::model::integer::integer")]
     pub pid: u32,
-    #[serde(deserialize_with = "protocol::integer")]
+    #[serde(deserialize_with = "crate::model::integer::integer")]
     pub started_unix_us: u64,
 }
 
@@ -190,7 +188,7 @@ pub struct DetailProposal {
 pub enum Request<'a> {
     Collect,
     CollectResources,
-    Classify(&'a [Process]),
+    Classify(&'a host::Facts<'a>),
     Details {
         process: &'a Process,
         pointer_width: usize,
@@ -244,11 +242,20 @@ impl Contribution {
 #[derive(Serialize)]
 pub struct Response {
     pub provider: String,
-    pub version: String,
     pub contribution: Contribution,
 }
 
 pub trait Extension: Sync {
+    fn tag_contract(&self) -> Option<tags::Contract> {
+        None
+    }
+    fn registration(&self) -> placement::Registration {
+        placement::Registration::default()
+    }
+    fn decoration(&self) -> Option<host::Decoration> {
+        None
+    }
+
     fn collects_containers(&self) -> bool {
         true
     }
@@ -260,7 +267,7 @@ thread_local! {
     static IN_EXTENSION: Cell<bool> = const { Cell::new(false) };
 }
 
-fn boundary<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
+pub(crate) fn boundary<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
     static HOOK: Once = Once::new();
     HOOK.call_once(|| {
         let previous = panic::take_hook();
@@ -283,6 +290,13 @@ fn boundary<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
     }
 }
 
+fn ensure_identity(a: ProcessIdentity, b: ProcessIdentity) -> Result<()> {
+    if a != b {
+        bail!("tag_identity_mismatch")
+    }
+    Ok(())
+}
+
 pub fn dispatch(
     extension: &dyn Extension,
     context: &Context<'_>,
@@ -297,14 +311,12 @@ fn dispatch_labeled(
     request: Request<'_>,
 ) -> (Option<String>, Result<Response>) {
     let mut provider = None;
-    let mut version = None;
     let mut invoked = false;
     let started = Instant::now();
     let phase = format!("{:?}", request.capability()).to_lowercase();
     let result = boundary(|| {
         let descriptor = extension.descriptor();
         provider = Some(descriptor.id.clone());
-        version = Some(descriptor.version.clone());
         context.check()?;
         if context
             .failed
@@ -316,26 +328,76 @@ fn dispatch_labeled(
         }
         let capability = request.capability();
         if !descriptor.enabled
-            || context
-                .settings
-                .report()
-                .disabled_extensions
-                .contains_key(&descriptor.id)
+            || context.settings.is_disabled(&descriptor.id)
             || !descriptor.capabilities.contains(&capability)
         {
             bail!("extension capability is disabled or unsupported");
         }
         invoked = true;
-        let contribution = extension
+        let mut contribution = extension
             .execute(context, request)
             .map_err(|_| anyhow::anyhow!("extension failed"))?;
+        if let Some(contract) = extension.tag_contract() {
+            contract.validate(&descriptor.id)?;
+            if let (Contribution::Classify { proposals }, Request::Classify(facts)) =
+                (&mut contribution, request)
+            {
+                let registration = extension.registration();
+                let tags: Vec<_> = proposals
+                    .iter()
+                    .map(|p| {
+                        let ClassificationEvidence::Tags { proposal } = &p.evidence else {
+                            bail!("classifications require typed tags")
+                        };
+                        ensure_identity(p.identity, proposal.identity)?;
+                        Ok(proposal.clone())
+                    })
+                    .collect::<Result<_>>()?;
+                tags::validate_registered(
+                    &tags,
+                    facts.processes,
+                    &descriptor.id,
+                    Some(&contract),
+                    &registration.ownership,
+                )?;
+                placement::validate_batch(proposals, &registration)?;
+                for proposal in proposals {
+                    if let ClassificationEvidence::Tags { proposal } = &mut proposal.evidence {
+                        match &mut proposal.operation {
+                            tags::Operation::Add { tag } => {
+                                if let Some(projection) = &mut tag.projection {
+                                    placement::validate_projection(projection, &descriptor.id)?;
+                                    let owner = registration
+                                        .ownership
+                                        .iter()
+                                        .find(|o| o.dimension == tag.dimension)
+                                        .ok_or_else(|| {
+                                            anyhow::anyhow!("undeclared ownership projection")
+                                        })?;
+                                    placement::normalize_projection(projection, &owner.category);
+                                }
+                            }
+                            tags::Operation::Exclude { selector } => {
+                                selector.allowed_sources = contract
+                                    .overrides
+                                    .iter()
+                                    .filter(|r| r.dimension == selector.dimension)
+                                    .flat_map(|r| r.sources.clone())
+                                    .collect();
+                            }
+                            tags::Operation::Withdraw { .. } => {}
+                        }
+                    }
+                }
+            }
+        }
         context.check()?;
         if contribution.capability() != capability {
             bail!("extension returned an unexpected capability");
         }
         Ok(Response {
             provider: descriptor.id,
-            version: descriptor.version,
+
             contribution,
         })
     });
@@ -353,7 +415,6 @@ fn dispatch_labeled(
     };
     let record = report::Record::new(
         provider.as_deref().unwrap_or("unidentified"),
-        version.as_deref(),
         &phase,
         if result.is_ok() {
             "success"
@@ -365,6 +426,10 @@ fn dispatch_labeled(
         result.as_ref().err().map(|_| reason),
         (invoked || provider.is_none()).then_some(started),
     );
+    let mut record = record;
+    if let Some(id) = &provider {
+        record.argv = context.argv.lock().expect("argv lock").costs.remove(id);
+    }
     let mut records = context.report.lock().expect("report lock");
     if let Some(index) = records.iter().position(|old| {
         old.provider == record.provider && old.phase == phase && old.started.is_none()
@@ -380,95 +445,80 @@ pub enum Builtin {
     Docker,
     Apple,
     Podman,
-    AppBundle,
-    Command,
     Project,
     Ancestor,
-    Bin,
+    VersionedInstall,
+    Node,
+    Python,
+    LaunchedBy,
+    Vm,
 }
 
-pub const BUILTINS: [Builtin; 8] = [
-    Builtin::AppBundle,
+pub const BUILTINS: [Builtin; 10] = [
     Builtin::Project,
     Builtin::Ancestor,
-    Builtin::Bin,
+    Builtin::VersionedInstall,
+    Builtin::Node,
+    Builtin::Python,
+    Builtin::LaunchedBy,
     Builtin::Docker,
     Builtin::Podman,
     Builtin::Apple,
-    Builtin::Command,
+    Builtin::Vm,
 ];
 
+pub(crate) fn round_classifiers() -> [&'static dyn Extension; 7] {
+    [
+        &Builtin::Project,
+        &Builtin::Ancestor,
+        &Builtin::VersionedInstall,
+        &Builtin::Node,
+        &Builtin::Python,
+        &Builtin::LaunchedBy,
+        &Builtin::Vm,
+    ]
+}
+
+pub(crate) fn default_classifiers() -> [&'static dyn Extension; 1] {
+    [&crate::core::Core::AppBundle]
+}
+
+impl Builtin {
+    fn module(&self) -> &'static host::Module {
+        match self {
+            Self::Docker => &builtin::docker::MODULE,
+            Self::Apple => &builtin::apple::MODULE,
+            Self::Podman => &builtin::podman::MODULE,
+            Self::Project => &builtin::project::MODULE,
+            Self::Ancestor => &builtin::ancestor::MODULE,
+            Self::VersionedInstall => &builtin::versioned_install::MODULE,
+            Self::Node => &builtin::node::MODULE,
+            Self::Python => &builtin::python::MODULE,
+            Self::LaunchedBy => &builtin::launched_by::MODULE,
+            Self::Vm => &builtin::vm::MODULE,
+        }
+    }
+}
+
 impl Extension for Builtin {
+    fn registration(&self) -> placement::Registration {
+        (self.module().registration)()
+    }
+    fn decoration(&self) -> Option<host::Decoration> {
+        self.module().decorate
+    }
     fn descriptor(&self) -> Descriptor {
-        let (id, capability) = match self {
-            Self::Docker => ("docker", Capability::Collect),
-            Self::Apple => ("apple", Capability::Collect),
-            Self::Podman => ("podman", Capability::Collect),
-            Self::AppBundle => ("app_bundle", Capability::Classify),
-            Self::Command => ("command", Capability::Details),
-            Self::Project => ("project", Capability::Classify),
-            Self::Ancestor => ("ancestor", Capability::Classify),
-            Self::Bin => ("bin", Capability::Classify),
-        };
+        let module = self.module();
         Descriptor {
-            id: id.into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-            protocol_version: 1,
-            source: "builtin",
-            platforms: vec!["macos".into()],
-            capabilities: vec![capability],
+            id: module.id.into(),
+            capabilities: vec![module.capability],
             enabled: cfg!(target_os = "macos"),
             availability: "unknown",
         }
     }
 
     fn execute(&self, context: &Context<'_>, request: Request<'_>) -> Result<Contribution> {
-        match (self, request) {
-            (Self::Docker, Request::Collect) => {
-                let (runtime, containers) = containers::collect_docker(context)?;
-                Ok(Contribution::Collect {
-                    runtime,
-                    containers,
-                })
-            }
-            (Self::Apple, Request::Collect) => {
-                let (runtime, containers) = containers::collect_apple(context)?;
-                Ok(Contribution::Collect {
-                    runtime,
-                    containers,
-                })
-            }
-            (Self::Podman, Request::Collect) => {
-                let (runtime, containers) = containers::collect_podman(context)?;
-                Ok(Contribution::Collect {
-                    runtime,
-                    containers,
-                })
-            }
-            (
-                Self::AppBundle | Self::Project | Self::Ancestor | Self::Bin,
-                Request::Classify(processes),
-            ) => Ok(Contribution::Classify {
-                proposals: crate::tree::builtin_tags(processes, &self.descriptor().id),
-            }),
-            (
-                Self::Command,
-                Request::Details {
-                    process,
-                    pointer_width,
-                },
-            ) => {
-                let identity = ProcessIdentity::observed(process)
-                    .ok_or_else(|| anyhow::anyhow!("process identity unavailable"))?;
-                Ok(Contribution::Details {
-                    proposal: DetailProposal {
-                        identity,
-                        command: crate::collect::extension_command(process, pointer_width),
-                    },
-                })
-            }
-            _ => bail!("unsupported extension request"),
-        }
+        (self.module().execute)(context, request)
     }
 }
 
@@ -489,7 +539,8 @@ pub fn settings_registry() -> Result<Registry> {
         } else {
             vec![]
         };
-        registry.register_extension(&descriptor.id, vec![], uses)?;
+        let definitions = (extension.module().settings)()?;
+        registry.register_extension(&descriptor.id, definitions, uses)?;
     }
     Ok(registry)
 }
@@ -501,39 +552,14 @@ pub fn default_settings() -> Result<Resolved> {
 pub fn list(settings: &Resolved, containers: bool) -> Vec<Descriptor> {
     BUILTINS
         .iter()
+        .map(|p| p as &dyn Extension)
         .map(|extension| {
             let mut descriptor = extension.descriptor();
-            descriptor.enabled &= !settings
-                .report()
-                .disabled_extensions
-                .contains_key(&descriptor.id)
+            descriptor.enabled &= !settings.is_disabled(&descriptor.id)
                 && (containers || !descriptor.capabilities.contains(&Capability::Collect));
             descriptor
         })
         .collect()
-}
-
-pub(crate) fn app_bundle(path: &Path) -> Option<PathBuf> {
-    if !path.is_absolute() {
-        return None;
-    }
-    let mut bundle = PathBuf::new();
-    for component in path.components() {
-        bundle.push(component);
-        let name = bundle
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default();
-        if (name.ends_with(".app") || name.ends_with(".app.bundle"))
-            && path
-                .strip_prefix(&bundle)
-                .ok()
-                .is_some_and(|rest| rest.starts_with("Contents"))
-        {
-            return Some(bundle);
-        }
-    }
-    None
 }
 
 pub type Classifications = (
@@ -565,7 +591,7 @@ pub fn classify_with_roles(
     context: &Context<'_>,
     processes: &[Process],
 ) -> ClassificationFacts {
-    let (reports, diagnostics) = tags::classify(providers, context, processes);
+    let (reports, diagnostics) = tags::classify(providers, context, &host::Facts::new(processes));
     let mut apps = BTreeMap::new();
     let mut custom = BTreeMap::new();
     let mut roles = BTreeMap::new();
@@ -583,9 +609,8 @@ pub fn classify_with_roles(
                         pid,
                         (
                             path,
-                            external::evidence(
+                            details::evidence(
                                 entry.source,
-                                String::new(),
                                 entry.tag.id,
                                 entry.tag.label,
                                 entry.tag.basis,
@@ -599,7 +624,6 @@ pub fn classify_with_roles(
                         .or_insert_with(Vec::new)
                         .push(crate::model::Role {
                             provider: entry.source,
-                            version: String::new(),
                             key: entry.tag.id,
                             label: entry.tag.label,
                             path,
@@ -696,6 +720,7 @@ pub fn collect_scoped(
     context: &Context<'_>,
     include_containers: bool,
 ) -> Result<(crate::model::Node, crate::model::Node)> {
+    let registry = placement::Registry::new(providers, context);
     let mut resources = Vec::new();
     let mut sources: Vec<(String, Runtime, Vec<Container>)> = dispatch_many(
         providers,
@@ -714,10 +739,9 @@ pub fn collect_scoped(
             .unwrap_or_else(|| format!("unidentified-{index}"));
         let validation_started = Instant::now();
         let result = result.and_then(|response| {
-            if let Contribution::Collect { containers, .. }
-            | Contribution::Collected { containers, .. } = &response.contribution
-            {
-                containers::validate_containers(containers)?;
+            collection::validate(&response.provider, &response.contribution)?;
+            if let Contribution::Collected { resources, .. } = &response.contribution {
+                resources::validate(&response.provider, resources)?;
             }
             Ok(response)
         });
@@ -748,7 +772,10 @@ pub fn collect_scoped(
                 resources.extend(items);
                 runtime.map(|runtime| (label, runtime, containers))
             }
-            _ if !include_containers
+            _ if id
+                .as_ref()
+                .is_some_and(|id| context.settings.is_disabled(id))
+                || !include_containers
                 || !boundary(|| Ok(providers[index].collects_containers())).unwrap_or(false) =>
             {
                 None
@@ -756,6 +783,9 @@ pub fn collect_scoped(
             _ => Some((
                 label.clone(),
                 Runtime {
+                    metrics_scope: None,
+                    host_scope: None,
+                    configuration: None,
                     name: label.clone(),
                     context: None,
                     endpoint_ref: None,
@@ -810,12 +840,16 @@ pub fn collect_scoped(
         );
     }
     context.cancel.check()?;
-    let containers = containers::build_all(
+    let mut containers = containers::build_all(
         sources
             .into_iter()
             .map(|(_, runtime, containers)| (runtime, containers))
             .collect(),
     )?;
+    if let Some(category) = registry.categories.get("containers") {
+        containers.name = category.label.clone();
+        containers.category_order = Some(category.order);
+    }
     Ok((containers, resources::build(resources)))
 }
 
@@ -823,4 +857,10 @@ pub fn collect_scoped(
 mod tests;
 
 #[cfg(test)]
-mod protocol_tests;
+mod placement_tests;
+
+#[cfg(test)]
+mod placement_regression;
+
+#[cfg(test)]
+mod collection_tests;

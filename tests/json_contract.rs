@@ -1,7 +1,7 @@
 use reswho::{
     model::{
-        Diagnostic, Grouping, JSON_SCHEMA_VERSION, Network, Node, Process, Protocol, Snapshot,
-        Socket, SystemSummary,
+        Diagnostic, FailureReason, Grouping, JSON_SCHEMA_VERSION, Network, Node, Process, Protocol,
+        Snapshot, Socket, SystemSummary,
     },
     output, tree,
 };
@@ -29,23 +29,23 @@ fn command_extension_preserves_argument_boundaries_and_validates_types() {
     let root = tree::build(vec![process(71, Path::new("/"))]).unwrap();
     let selected = tree::select(&root, "pid:71").unwrap();
     let mut value = serde_json::to_value(snapshot(selected)).unwrap();
-    value["root"]["process"]["command"] = json!({
+    value["selections"][0]["root"]["process"]["command"] = json!({
         "argv": ["python3", "worker job.py", "--token", "[filtered]"],
         "redacted_indices": [3],
         "entrypoint": "worker job.py",
         "unavailable": []
     });
     validate(&value);
-    value["root"]["process"]["command"]["argv"] = json!("not an argument array");
+    value["selections"][0]["root"]["process"]["command"]["argv"] = json!("not an argument array");
     assert!(!validator().is_valid(&value));
-    value["root"]["process"]["command"] = json!({
+    value["selections"][0]["root"]["process"]["command"] = json!({
         "argv": null, "entrypoint": null, "redacted_indices": [],
         "unavailable": [Diagnostic::new("permission_denied", "command.read", "denied")]
     });
     validate(&value);
-    value["root"]["process"]["command"]["unavailable"] = json!([]);
+    value["selections"][0]["root"]["process"]["command"]["unavailable"] = json!([]);
     assert!(!validator().is_valid(&value));
-    value["root"]["process"]
+    value["selections"][0]["root"]["process"]
         .as_object_mut()
         .unwrap()
         .remove("command");
@@ -144,11 +144,16 @@ fn schema_validates_classification_scopes_and_depth_without_parsing_evidence() {
         let value = serde_json::to_value(&selected).unwrap();
         validate(&value);
         assert_eq!(
-            value["root"]["totals"],
+            value["selections"][0]["root"]["totals"],
             serde_json::to_value(&full.root.totals).unwrap()
         );
         if depth == 0 {
-            assert!(value["root"]["omitted_children"].as_u64().unwrap() > 0);
+            assert!(
+                value["selections"][0]["root"]["omitted_children"]
+                    .as_u64()
+                    .unwrap()
+                    > 0
+            );
         }
     }
     for (pid, source, path) in [
@@ -158,30 +163,54 @@ fn schema_validates_classification_scopes_and_depth_without_parsing_evidence() {
         let selected = snapshot(tree::select(&full.root, &format!("pid:{pid}")).unwrap());
         let value = serde_json::to_value(selected).unwrap();
         validate(&value);
-        assert_eq!(value["root"]["attribution"]["source"], source);
-        assert_eq!(value["root"]["attribution"]["path"], path.to_str().unwrap());
-        assert_eq!(value["root"]["attribution"]["inferred"], false);
+        assert_eq!(
+            value["selections"][0]["root"]["attribution"]["source"],
+            source
+        );
+        assert_eq!(
+            value["selections"][0]["root"]["attribution"]["path"],
+            path.to_str().unwrap()
+        );
+        assert_eq!(
+            value["selections"][0]["root"]["attribution"]["inferred"],
+            false
+        );
     }
     let helper =
         serde_json::to_value(snapshot(tree::select(&full.root, "pid:11").unwrap())).unwrap();
     validate(&helper);
-    assert_eq!(helper["root"]["attribution"]["source"], "app_bundle");
-    assert_eq!(helper["root"]["attribution"]["inferred"], true);
-    assert_eq!(helper["root"]["attribution"]["via_pid"], 10);
+    assert_eq!(
+        helper["selections"][0]["root"]["attribution"]["source"],
+        "app_bundle"
+    );
+    assert_eq!(
+        helper["selections"][0]["root"]["attribution"]["inferred"],
+        true
+    );
+    assert_eq!(
+        helper["selections"][0]["root"]["attribution"]["via_pid"],
+        10
+    );
     let denied =
         serde_json::to_value(snapshot(tree::select(&full.root, "pid:99").unwrap())).unwrap();
     validate(&denied);
     assert_eq!(
-        denied["root"]["process"]["unavailable"][0]["code"],
+        denied["selections"][0]["root"]["process"]["unavailable"][0]["code"],
         "permission_denied"
     );
     assert_eq!(
-        denied["root"]["process"]["unavailable"][0]["os_error"],
+        denied["selections"][0]["root"]["process"]["unavailable"][0]["os_error"],
         libc::EPERM
     );
-    assert!(denied["root"]["process"]["resident_bytes"].is_null());
-    assert_eq!(denied["root"]["totals"]["known_resident_bytes"], 0);
-    assert_eq!(denied["root"]["totals"]["memory_unknown"], 1);
+    assert!(denied["selections"][0]["root"]["process"]["resident_bytes"].is_null());
+    assert_eq!(
+        denied["selections"][0]["root"]["totals"]["known_resident_bytes"],
+        0
+    );
+    assert_eq!(
+        denied["selections"][0]["root"]["totals"]["memory_unknown"],
+        1
+    );
     let empty = snapshot(tree::build(vec![]).unwrap());
     validate(&serde_json::to_value(empty).unwrap());
     temp.close().unwrap();
@@ -204,21 +233,28 @@ fn schema_rejects_wrong_types_missing_fields_and_invalid_node_variants() {
         ("/sample_ms", json!("250ms")),
         ("/sample_ms", json!(0.5)),
         ("/system/cpu_percent", json!(101)),
-        ("/root/kind", json!("process")),
-        ("/root/grouping", Value::Null),
-        ("/root/runtime", json!({})),
+        ("/selections/0/root/kind", json!("process")),
+        ("/selections/0/root/grouping", Value::Null),
+        ("/selections/0/root/runtime", json!({})),
         (
-            "/root/children/0/totals/known_resident_bytes",
+            "/selections/0/root/children/0/totals/known_resident_bytes",
             json!("1MiB"),
         ),
         ("/warnings", json!(["unstructured error"])),
+        (
+            "/warnings",
+            json!([{"code": "collection_failed", "operation": "docker", "message": "x", "os_error": null, "reason": "sandboxed"}]),
+        ),
     ] {
         let mut value = good.clone();
         *value.pointer_mut(pointer).unwrap() = invalid;
         assert!(!validator().is_valid(&value), "accepted invalid {pointer}");
     }
     let mut missing = good.clone();
-    missing["root"].as_object_mut().unwrap().remove("children");
+    missing["selections"][0]["root"]
+        .as_object_mut()
+        .unwrap()
+        .remove("children");
     assert!(!validator().is_valid(&missing));
     let mut extra = good;
     extra["extension_field"] = json!({"future": true});
@@ -235,7 +271,10 @@ fn published_examples_validate_and_match_current_serialized_shapes() {
         .unwrap();
         let value: Value = serde_json::from_str(&text).unwrap();
         validate(&value);
-        assert_eq!(value["scope"], value["root"]["reference"]);
+        assert_eq!(
+            value["selections"][0]["selector"],
+            value["selections"][0]["root"]["reference"]
+        );
     }
     let node = Node::group(
         "group:all".into(),
@@ -245,20 +284,43 @@ fn published_examples_validate_and_match_current_serialized_shapes() {
     );
     let value = serde_json::to_value(snapshot(node)).unwrap();
     validate(&value);
-    let diagnostic =
-        serde_json::to_value(Diagnostic::new("unavailable", "cpu", "wording can change")).unwrap();
+    let diagnostic = serde_json::to_value(Diagnostic::failure(
+        "collection_failed",
+        "docker",
+        "wording can change",
+        FailureReason::PermissionDenied,
+        Some(13),
+    ))
+    .unwrap();
+    assert_eq!(diagnostic["reason"], "permission_denied");
+    assert!(
+        serde_json::to_value(Diagnostic::new("unavailable", "cpu", "x"))
+            .unwrap()
+            .get("reason")
+            .is_none()
+    );
     let shape: Value = serde_json::from_str(output::JSON_SCHEMA).unwrap();
     for (def, actual) in [
-        ("node", &value["root"]),
+        ("node", &value["selections"][0]["root"]),
         ("system", &value["system"]),
-        ("totals", &value["root"]["totals"]),
+        ("totals", &value["selections"][0]["root"]["totals"]),
         ("diagnostic", &diagnostic),
     ] {
         let mut expected: Vec<_> = shape["$defs"][def]["properties"]
             .as_object()
             .unwrap()
             .keys()
+            .filter(|key| def != "node" || key.as_str() != "host_resources")
             .collect();
+        if def == "node" {
+            assert!(actual.get("host_resources").is_none());
+            assert!(
+                !shape["$defs"][def]["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("host_resources"))
+            );
+        }
         let mut actual: Vec<_> = actual.as_object().unwrap().keys().collect();
         expected.sort();
         actual.sort();
@@ -288,15 +350,31 @@ fn schema_cli_is_offline_and_never_collects_resources() {
 }
 
 #[test]
-fn schema8_9_10_11_remain_available_while_current_output_is_schema12() {
+fn schema8_to_12_remain_available_while_current_output_is_schema13() {
     let legacy_schema: Value =
         serde_json::from_str(include_str!("../schemas/reswho-8.schema.json")).unwrap();
     let legacy = jsonschema::validator_for(&legacy_schema).unwrap();
     let mut example: Value =
         serde_json::from_str(include_str!("../docs/examples/host.json")).unwrap();
-    assert_eq!(example["schema"], "reswho/12");
+    assert_eq!(example["schema"], "reswho/13");
     assert!(validator().is_valid(&example));
     assert!(!legacy.is_valid(&example));
+    let selection = example["selections"][0].clone();
+    let object = example.as_object_mut().unwrap();
+    object.remove("selections");
+    object.insert("scope".into(), selection["selector"].clone());
+    object.insert("root".into(), selection["root"].clone());
+    example["schema"] = json!("reswho/13");
+    assert!(!validator().is_valid(&example));
+    example["schema"] = json!("reswho/12");
+    let twelve: Value =
+        serde_json::from_str(include_str!("../schemas/reswho-12.schema.json")).unwrap();
+    assert!(
+        jsonschema::validator_for(&twelve)
+            .unwrap()
+            .is_valid(&example)
+    );
+    assert!(!validator().is_valid(&example));
     example["schema"] = json!("reswho/10");
     let ten: Value =
         serde_json::from_str(include_str!("../schemas/reswho-10.schema.json")).unwrap();
@@ -349,9 +427,9 @@ fn tag_details_are_projected_before_rendering_and_children_always_remain_summary
     let selected = snapshot(tree::select(&root, "pid:71").unwrap());
     let value = serde_json::to_value(&selected).unwrap();
     validate(&value);
-    assert!(value["root"]["process"]["tag_report"].is_object());
+    assert!(value["selections"][0]["root"]["process"]["tag_report"].is_object());
     assert!(
-        value["root"]["children"][0]["process"]
+        value["selections"][0]["root"]["children"][0]["process"]
             .get("tag_report")
             .is_none()
     );
@@ -368,11 +446,63 @@ fn tag_details_are_projected_before_rendering_and_children_always_remain_summary
     let value = serde_json::to_value(snapshot(empty)).unwrap();
     validate(&value);
     assert_eq!(
-        value["root"]["process"]["tag_report"]["effective"],
+        value["selections"][0]["root"]["process"]["tag_report"]["effective"],
         json!([])
     );
     let mut leaked = value.clone();
-    leaked["root"]["children"][0]["process"]["tag_report"] =
-        value["root"]["process"]["tag_report"].clone();
+    leaked["selections"][0]["root"]["children"][0]["process"]["tag_report"] =
+        value["selections"][0]["root"]["process"]["tag_report"].clone();
     assert!(!validator().is_valid(&leaked));
+}
+
+#[test]
+fn schema13_rejects_removed_extension_versions_but_keeps_software_versions() {
+    let schema: Value = serde_json::from_str(output::JSON_SCHEMA).unwrap();
+    let mut contracts = vec![
+        schema["properties"]["extensions"]["items"].clone(),
+        schema["$defs"]["tagReport"]["properties"]["proposals"]["items"].clone(),
+    ];
+    contracts.extend(
+        [
+            "extensionAttribution",
+            "extensionDetails",
+            "resource",
+            "role",
+        ]
+        .map(|key| schema["$defs"][key].clone()),
+    );
+    for contract in contracts {
+        assert!(contract["properties"].get("version").is_none());
+        assert_eq!(contract["additionalProperties"], false);
+    }
+    let mut value = serde_json::to_value(snapshot(
+        tree::build(vec![process(1, Path::new("/"))]).unwrap(),
+    ))
+    .unwrap();
+    value["extensions"] = json!([{"provider":"project","phase":"classify","result":"success","reason":null,"duration_ms":0.1}]);
+    validate(&value);
+    for field in [
+        "version",
+        "author",
+        "provenance",
+        "revision",
+        "key_id",
+        "source",
+    ] {
+        let mut removed = value.clone();
+        removed["extensions"][0][field] = json!("obsolete");
+        assert!(!validator().is_valid(&removed), "{field}");
+    }
+    value["extensions"][0]["phase"] = json!("verification");
+    assert!(!validator().is_valid(&value));
+    assert!(
+        schema["$defs"]["process"]["properties"]
+            .get("version")
+            .is_some()
+    );
+    assert!(
+        schema["$defs"]["node"]["properties"]
+            .get("version")
+            .is_some()
+    );
 }

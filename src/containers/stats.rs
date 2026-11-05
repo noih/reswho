@@ -1,5 +1,5 @@
 use super::http::Client;
-use crate::model::Diagnostic;
+use crate::model::{Diagnostic, FailureReason};
 use anyhow::{Result, bail};
 use serde::Deserialize;
 use std::{
@@ -155,7 +155,7 @@ fn samples(
     client: &Client<'_>,
     api: &str,
     ids: &[String],
-    errors: &mut BTreeSet<String>,
+    errors: &mut BTreeSet<(String, FailureReason)>,
 ) -> BTreeMap<String, Sample> {
     let paths: Vec<_> = ids
         .iter()
@@ -167,11 +167,14 @@ fn samples(
             match response.and_then(|response| response.json::<Sample>()) {
                 Ok(sample) if sample.id == *id => Some((id.clone(), sample)),
                 Ok(_) => {
-                    errors.insert("Docker API sample identity mismatch".into());
+                    errors.insert((
+                        "Docker API sample identity mismatch".into(),
+                        FailureReason::DaemonError,
+                    ));
                     None
                 }
                 Err(error) => {
-                    errors.insert(error.to_string());
+                    errors.insert((error.to_string(), super::command::reason_of(&error)));
                     None
                 }
             }
@@ -222,7 +225,9 @@ pub(super) fn collect(
         memory_basis: API_MEMORY_BASIS,
         unavailable: errors
             .into_iter()
-            .map(|message| Diagnostic::new("unavailable", "docker.stats", message))
+            .map(|(message, reason)| {
+                Diagnostic::failure("unavailable", "docker.stats", message, reason, None)
+            })
             .collect(),
     }))
 }

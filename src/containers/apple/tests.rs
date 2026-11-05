@@ -21,10 +21,14 @@ fn fake(version: &str, inventories: &[Value]) -> Fake {
         replies: std::iter::once(Output {
             stdout: version.as_bytes().to_vec(),
             issue: None,
+            timed_out: false,
+            exit_code: None,
         })
         .chain(inventories.iter().map(|v| Output {
             stdout: serde_json::to_vec(v).unwrap(),
             issue: None,
+            timed_out: false,
+            exit_code: None,
         }))
         .collect(),
     }
@@ -226,4 +230,130 @@ fn malformed_ports_and_non_bind_mounts_keep_metadata_honest() {
             .iter()
             .any(|d| d.message == "mount metadata unavailable")
     );
+}
+
+#[test]
+fn cli_failures_report_structured_reasons_without_stderr() {
+    use crate::containers::command::failure_fixtures::cli;
+    use crate::model::FailureReason;
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    for (program, expected, budget) in [
+        (root.join("missing-cli"), FailureReason::CliNotFound, 2000),
+        (
+            cli(root, "failing", "echo private-credential >&2; exit 1"),
+            FailureReason::Unknown,
+            2000,
+        ),
+        (
+            cli(root, "slow", "exec /bin/sleep 5"),
+            FailureReason::Timeout,
+            150,
+        ),
+        (
+            cli(root, "garbled", "echo not-json"),
+            FailureReason::DaemonError,
+            2000,
+        ),
+    ] {
+        let mut runner = RuntimeCommand {
+            program,
+            cancel: Cancellation::default(),
+            deadline: Instant::now() + Duration::from_millis(budget),
+            sample_interval: Duration::from_millis(10),
+            api_version: None,
+        };
+        let (runtime, containers) = collect(&mut runner, now(), |_| unreachable!());
+        assert!(containers.is_empty());
+        let [failure] = runtime.unavailable.as_slice() else {
+            panic!("{:?}", runtime.unavailable)
+        };
+        assert_eq!(
+            (failure.code.as_str(), failure.reason),
+            ("collection_failed", Some(expected))
+        );
+        assert!(
+            failure
+                .message
+                .contains(&format!("reason {}: ", expected.code()))
+        );
+        assert!(
+            !serde_json::to_string(&runtime)
+                .unwrap()
+                .contains("private-credential")
+        );
+    }
+    directory.close().unwrap();
+}
+
+#[test]
+fn launchd_service_absence_classifies_unknown_failures_only() {
+    use crate::containers::command::failure_fixtures::cli;
+    use crate::model::FailureReason;
+    let directory = tempfile::tempdir().unwrap();
+    let failing = cli(directory.path(), "failing", "exit 1");
+    let slow = cli(directory.path(), "slow", "exec /bin/sleep 5");
+    let runner = |program: &std::path::Path, budget: u64| RuntimeCommand {
+        program: program.into(),
+        cancel: Cancellation::default(),
+        deadline: Instant::now() + Duration::from_millis(budget),
+        sample_interval: Duration::from_millis(10),
+        api_version: None,
+    };
+    for (program, budget, service, expected) in [
+        (&failing, 2000, Some(113), FailureReason::EndpointNotFound),
+        (&failing, 2000, Some(0), FailureReason::Unknown),
+        (&failing, 2000, None, FailureReason::Unknown),
+        (&slow, 150, Some(113), FailureReason::Timeout),
+    ] {
+        let calls = std::cell::Cell::new(0);
+        let (runtime, _) = collect_with_service(
+            &mut runner(program, budget),
+            now(),
+            |_| unreachable!(),
+            || {
+                calls.set(calls.get() + 1);
+                service
+            },
+        );
+        let [failure] = runtime.unavailable.as_slice() else {
+            panic!("{:?}", runtime.unavailable)
+        };
+        assert_eq!(failure.reason, Some(expected), "{service:?}");
+        assert!(failure.message.ends_with(expected.hint()));
+        assert!(calls.get() <= 1);
+        assert_eq!(calls.get(), usize::from(expected != FailureReason::Timeout));
+    }
+    let mut canceled = runner(&failing, 2000);
+    canceled.cancel.cancel();
+    let (runtime, _) =
+        collect_with_service(&mut canceled, now(), |_| unreachable!(), || unreachable!());
+    assert_eq!(runtime.unavailable[0].reason, Some(FailureReason::Canceled));
+    directory.close().unwrap();
+}
+
+#[test]
+fn vm_configuration_keeps_container_limit_and_cpu_overhead_scopes() {
+    let mut value = item("owned", "running");
+    value["configuration"]["resources"] =
+        json!({"cpus":2,"memoryInBytes":268435456,"cpuOverhead":1});
+    let mut runner = fake(
+        "container CLI version 1.6.1",
+        &[json!([value.clone()]), json!([value])],
+    );
+    let (_, containers) = collect(&mut runner, now(), batch);
+    let config = containers[0].configuration.as_ref().unwrap();
+    assert_eq!(config.scope, "container_limit");
+    assert_eq!(config.cpus, Some(2));
+    assert_eq!(config.memory_bytes, Some(268435456));
+    assert_eq!(config.cpu_overhead, Some(1));
+    assert_eq!(containers[0].host_scope.as_deref(), Some("apple:owned"));
+}
+
+fn collect(
+    runner: &mut impl Runner,
+    now: OffsetDateTime,
+    stats: impl FnMut(&[String]) -> Result<Batch>,
+) -> (Runtime, Vec<Container>) {
+    crate::extensions::collection::assert_adapter("apple", super::collect(runner, now, stats))
 }

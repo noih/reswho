@@ -9,14 +9,16 @@ fn builtin_list_is_deterministic_and_does_not_probe_sources() {
             .map(|entry| entry.id.as_str())
             .collect::<Vec<_>>(),
         [
-            "app_bundle",
             "project",
             "ancestor",
-            "bin",
+            "versioned_install",
+            "node",
+            "python",
+            "launched_by",
             "docker",
             "podman",
             "apple",
-            "command"
+            "vm"
         ]
     );
     assert!(list.iter().all(|entry| entry.availability == "unknown"));
@@ -31,7 +33,7 @@ fn builtin_list_is_deterministic_and_does_not_probe_sources() {
 use crate::model::{Snapshot, SystemSummary};
 use std::sync::{Arc, Condvar, Mutex};
 
-struct Fixture {
+pub(crate) struct Fixture {
     id: &'static str,
     contribution: Contribution,
     fail: bool,
@@ -40,7 +42,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(id: &'static str, contribution: Contribution) -> Self {
+    pub(crate) fn new(id: &'static str, contribution: Contribution) -> Self {
         Self {
             id,
             contribution,
@@ -65,10 +67,6 @@ impl Extension for Fixture {
     fn descriptor(&self) -> Descriptor {
         Descriptor {
             id: self.id.into(),
-            version: "fixture/1".into(),
-            protocol_version: 1,
-            source: "builtin",
-            platforms: vec!["macos".into()],
             capabilities: vec![self.contribution.capability()],
             enabled: true,
             availability: "unknown",
@@ -113,11 +111,14 @@ fn process() -> Process {
 
 fn runtime(name: &str) -> Runtime {
     Runtime {
+        metrics_scope: None,
+        host_scope: None,
+        configuration: None,
         name: name.into(),
         context: None,
         endpoint_ref: Some(format!("{name}-local")),
         daemon_id: None,
-        status: "ready".into(),
+        status: "available".into(),
         inventory_complete: true,
         collection_ms: 0,
         unavailable: vec![],
@@ -141,6 +142,8 @@ fn collectors_share_settings_run_concurrently_and_isolate_provider_failures() {
         Contribution::Collect {
             runtime: runtime("good"),
             containers: vec![Container {
+                runtime: "good".into(),
+                endpoint_ref: "good-local".into(),
                 id: "one".into(),
                 name: "fixture".into(),
                 state: Some("running".into()),
@@ -270,9 +273,12 @@ fn real_classifier_and_validated_details_preserve_schema_and_markdown_redaction(
         },
     );
     process.command = Some(details(&fixture, &context, &process, 8).unwrap());
-    let root =
-        crate::tree::build_with_providers(vec![process.clone()], &context, &[&Builtin::AppBundle])
-            .unwrap();
+    let root = crate::tree::build_with_providers(
+        vec![process.clone()],
+        &context,
+        &[&crate::core::Core::AppBundle],
+    )
+    .unwrap();
     let snapshot = Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
         extensions: vec![],
@@ -347,10 +353,6 @@ impl Extension for Panicking {
         }
         Descriptor {
             id: "panicking".into(),
-            version: "1".into(),
-            protocol_version: 1,
-            source: "builtin",
-            platforms: vec!["macos".into()],
             capabilities: vec![self.capability],
             enabled: true,
             availability: "unknown",
@@ -396,14 +398,14 @@ fn boundary_subprocess_scenario() {
                         tree.children
                             .iter()
                             .filter_map(|node| node.runtime.as_ref())
-                            .filter(|runtime| runtime.status == "ready")
+                            .filter(|runtime| runtime.status == "available")
                             .count(),
                         1
                     );
                 }
                 Capability::Classify => {
                     let (accepted, _, diagnostics) = classify(
-                        &[&bad, &Builtin::AppBundle],
+                        &[&bad, &crate::core::Core::AppBundle],
                         &context,
                         std::slice::from_ref(&process),
                     );
@@ -525,10 +527,6 @@ fn every_capability_rejects_expired_admission_and_late_results() {
         fn descriptor(&self) -> Descriptor {
             Descriptor {
                 id: "late".into(),
-                version: "1".into(),
-                protocol_version: 1,
-                source: "builtin",
-                platforms: vec!["macos".into()],
                 capabilities: vec![self.output.capability()],
                 enabled: true,
                 availability: "unknown",
@@ -581,10 +579,12 @@ fn every_capability_rejects_expired_admission_and_late_results() {
                     } else {
                         Duration::from_millis(5)
                     },
+                argv: Default::default(),
             };
+            let facts = crate::extensions::host::Facts::new(std::slice::from_ref(&process));
             let request = match capability {
                 Capability::Collect => Request::Collect,
-                Capability::Classify => Request::Classify(std::slice::from_ref(&process)),
+                Capability::Classify => Request::Classify(&facts),
                 Capability::Details => Request::Details {
                     process: &process,
                     pointer_width: 8,
@@ -673,6 +673,8 @@ fn unrepresentable_container_aggregate_rejects_only_the_overflowing_source() {
         Contribution::Collect {
             runtime: runtime("good"),
             containers: vec![Container {
+                runtime: "good".into(),
+                endpoint_ref: "good-local".into(),
                 id: "good".into(),
                 state: Some("running".into()),
                 memory_bytes: Some(100),
@@ -685,6 +687,8 @@ fn unrepresentable_container_aggregate_rejects_only_the_overflowing_source() {
         Contribution::Collect {
             runtime: runtime("overflow"),
             containers: vec![Container {
+                runtime: "overflow".into(),
+                endpoint_ref: "overflow-local".into(),
                 id: "huge".into(),
                 state: Some("running".into()),
                 memory_bytes: Some(u64::MAX),
@@ -692,6 +696,8 @@ fn unrepresentable_container_aggregate_rejects_only_the_overflowing_source() {
             }],
         },
     );
+    crate::extensions::collection::validate("good", &good.contribution).unwrap();
+    crate::extensions::collection::validate("overflow", &overflow.contribution).unwrap();
     let root = collect(&[&good, &overflow], &context).unwrap();
     let totals = root.container_totals.unwrap();
     assert_eq!(totals.containers, 1);
@@ -709,10 +715,6 @@ fn capability_validation_failures_skip_later_calls_only_in_the_current_round() {
         fn descriptor(&self) -> Descriptor {
             Descriptor {
                 id: "invalid".into(),
-                version: "1.0.0".into(),
-                protocol_version: 1,
-                source: "builtin",
-                platforms: vec!["macos".into()],
                 capabilities: vec![
                     Capability::Collect,
                     Capability::Classify,
@@ -758,9 +760,11 @@ fn capability_validation_failures_skip_later_calls_only_in_the_current_round() {
                     })
                 }
                 Request::Collect | Request::CollectResources => Ok(Contribution::Collect {
-                    runtime: runtime("separate-runtime"),
+                    runtime: runtime("invalid"),
                     containers: if self.kind == "overflow" {
                         vec![Container {
+                            runtime: "invalid".into(),
+                            endpoint_ref: "invalid-local".into(),
                             id: "huge".into(),
                             state: Some("running".into()),
                             memory_bytes: Some(u64::MAX),
@@ -803,7 +807,7 @@ fn capability_validation_failures_skip_later_calls_only_in_the_current_round() {
             "parsed" => {
                 let mut selected = process.clone();
                 assert_eq!(
-                    external::attach_details(&[&invalid], &context, &mut selected).len(),
+                    details::attach_details(&[&invalid], &context, &mut selected).len(),
                     1
                 );
             }
@@ -813,6 +817,8 @@ fn capability_validation_failures_skip_later_calls_only_in_the_current_round() {
                     Contribution::Collect {
                         runtime: runtime("prefix"),
                         containers: vec![Container {
+                            runtime: "prefix".into(),
+                            endpoint_ref: "prefix-local".into(),
                             id: "small".into(),
                             state: Some("running".into()),
                             memory_bytes: Some(100),
@@ -889,7 +895,14 @@ fn current_phase_reports_acceptance_failures_skips_and_parallel_durations() {
     assert_eq!(records[0].result, "failed");
     assert_eq!(records[0].reason.as_deref(), Some("invalid_data"));
     assert!(records[0].duration_ms.is_some());
-    assert!(dispatch(&invalid, &context, Request::Classify(&[])).is_err());
+    assert!(
+        dispatch(
+            &invalid,
+            &context,
+            Request::Classify(&crate::extensions::host::Facts::new(&[]))
+        )
+        .is_err()
+    );
     let records = context.report.lock().unwrap().clone();
     assert_eq!(records.len(), 2);
     assert_eq!(records[1].result, "skipped");
@@ -958,7 +971,14 @@ fn current_phase_reports_acceptance_failures_skips_and_parallel_durations() {
         }
     }
     let next = Context::new(&settings, &cancel);
-    assert!(dispatch(&Canceled, &next, Request::Classify(&[])).is_err());
+    assert!(
+        dispatch(
+            &Canceled,
+            &next,
+            Request::Classify(&crate::extensions::host::Facts::new(&[]))
+        )
+        .is_err()
+    );
     let record = next.report.lock().unwrap()[0].clone();
     assert_eq!(record.result, "failed");
     assert_eq!(record.reason.as_deref(), Some("canceled"));
@@ -1044,13 +1064,16 @@ fn supplemental_roles_coexist_on_apps_projects_without_reparenting_or_new_totals
     let settings = default_settings().unwrap();
     let cancel = Cancellation::default();
     let context = Context::new(&settings, &cancel);
-    let original =
-        crate::tree::build_with_providers(processes.clone(), &context, &[&Builtin::AppBundle])
-            .unwrap();
+    let original = crate::tree::build_with_providers(
+        processes.clone(),
+        &context,
+        &[&crate::core::Core::AppBundle],
+    )
+    .unwrap();
     let root = crate::tree::build_with_providers(
         processes.clone(),
         &context,
-        &[&Builtin::AppBundle, &first, &second],
+        &[&crate::core::Core::AppBundle, &first, &second],
     )
     .unwrap();
     assert_eq!(
@@ -1208,6 +1231,8 @@ fn repair_failed_collectors_only_invalidate_their_requested_scopes() {
             Contribution::Collect {
                 runtime: runtime("healthy"),
                 containers: vec![Container {
+                    runtime: "healthy".into(),
+                    endpoint_ref: "healthy-local".into(),
                     id: "owned".into(),
                     name: "healthy".into(),
                     state: Some("running".into()),
@@ -1255,5 +1280,170 @@ fn repair_failed_collectors_only_invalidate_their_requested_scopes() {
                 .iter()
                 .any(|record| record.provider == "failing" && record.result == "failed")
         );
+    }
+}
+
+#[test]
+fn tree_provider_metadata_panics_keep_core_processes_and_diagnostics() {
+    let settings = default_settings().unwrap();
+    let cancel = Cancellation::default();
+    let bad = Panicking {
+        metadata: true,
+        capability: Capability::Classify,
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let tree = crate::tree::build_with_providers(
+        vec![process()],
+        &Context::new(&settings, &cancel),
+        &[&bad],
+    )
+    .unwrap();
+    assert_eq!(tree.totals.processes, 1);
+    assert_eq!(tree.diagnostics.len(), 1);
+    assert!(crate::tree::select(&tree, "group:applications").is_ok());
+}
+
+#[test]
+fn internal_resources_keep_precise_values_and_isolate_invalid_providers() {
+    use crate::model::{Resource, ResourceMetric};
+    let resource = Resource {
+        provider: "fixture".into(),
+        id: "volume".into(),
+        kind: "volume".into(),
+        label: "Volume".into(),
+        path: None,
+        metrics: vec![ResourceMetric {
+            key: "capacity".into(),
+            label: "Capacity".into(),
+            unit: "bytes".into(),
+            value: Some(u64::MAX.into()),
+        }],
+    };
+    let settings = default_settings().unwrap();
+    let cancel = Cancellation::default();
+    let fixture = Fixture::new(
+        "fixture",
+        Contribution::Collected {
+            runtime: None,
+            containers: vec![],
+            resources: vec![resource.clone()],
+        },
+    );
+    let (_, root) = collect_scoped(&[&fixture], &Context::new(&settings, &cancel), false).unwrap();
+    crate::tree::validate_references(&root).unwrap();
+    assert_eq!(root.totals.processes, 0);
+    let json = serde_json::to_value(&root).unwrap();
+    assert_eq!(
+        json["children"][0]["children"][0]["resource"]["metrics"][0]["value"],
+        u64::MAX
+    );
+    assert!(
+        json["children"][0]["children"][0]["resource"]
+            .get("version")
+            .is_none()
+    );
+    for invalid in ["owner", "duplicate", "relative", "metric"] {
+        let mut resources = vec![resource.clone()];
+        match invalid {
+            "owner" => resources[0].provider = "other".into(),
+            "duplicate" => resources.push(resource.clone()),
+            "relative" => resources[0].path = Some("relative".into()),
+            _ => {
+                let duplicate = resources[0].metrics[0].clone();
+                resources[0].metrics.push(duplicate);
+            }
+        }
+        let bad = Fixture::new(
+            "fixture",
+            Contribution::Collected {
+                runtime: None,
+                containers: vec![],
+                resources,
+            },
+        );
+        let healthy = Fixture::new(
+            "healthy",
+            Contribution::Collected {
+                runtime: None,
+                containers: vec![],
+                resources: vec![Resource {
+                    provider: "healthy".into(),
+                    ..resource.clone()
+                }],
+            },
+        );
+        let context = Context::new(&settings, &cancel);
+        let (_, root) = collect_scoped(&[&bad, &healthy], &context, false).unwrap();
+        crate::tree::validate_references(&root).unwrap();
+        assert_eq!(root.children.len(), 1);
+        assert_eq!(root.children[0].name, "healthy");
+        assert!(
+            context
+                .report
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|record| record.provider == "fixture" && record.result == "failed")
+        );
+    }
+}
+
+#[test]
+fn internal_parsed_details_mask_sensitive_fields_and_keep_integer_precision() {
+    let settings = default_settings().unwrap();
+    let cancel = Cancellation::default();
+    let mut process = process();
+    let fields = vec![
+        crate::model::DetailField {
+            key: "extensions.fixture.token".into(),
+            label: "Token".into(),
+            value: serde_json::json!("SECRET_TOKEN"),
+            sensitive: false,
+        },
+        crate::model::DetailField {
+            key: "extensions.fixture.private".into(),
+            label: "Private".into(),
+            value: serde_json::json!("SECRET_PRIVATE"),
+            sensitive: true,
+        },
+        crate::model::DetailField {
+            key: "extensions.fixture.count".into(),
+            label: "Count".into(),
+            value: serde_json::json!(u64::MAX),
+            sensitive: false,
+        },
+    ];
+    let fixture = Fixture::new(
+        "fixture",
+        Contribution::ParsedDetails {
+            identity: ProcessIdentity::observed(&process).unwrap(),
+            fields,
+        },
+    );
+    assert!(
+        details::attach_details(&[&fixture], &Context::new(&settings, &cancel), &mut process)
+            .is_empty()
+    );
+    assert_eq!(process.extension_details[0].fields[2].value, u64::MAX);
+    let root =
+        crate::tree::build_with_providers(vec![process], &Context::new(&settings, &cancel), &[])
+            .unwrap();
+    let snapshot = Snapshot {
+        schema: crate::model::JSON_SCHEMA_VERSION,
+        captured_unix_ms: 0,
+        sample_ms: 0,
+        collection_ms: 0,
+        system: SystemSummary::default(),
+        warnings: vec![],
+        extensions: vec![],
+        scope: "pid:10".into(),
+        root: crate::tree::select(&root, "pid:10").unwrap(),
+    };
+    let json = serde_json::to_value(&snapshot).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(crate::output::JSON_SCHEMA).unwrap();
+    assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&json));
+    for rendered in [json.to_string(), crate::output::markdown(&snapshot)] {
+        assert!(rendered.contains("[filtered]"));
+        assert!(!rendered.contains("SECRET"));
     }
 }

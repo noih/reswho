@@ -13,8 +13,8 @@ pub(super) fn unavailable(diagnostic: Diagnostic) -> ProcessCommand {
     }
 }
 
-pub(super) fn discard_if_changed(process: &mut Process, requested: Option<u32>, consistent: bool) {
-    if requested == Some(process.pid) && !consistent {
+pub(super) fn discard_if_changed(process: &mut Process, requested: bool, consistent: bool) {
+    if requested && !consistent {
         process.command = Some(unavailable(Diagnostic::new(
             "identity_changed",
             "command",
@@ -31,6 +31,13 @@ pub(super) fn collect(pid: i32, executable: Option<&Path>, pointer_width: usize)
 }
 
 fn read(pid: i32) -> Result<Vec<u8>, Diagnostic> {
+    let mut buffer = vec![0u8; argmax()? + size_of::<i32>()];
+    let size = fill(pid, &mut buffer)?;
+    buffer.truncate(size);
+    Ok(buffer)
+}
+
+pub(crate) fn argmax() -> Result<usize, Diagnostic> {
     let mut argmax = 0i32;
     let mut size = size_of::<i32>();
     let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
@@ -53,8 +60,11 @@ fn read(pid: i32) -> Result<Vec<u8>, Diagnostic> {
             "command: OS argument buffer exceeds collection limit",
         ));
     }
-    let mut buffer = vec![0u8; argmax as usize + size_of::<i32>()];
-    size = buffer.len();
+    Ok(argmax as usize)
+}
+
+pub(crate) fn fill(pid: i32, buffer: &mut [u8]) -> Result<usize, Diagnostic> {
+    let mut size = buffer.len();
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
     let result = unsafe {
         libc::sysctl(
@@ -75,8 +85,7 @@ fn read(pid: i32) -> Result<Vec<u8>, Diagnostic> {
             "command: argument buffer reached capacity; completeness unknown",
         ));
     }
-    buffer.truncate(size);
-    Ok(buffer)
+    Ok(size)
 }
 
 fn problem(code: &'static str, message: &'static str) -> Diagnostic {
@@ -84,6 +93,14 @@ fn problem(code: &'static str, message: &'static str) -> Diagnostic {
 }
 
 fn parse(buffer: &[u8], pointer_width: usize) -> Result<Vec<String>, Diagnostic> {
+    parse_prefix(buffer, pointer_width, usize::MAX)
+}
+
+pub(crate) fn parse_prefix(
+    buffer: &[u8],
+    pointer_width: usize,
+    limit: usize,
+) -> Result<Vec<String>, Diagnostic> {
     let malformed = || {
         problem(
             "invalid_data",
@@ -129,8 +146,9 @@ fn parse(buffer: &[u8], pointer_width: usize) -> Result<Vec<String>, Diagnostic>
         return Err(malformed());
     }
     let mut rest = buffer.get(args_start..).ok_or_else(malformed)?;
-    let mut args = Vec::with_capacity(argc as usize);
-    for _ in 0..argc {
+    let count = (argc as usize).min(limit);
+    let mut args = Vec::with_capacity(count);
+    for _ in 0..count {
         let end = rest
             .iter()
             .position(|byte| *byte == 0)
@@ -181,7 +199,7 @@ fn inline_code_option(value: &str) -> bool {
         && value.contains(['c', 'e']))
 }
 
-pub(super) fn sanitize(mut argv: Vec<String>, executable: Option<&Path>) -> ProcessCommand {
+pub(crate) fn sanitize(mut argv: Vec<String>, executable: Option<&Path>) -> ProcessCommand {
     let python_flags_end = if executable
         .and_then(Path::file_name)
         .and_then(|s| s.to_str())
@@ -516,13 +534,13 @@ mod tests {
             command: Some(sanitized("/bin/node", &["node", "app.js"])),
             ..Process::default()
         };
-        discard_if_changed(&mut process, Some(7), false);
+        discard_if_changed(&mut process, true, false);
         let command = process.command.unwrap();
         assert!(command.argv.is_none());
         assert!(command.entrypoint.is_none());
         assert_eq!(command.unavailable[0].code, "identity_changed");
         let mut unrequested = Process::default();
-        discard_if_changed(&mut unrequested, Some(7), false);
+        discard_if_changed(&mut unrequested, false, false);
         assert!(unrequested.command.is_none());
         let denied = unavailable(Diagnostic::io(
             "command.read",

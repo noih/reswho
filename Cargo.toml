@@ -1,6 +1,6 @@
 [package]
 name = "reswho"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
 description = "Read-only resource attribution for macOS"
 license = "MIT"
@@ -9,10 +9,15 @@ homepage = "https://github.com/noih/reswho"
 readme = "README.md"
 keywords = ["macos", "monitor", "process", "tui", "containers"]
 categories = ["command-line-utilities"]
-include = ["/src/**", "/build.rs", "/schemas/**", "/tests/**", "/examples/**", "/scripts/package-release", "/scripts/release", "/scripts/release-notes", "/packaging/reswho.rb.template", "/Cargo.lock", "/README.md", "/LICENSE", "/CHANGELOG.md", "/docs/**"]
+include = ["/src/**", "/build.rs", "/schemas/**", "/tests/**", "/scripts/package-release", "/scripts/release", "/scripts/release-notes", "/packaging/reswho.rb.template", "/Cargo.lock", "/README.md", "/CONTRIBUTING.md", "/LICENSE", "/CHANGELOG.md", "/docs/**"]
 
 [lib]
 doc = false
+
+[[test]]
+name = "podman_guard"
+path = "tests/podman_guard.rs"
+harness = false
 
 [dependencies]
 anyhow = "1"

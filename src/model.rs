@@ -1,17 +1,55 @@
+pub(crate) mod integer;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 mod attribution;
 mod diagnostic;
 pub use attribution::{Attribution, AttributionSource};
-pub use diagnostic::Diagnostic;
+pub use diagnostic::{Diagnostic, FailureReason};
 
-pub const JSON_SCHEMA_VERSION: &str = "reswho/12";
+pub const JSON_SCHEMA_VERSION: &str = "reswho/13";
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ResourceConfiguration {
+    pub scope: String,
+    #[serde(default, deserialize_with = "self::integer::optional_integer")]
+    pub cpus: Option<u32>,
+    #[serde(default, deserialize_with = "self::integer::optional_integer")]
+    pub memory_bytes: Option<u64>,
+    #[serde(default, deserialize_with = "self::integer::optional_integer")]
+    pub cpu_overhead: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HostResource {
+    #[serde(skip)]
+    pub(crate) link_key: Option<String>,
+    pub kind: String,
+    pub scope: Option<String>,
+    pub label: String,
+    pub confidence: String,
+    pub diagnostics: Vec<Diagnostic>,
+    pub responsible: Option<crate::extensions::tags::ProcessEvidence>,
+    pub evidence: Vec<String>,
+    pub configuration: Option<Box<ResourceConfiguration>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HostUsage {
+    pub reference: String,
+    pub identity: crate::extensions::ProcessIdentity,
+    pub cpu_percent: Option<f64>,
+    pub resident_bytes: Option<u64>,
+}
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Process {
     #[serde(skip)]
     pub roles: Vec<Role>,
+    #[serde(skip)]
+    pub supplementary_labels: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_resource: Option<Box<HostResource>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tag_report: Option<crate::extensions::tags::Report>,
     pub pid: u32,
@@ -20,6 +58,9 @@ pub struct Process {
     pub started_unix_us: Option<u64>,
     pub uptime_seconds: Option<u64>,
     pub name: String,
+    pub original_name: Option<String>,
+    pub name_source: Option<NameSource>,
+    pub version: Option<Version>,
     pub executable: Option<PathBuf>,
     pub cwd: Option<PathBuf>,
     pub command: Option<ProcessCommand>,
@@ -46,10 +87,31 @@ impl Process {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Version {
+    pub subject: String,
+    pub value: String,
+    pub basis: String,
+    pub source: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NameReason {
+    Work,
+    Name,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct NameSource {
+    pub reason: NameReason,
+    pub source: String,
+    pub basis: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Role {
     pub provider: String,
-    pub version: String,
     pub key: String,
     pub label: String,
     pub basis: String,
@@ -59,7 +121,6 @@ pub struct Role {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Resource {
     pub provider: String,
-    pub version: String,
     pub id: String,
     pub kind: String,
     pub label: String,
@@ -87,14 +148,12 @@ pub struct DetailField {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExtensionDetails {
     pub provider: String,
-    pub version: String,
     pub fields: Vec<DetailField>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExtensionAttribution {
     pub provider: String,
-    pub version: String,
     pub key: String,
     pub label: String,
     pub basis: String,
@@ -170,7 +229,7 @@ impl Totals {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Grouping {
     Category,
@@ -181,6 +240,7 @@ pub enum Grouping {
     Repo,
     Checkout,
     Project,
+    Work,
     Bin,
     System,
     Unknown,
@@ -197,6 +257,7 @@ impl Grouping {
             Self::Repo => "repo",
             Self::Checkout => "checkout",
             Self::Project => "project",
+            Self::Work => "work",
             Self::Bin => "bin",
             Self::System => "system",
             Self::Unknown => "unknown",
@@ -206,6 +267,10 @@ impl Grouping {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Node {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub host_resources: Vec<HostUsage>,
+    #[serde(skip)]
+    pub category_order: Option<i32>,
     pub reference: String,
     pub name: String,
     pub kind: &'static str,
@@ -213,17 +278,35 @@ pub struct Node {
     pub evidence: Vec<String>,
     pub attribution: Option<Attribution>,
     pub diagnostics: Vec<Diagnostic>,
-    pub process: Option<Process>,
+    pub process: Option<Box<Process>>,
     pub resource: Option<Resource>,
     pub container: Option<crate::containers::Container>,
-    pub runtime: Option<crate::containers::Runtime>,
+    pub runtime: Option<Box<crate::containers::Runtime>>,
     pub container_totals: Option<crate::containers::ContainerTotals>,
     pub totals: Totals,
     pub children: Vec<Node>,
     pub omitted_children: usize,
+    pub version: Option<Version>,
 }
 
 impl Node {
+    pub fn display_name(&self) -> String {
+        let version = match &self.process {
+            Some(process) => process.version.as_ref().filter(|version| {
+                process
+                    .name_source
+                    .as_ref()
+                    .is_some_and(|source| source.reason == NameReason::Name)
+                    && version.subject.to_lowercase() == process.name.to_lowercase()
+            }),
+            None => self.version.as_ref(),
+        };
+        match version {
+            Some(version) => format!("{} {}", self.name, version.value),
+            None => self.name.clone(),
+        }
+    }
+
     pub fn group(
         reference: String,
         name: String,
@@ -231,6 +314,8 @@ impl Node {
         grouping: Grouping,
     ) -> Self {
         Self {
+            host_resources: vec![],
+            category_order: None,
             reference,
             name,
             kind: "group",
@@ -246,6 +331,7 @@ impl Node {
             totals: Totals::default(),
             children: Vec::new(),
             omitted_children: 0,
+            version: None,
         }
     }
 }
@@ -273,18 +359,20 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    pub fn project(&mut self, detail_pid: Option<u32>) {
-        project_node(&mut self.root, detail_pid);
+    pub fn project(&mut self, detail_pids: &[u32]) {
+        project_node(&mut self.root, detail_pids);
     }
 }
 
-pub fn project_node(node: &mut Node, detail_pid: Option<u32>) {
+pub fn project_node(node: &mut Node, detail_pids: &[u32]) {
     if let Some(process) = &mut node.process {
         process.roles.clear();
-        if Some(process.pid) != detail_pid {
+        if !detail_pids.contains(&process.pid) {
             process.tag_report = None;
             process.extension_details.clear();
             process.command = None;
+            node.diagnostics
+                .retain(|diagnostic| !diagnostic.is_process_details());
             node.evidence.clear();
             node.attribution = None;
         } else if process.tag_report.is_none() {
@@ -303,7 +391,7 @@ pub fn project_node(node: &mut Node, detail_pid: Option<u32>) {
         && node.resource.is_none()
     {
         let path = node.attribution.as_ref().and_then(|a| a.path.clone());
-        let external = node
+        let extension = node
             .attribution
             .as_ref()
             .is_some_and(|a| matches!(a.source, AttributionSource::Extension));
@@ -327,34 +415,82 @@ pub fn project_node(node: &mut Node, detail_pid: Option<u32>) {
         {
             node.evidence.push(format!("project {}", path.display()));
         }
-        if external {
+        if extension {
             node.attribution = None;
         }
     }
     for child in &mut node.children {
-        project_node(child, detail_pid);
+        project_node(child, detail_pids);
+    }
+}
+
+pub fn selector_pid(selector: &str) -> Option<u32> {
+    selector.strip_prefix("pid:")?.parse().ok()
+}
+
+#[derive(Clone, Debug)]
+pub struct Selection {
+    pub selector: String,
+    pub root: Option<Node>,
+    pub nested_in: Vec<String>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl Selection {
+    pub fn of(snapshot: &Snapshot) -> Self {
+        Self {
+            selector: snapshot.scope.clone(),
+            root: Some(snapshot.root.clone()),
+            nested_in: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+}
+
+impl Serialize for Selection {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut root = self.root.clone();
+        if let Some(root) = &mut root {
+            project_node(root, selector_pid(&self.selector).as_slice());
+        }
+        let mut state = serializer.serialize_struct("Selection", 4)?;
+        state.serialize_field("selector", &self.selector)?;
+        state.serialize_field("root", &root)?;
+        state.serialize_field("nested_in", &self.nested_in)?;
+        state.serialize_field("diagnostics", &self.diagnostics)?;
+        state.end()
+    }
+}
+
+pub struct Report<'a> {
+    pub snapshot: &'a Snapshot,
+    pub selections: &'a [Selection],
+}
+
+impl Serialize for Report<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let snapshot = self.snapshot;
+        let mut state = serializer.serialize_struct("Snapshot", 8)?;
+        state.serialize_field("extensions", &snapshot.extensions)?;
+        state.serialize_field("schema", &snapshot.schema)?;
+        state.serialize_field("captured_unix_ms", &snapshot.captured_unix_ms)?;
+        state.serialize_field("sample_ms", &snapshot.sample_ms)?;
+        state.serialize_field("collection_ms", &snapshot.collection_ms)?;
+        state.serialize_field("system", &snapshot.system)?;
+        state.serialize_field("warnings", &snapshot.warnings)?;
+        state.serialize_field("selections", self.selections)?;
+        state.end()
     }
 }
 
 impl Serialize for Snapshot {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut root = self.root.clone();
-        let detail_pid = self
-            .scope
-            .strip_prefix("pid:")
-            .and_then(|pid| pid.parse().ok());
-        project_node(&mut root, detail_pid);
-        let mut state = serializer.serialize_struct("Snapshot", 9)?;
-        state.serialize_field("extensions", &self.extensions)?;
-        state.serialize_field("schema", &self.schema)?;
-        state.serialize_field("captured_unix_ms", &self.captured_unix_ms)?;
-        state.serialize_field("sample_ms", &self.sample_ms)?;
-        state.serialize_field("collection_ms", &self.collection_ms)?;
-        state.serialize_field("system", &self.system)?;
-        state.serialize_field("scope", &self.scope)?;
-        state.serialize_field("warnings", &self.warnings)?;
-        state.serialize_field("root", &root)?;
-        state.end()
+        Report {
+            snapshot: self,
+            selections: &[Selection::of(self)],
+        }
+        .serialize(serializer)
     }
 }

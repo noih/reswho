@@ -4,11 +4,12 @@ use std::time::Instant;
 #[derive(Clone, Debug, Serialize)]
 pub struct Record {
     pub provider: String,
-    pub version: Option<String>,
     pub phase: String,
     pub result: String,
     pub reason: Option<String>,
     pub duration_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub argv: Option<crate::collect::ArgvCost>,
     #[serde(skip)]
     pub(crate) started: Option<Instant>,
 }
@@ -16,7 +17,6 @@ pub struct Record {
 impl Record {
     pub fn new(
         provider: &str,
-        version: Option<&str>,
         phase: &str,
         result: &str,
         reason: Option<&str>,
@@ -24,11 +24,11 @@ impl Record {
     ) -> Self {
         Self {
             provider: provider.chars().take(64).collect(),
-            version: version.map(|value| value.chars().take(64).collect()),
             phase: phase.into(),
             result: result.into(),
             reason: reason.map(|value| value.chars().take(128).collect()),
             duration_ms: started.map(|start| start.elapsed().as_secs_f64() * 1000.0),
+            argv: None,
             started,
         }
     }
@@ -37,9 +37,8 @@ impl Record {
     }
     pub fn line(&self) -> String {
         format!(
-            "{}/{} {} {} {} {}",
+            "{} {} {} {} {}",
             self.provider,
-            self.version.as_deref().unwrap_or("unknown"),
             self.phase,
             self.result,
             self.duration_ms

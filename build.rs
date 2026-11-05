@@ -1,8 +1,11 @@
 fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/containers/apple/xpc.c");
     println!("cargo:rerun-if-changed=src/containers/guard.c");
+    println!("cargo:rerun-if-changed=src/extensions/host/vm.c");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         cc::Build::new()
+            .file("src/extensions/host/vm.c")
             .file("src/containers/guard.c")
             .warnings_into_errors(true)
             .compile("reswho_guard");

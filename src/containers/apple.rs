@@ -2,16 +2,17 @@ mod xpc;
 
 use super::{
     attribution,
-    command::{Runner, RuntimeCommand},
+    command::{self, Runner, RuntimeCommand, fail},
     model::{Container, Mount, Port, Runtime},
     stats::Batch,
 };
 use crate::{
-    model::Diagnostic,
+    extensions::host::projects::Discovery,
+    extensions::host::stable_ref,
+    model::{Diagnostic, FailureReason},
     snapshot::Cancellation,
-    tree::{projects::Discovery, stable_ref},
 };
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -27,12 +28,21 @@ const MAX_CONTAINERS: usize = 256;
 #[serde(rename_all = "camelCase")]
 struct Configuration {
     id: String,
+    resources: Option<Resources>,
     creation_date: Option<String>,
     #[serde(default)]
     labels: BTreeMap<String, String>,
     init_process: Option<Process>,
     mounts: Option<Vec<Filesystem>>,
     published_ports: Option<Vec<PublishedPort>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Resources {
+    cpus: Option<u32>,
+    memory_in_bytes: Option<u64>,
+    cpu_overhead: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -90,16 +100,25 @@ fn inventory(runner: &mut impl Runner) -> Result<Vec<Item>> {
         "json".into(),
     ])?;
     if result.issue.is_some() {
-        bail!("Apple Container inventory unavailable; CLI diagnostics withheld");
+        return Err(
+            result.failure("Apple Container inventory unavailable; CLI diagnostics withheld")
+        );
     }
-    let items: Vec<Item> = serde_json::from_slice(&result.stdout)
-        .map_err(|_| anyhow::anyhow!("invalid Apple Container inventory"))?;
+    let items: Vec<Item> = serde_json::from_slice(&result.stdout).map_err(|_| {
+        fail(
+            FailureReason::DaemonError,
+            "invalid Apple Container inventory",
+        )
+    })?;
     let mut seen = BTreeSet::new();
     for item in &items {
         let id = &item.configuration.id;
         if id.is_empty() || id.len() > 1024 || id.chars().any(char::is_control) || !seen.insert(id)
         {
-            bail!("invalid or duplicate Apple Container ID");
+            return Err(fail(
+                FailureReason::DaemonError,
+                "invalid or duplicate Apple Container ID",
+            ));
         }
     }
     Ok(items)
@@ -127,6 +146,16 @@ fn apply(item: &Item, endpoint: &str, now: OffsetDateTime, discovery: &mut Disco
     let config = &item.configuration;
     let mut container = Container {
         runtime: "apple".into(),
+        host_scope: Some(format!("apple:{}", config.id)),
+        configuration: config.resources.as_ref().map(|r| {
+            Box::new(crate::model::ResourceConfiguration {
+                scope: "container_limit".into(),
+                cpus: r.cpus,
+                memory_bytes: r.memory_in_bytes,
+                cpu_overhead: r.cpu_overhead,
+            })
+        }),
+        metrics_scope: Some("in_vm".into()),
         endpoint_ref: endpoint.into(),
         id: config.id.clone(),
         name: config.id.clone(),
@@ -203,19 +232,33 @@ fn stable(before: &Item, after: &Item, now: OffsetDateTime) -> bool {
         && date(before.status.started_date.as_deref(), now).is_some()
 }
 
+#[cfg(test)]
 pub(super) fn collect(
     runner: &mut impl Runner,
     now: OffsetDateTime,
+    stats: impl FnMut(&[String]) -> Result<Batch>,
+) -> (Runtime, Vec<Container>) {
+    collect_with_service(runner, now, stats, || None)
+}
+
+pub(super) const SERVICE_LABEL: &str = "com.apple.container.apiserver";
+const LAUNCHCTL_SERVICE_NOT_FOUND: i32 = 113;
+
+pub(super) fn collect_with_service(
+    runner: &mut impl Runner,
+    now: OffsetDateTime,
     mut stats: impl FnMut(&[String]) -> Result<Batch>,
+    service: impl FnOnce() -> Option<i32>,
 ) -> (Runtime, Vec<Container>) {
     let start = Instant::now();
     let endpoint = stable_ref(
         "endpoint",
-        &format!("apple\0com.apple.container.apiserver\0{}", unsafe {
-            libc::geteuid()
-        }),
+        &format!("apple\0{SERVICE_LABEL}\0{}", unsafe { libc::geteuid() }),
     );
     let mut runtime = Runtime {
+        metrics_scope: Some("in_vm".into()),
+        host_scope: None,
+        configuration: None,
         name: "apple".into(),
         context: Some("local".into()),
         endpoint_ref: Some(endpoint.clone()),
@@ -322,12 +365,17 @@ pub(super) fn collect(
         }
         Ok(containers)
     })();
+    let mut probe = command::Probe::new(runner);
     let containers = result.unwrap_or_else(|error| {
-        runtime.unavailable.push(Diagnostic::new(
-            "collection_failed",
-            "apple",
-            error.to_string(),
-        ));
+        let mut diagnostic = probe.diagnose("collection_failed", "apple", &error, None);
+        if diagnostic.reason == Some(FailureReason::Unknown)
+            && !probe.canceled()
+            && !probe.expired()
+            && service() == Some(LAUNCHCTL_SERVICE_NOT_FOUND)
+        {
+            diagnostic.refine(FailureReason::EndpointNotFound, None);
+        }
+        runtime.unavailable.push(diagnostic);
         vec![]
     });
     runtime.collection_ms = start.elapsed().as_millis() as u64;
@@ -347,10 +395,65 @@ pub(super) fn native(
         sample_interval: interval,
         api_version: None,
     };
-    collect(&mut runner, OffsetDateTime::now_utc(), |ids| {
-        xpc::collect(ids, cancel, deadline, interval)
-    })
+    collect_with_service(
+        &mut runner,
+        OffsetDateTime::now_utc(),
+        |ids| xpc::collect(ids, cancel, deadline, interval),
+        || {
+            super::command::run_bounded(
+                std::path::Path::new("/bin/launchctl"),
+                &[
+                    "print".into(),
+                    format!("gui/{}/{SERVICE_LABEL}", unsafe { libc::geteuid() }),
+                ],
+                None,
+                cancel,
+                deadline,
+            )
+            .ok()
+            .filter(|output| !output.timed_out)
+            .and_then(|output| output.exit_code)
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn vm_disk(path: &std::path::Path, home: &std::path::Path) -> Option<String> {
+    let root = home.join("Library/Application Support/com.apple.container/containers");
+    let parts: Vec<_> = path.strip_prefix(root).ok()?.components().collect();
+    if let [
+        std::path::Component::Normal(id),
+        std::path::Component::Normal(disk),
+    ] = parts.as_slice()
+        && *disk == "rootfs.ext4"
+        && id.to_str().is_some_and(|s| {
+            !s.is_empty()
+                && s.len() <= 1024
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        })
+    {
+        return Some(format!("apple:{}", id.to_str()?));
+    }
+    None
+}
+
+pub(crate) fn vm_helper(
+    executable: &std::path::Path,
+) -> Option<(std::path::PathBuf, Option<std::path::PathBuf>, String)> {
+    let root = std::path::Path::new("/usr/local/libexec/container/plugins");
+    let parts: Vec<_> = executable.strip_prefix(root).ok()?.components().collect();
+    if parts
+        .iter()
+        .any(|p| !matches!(p, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    if executable == root.join("container-runtime-linux/bin/container-runtime-linux") {
+        Some((executable.to_path_buf(), None, "Apple Container".into()))
+    } else {
+        None
+    }
+}

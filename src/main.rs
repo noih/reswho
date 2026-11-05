@@ -23,14 +23,16 @@ with these formats and --help-md.
 Examples:
   reswho --md --sort cpu                Inspect a snapshot by CPU usage
   reswho --md --from pid:1234           Read one PID's details
+  reswho --json --from pid:1 --from pid:2 --from group:containers
+                                        Several selections from one snapshot
   reswho --md --from group:containers --depth all
   reswho --help-md                      Read the Markdown output guide
   reswho settings --json                Inspect effective settings offline
   reswho --set sampling.interval_ms=500 --md
-  reswho settings --set extensions.example.label=work
+  reswho settings --set extensions.node.entry_argv=false
 
 --set accepts registered core, shared.* and extensions.<id>.* keys.
-Extension keys require available manifest definitions; strings are raw text."
+Extension keys require compiled module definitions; strings are raw text."
 )]
 #[command(group(ArgGroup::new("format").args(["md", "json", "tui"])))]
 struct Args {
@@ -69,8 +71,9 @@ struct Args {
         help = "Explain Markdown output offline: rows, units and symbols"
     )]
     help_md: bool,
-    #[arg(long, help_heading = "Selection/expansion", default_value = "group:all", value_parser = parse_reference, help = "Select pid:<number> or group:<id>")]
-    from: String,
+    #[arg(long, help_heading = "Selection/expansion", value_parser = parse_reference, next_line_help = true, help = "Select pid:<number> or group:<id> (default group:all).
+Repeatable for --md/--json: one snapshot, a section per selection")]
+    from: Vec<String>,
     #[arg(long, help_heading = "Selection/expansion", next_line_help = true, default_value = "2", value_parser = parse_depth, help = "Depth / initial TUI expansion (0..128 or all)")]
     depth: usize,
     #[arg(
@@ -127,7 +130,7 @@ impl Args {
 enum Command {
     #[command(about = "Show effective settings offline without collecting resources")]
     Settings,
-    #[command(about = "List built-in/installed extensions offline; manage sources")]
+    #[command(about = "List extensions offline; enable or disable sources")]
     Extensions {
         #[command(subcommand)]
         action: Option<ExtensionAction>,
@@ -136,28 +139,88 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum ExtensionAction {
-    #[command(about = "Register an external extension from its manifest")]
-    Install { manifest: PathBuf },
-    #[command(about = "Enable an installed external extension")]
+    #[command(about = "Enable an extension")]
     Enable { id: String },
-    #[command(about = "Disable an installed external extension")]
+    #[command(about = "Disable an extension")]
     Disable { id: String },
-    #[command(about = "Unregister an external extension without deleting its files")]
-    Remove { id: String },
 }
 
 fn parse_reference(value: &str) -> Result<String, String> {
-    let valid = value
+    if let Some(pid) = value
         .strip_prefix("pid:")
-        .is_some_and(|pid| pid.parse::<u32>().is_ok_and(|pid| pid > 0))
-        || value.strip_prefix("group:").is_some_and(|group| {
-            !group.is_empty() && group.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-        });
-    if valid {
+        .and_then(|pid| pid.parse::<u32>().ok())
+        .filter(|pid| *pid > 0)
+    {
+        return Ok(format!("pid:{pid}"));
+    }
+    if value.strip_prefix("group:").is_some_and(|group| {
+        !group.is_empty() && group.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    }) {
         Ok(value.into())
     } else {
         Err("expected pid:<positive number> or group:<id>".into())
     }
+}
+
+fn selectors(from: &[String]) -> Vec<String> {
+    let mut selectors: Vec<String> = Vec::new();
+    for selector in from {
+        if !selectors.contains(selector) {
+            selectors.push(selector.clone());
+        }
+    }
+    if selectors.is_empty() {
+        selectors.push("group:all".into());
+    }
+    selectors
+}
+
+fn select(
+    root: &reswho::model::Node,
+    selectors: &[String],
+    sort: Sort,
+) -> Vec<reswho::model::Selection> {
+    let mut selections: Vec<_> = selectors
+        .iter()
+        .map(|selector| {
+            let (root, diagnostics) = match tree::select(root, selector) {
+                Ok(mut node) => {
+                    sort.apply(&mut node);
+                    (Some(node), Vec::new())
+                }
+                Err(error) => (
+                    None,
+                    vec![reswho::model::Diagnostic::new(
+                        "not_found",
+                        "selection",
+                        format!("{error:#}"),
+                    )],
+                ),
+            };
+            reswho::model::Selection {
+                selector: selector.clone(),
+                root,
+                nested_in: Vec::new(),
+                diagnostics,
+            }
+        })
+        .collect();
+    for index in 0..selections.len() {
+        let nested_in = selections
+            .iter()
+            .enumerate()
+            .filter(|(other, outer)| {
+                *other != index
+                    && selections[index].root.is_some()
+                    && outer.root.as_ref().is_some_and(|outer| {
+                        tree::select(outer, &selections[index].selector).is_ok()
+                    })
+            })
+            .map(|(_, outer)| outer.selector.clone())
+            .collect();
+        selections[index].nested_in = nested_in;
+    }
+    selections
 }
 
 fn parse_depth(value: &str) -> Result<usize, String> {
@@ -171,7 +234,8 @@ fn parse_depth(value: &str) -> Result<usize, String> {
         .ok_or_else(|| "expected 0..128 or all".into())
 }
 
-fn run() -> Result<()> {
+fn run() -> Result<usize> {
+    let mut partial = 0;
     let arguments: Vec<_> = std::env::args_os().collect();
     let mut args = Args::parse_from(&arguments);
     args.set.clear();
@@ -208,30 +272,34 @@ fn run() -> Result<()> {
             args.set.is_empty(),
             "--set cannot be used with extension lifecycle actions"
         );
-        let path = extensions::state::State::path(args.config.as_deref())?;
-        extensions::state::State::startup(&path)?;
-        extensions::state::State::mutate(&path, |state| match action {
-            ExtensionAction::Install { manifest } => {
-                state.install_explicit(extensions::state::Manifest::read(manifest)?, manifest)
-            }
-            ExtensionAction::Enable { id } => state.toggle(id, true, false),
-            ExtensionAction::Disable { id } => state.toggle(id, false, false),
-            ExtensionAction::Remove { id } => state.toggle(id, false, true),
-        })?;
-        "Extension registry updated\n".into()
+        let (ExtensionAction::Enable { id } | ExtensionAction::Disable { id }) = action;
+        let config_path = args.config.clone().or_else(settings::default_path);
+        let baseline = settings::Config::load_path(config_path.as_deref(), false)?;
+        let mut editor = settings::edit::Settings::new(
+            extensions::settings_registry()?,
+            baseline,
+            Default::default(),
+            config_path,
+        );
+        editor.save_extensions(
+            None,
+            None,
+            &std::collections::BTreeMap::from([(
+                id.clone(),
+                matches!(action, ExtensionAction::Enable { .. }),
+            )]),
+        )?;
+        "Extension settings updated\n".into()
     } else {
-        let mut state = extensions::state::State::startup(&extensions::state::State::path(
-            args.config.as_deref(),
-        )?)?;
         let user = settings::Config::load(args.config.as_deref())?;
-        let registry = state.registry_reported()?;
+        let registry = extensions::settings_registry()?;
         let overrides = registry.parse_overrides(&args.set)?;
         let resolved = registry.resolve(&user, &overrides)?;
         for key in &resolved.report().unknown_keys {
             eprintln!("reswho: unknown setting {key} (not applied)");
         }
         if matches!(args.command, Some(Command::Extensions { .. })) {
-            let entries = state.list(&resolved, !args.no_containers);
+            let entries = extensions::inventory::list(&resolved, !args.no_containers);
             if args.json {
                 format!("{}\n", serde_json::to_string_pretty(&entries)?)
             } else {
@@ -239,10 +307,8 @@ fn run() -> Result<()> {
                     .iter()
                     .map(|entry| {
                         format!(
-                            "{}/{} source={} capabilities={} enabled={} availability={} requires={} compatible={} reason={}\n",
+                            "{} capabilities={} enabled={} availability={} reason={}\n",
                             entry.descriptor.id,
-                            entry.descriptor.version,
-                            entry.descriptor.source,
                             entry
                                 .descriptor
                                 .capabilities
@@ -252,7 +318,7 @@ fn run() -> Result<()> {
                                 .join(","),
                             entry.descriptor.enabled,
                             entry.descriptor.availability,
-                            entry.requires, entry.compatible, entry.reason.as_deref().unwrap_or("none")
+                            entry.reason.as_deref().unwrap_or("none"),
                         )
                     })
                     .collect()
@@ -267,11 +333,8 @@ fn run() -> Result<()> {
                     .iter()
                     .map(|(key, setting)| {
                         format!(
-                            "{key} = {} (source: {}, definition: {}/{})\n",
-                            setting.value,
-                            setting.source,
-                            setting.definition.provider,
-                            setting.definition.version
+                            "{key} = {} (source: {}, definition: {})\n",
+                            setting.value, setting.source, setting.definition.provider
                         )
                     })
                     .collect()
@@ -279,20 +342,25 @@ fn run() -> Result<()> {
         } else {
             let refresh_interval = resolved.interval("refresh.interval_ms");
             let resolved = Arc::new(resolved);
+            let selectors = selectors(&args.from);
+            anyhow::ensure!(
+                !args.tui || selectors.len() == 1,
+                "--tui accepts one --from; use --md or --json for several selections"
+            );
             if args.tui
                 || (!args.md
                     && !args.json
+                    && selectors.len() == 1
                     && io::stdin().is_terminal()
                     && io::stdout().is_terminal())
             {
                 return tui::run(
                     Options {
                         settings: Arc::clone(&resolved),
-                        extensions: Arc::new(state.clone()),
                         containers: !args.no_containers,
-                        command_pid: None,
+                        command_pids: Vec::new(),
                     },
-                    args.from,
+                    selectors[0].clone(),
                     args.depth,
                     args.sort,
                     refresh_interval,
@@ -302,28 +370,43 @@ fn run() -> Result<()> {
                         overrides,
                         args.config.or_else(settings::default_path),
                     ),
-                );
+                )
+                .map(|_| 0);
             }
-            let mut snapshot = snapshot::capture(
+            let snapshot = snapshot::capture(
                 &Options {
                     settings: Arc::clone(&resolved),
-                    extensions: Arc::new(state.clone()),
                     containers: !args.no_containers,
-                    command_pid: args
-                        .from
-                        .strip_prefix("pid:")
-                        .and_then(|pid| pid.parse().ok()),
+                    command_pids: selectors
+                        .iter()
+                        .filter_map(|selector| reswho::model::selector_pid(selector))
+                        .collect(),
                 },
                 &Cancellation::default(),
             )?;
-            snapshot.root = tree::select(&snapshot.root, &args.from)?;
-            snapshot.scope = args.from;
-            args.sort.apply(&mut snapshot.root);
+            let mut selections = select(&snapshot.root, &selectors, args.sort);
+            let missing: Vec<_> = selections
+                .iter()
+                .filter(|selection| selection.root.is_none())
+                .flat_map(|selection| &selection.diagnostics)
+                .map(|diagnostic| diagnostic.message.clone())
+                .collect();
+            anyhow::ensure!(missing.len() < selections.len(), "{}", missing.join("; "));
+            partial = missing.len();
             if args.json {
-                tree::limit_depth(&mut snapshot.root, args.depth);
-                format!("{}\n", serde_json::to_string_pretty(&snapshot)?)
+                for root in selections
+                    .iter_mut()
+                    .filter_map(|selection| selection.root.as_mut())
+                {
+                    tree::limit_depth(root, args.depth);
+                }
+                let report = reswho::model::Report {
+                    snapshot: &snapshot,
+                    selections: &selections,
+                };
+                format!("{}\n", serde_json::to_string_pretty(&report)?)
             } else {
-                let mut text = output::markdown_with_depth(&snapshot, args.depth);
+                let mut text = output::markdown_selections(&snapshot, &selections, args.depth);
                 if args.profile {
                     text.push_str(&output::extension_profile(&snapshot.extensions));
                 }
@@ -332,15 +415,22 @@ fn run() -> Result<()> {
         }
     };
     match io::stdout().lock().write_all(content.as_bytes()) {
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
-        result => result.context("write output"),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(partial),
+        result => result.context("write output").map(|_| partial),
     }
 }
 
 fn main() {
-    if let Err(error) = run() {
-        eprintln!("reswho: {error:#}");
-        std::process::exit(1);
+    match run() {
+        Ok(0) => {}
+        Ok(missing) => {
+            eprintln!("reswho: {missing} selection(s) not found; see their diagnostics");
+            std::process::exit(3);
+        }
+        Err(error) => {
+            eprintln!("reswho: {error:#}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -376,6 +466,107 @@ mod tests {
                 .validate_formats()
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn repeated_from_mixes_kinds_normalizes_and_deduplicates_in_order() {
+        let args = Args::try_parse_from([
+            "reswho",
+            "--json",
+            "--from",
+            "pid:7",
+            "--from",
+            "group:abc-1",
+            "--from",
+            "pid:07",
+            "--from",
+            "pid:8",
+        ])
+        .unwrap();
+        assert_eq!(
+            selectors(&args.from),
+            ["pid:7", "group:abc-1", "pid:8"].map(String::from)
+        );
+        assert_eq!(selectors(&[]), ["group:all".to_owned()]);
+        assert_eq!(
+            selectors(
+                &Args::try_parse_from(["reswho", "--from", "pid:3"])
+                    .unwrap()
+                    .from
+            ),
+            ["pid:3".to_owned()]
+        );
+        for invalid in [
+            "pid:0",
+            "pid:x",
+            "group:",
+            "group:a_b",
+            "proc:1",
+            "pid:4294967296",
+        ] {
+            assert!(
+                Args::try_parse_from(["reswho", "--from", "pid:1", "--from", invalid]).is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn selections_keep_order_report_missing_and_nested_scopes() {
+        let process = |pid, ppid| reswho::model::Process {
+            pid,
+            ppid: Some(ppid),
+            started_unix_us: Some(u64::from(pid)),
+            name: format!("p{pid}"),
+            executable: Some("/opt/tool/run".into()),
+            resident_bytes: Some(10),
+            ..Default::default()
+        };
+        let root = tree::build(vec![process(10, 1), process(11, 10)]).unwrap();
+        let selected = select(
+            &root,
+            &["pid:11", "group:all", "pid:4294967295", "pid:10"].map(String::from),
+            Sort::Name,
+        );
+        let summary: Vec<_> = selected
+            .iter()
+            .map(|selection| {
+                (
+                    selection.selector.as_str(),
+                    selection.root.is_some(),
+                    selection.nested_in.clone(),
+                    selection
+                        .diagnostics
+                        .iter()
+                        .map(|d| d.code.clone())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (
+                    "pid:11",
+                    true,
+                    vec!["group:all".into(), "pid:10".into()],
+                    vec![]
+                ),
+                ("group:all", true, vec![], vec![]),
+                (
+                    "pid:4294967295",
+                    false,
+                    vec![],
+                    vec!["not_found".to_owned()]
+                ),
+                ("pid:10", true, vec!["group:all".into()], vec![]),
+            ]
+        );
+        assert!(
+            selected[2].diagnostics[0]
+                .message
+                .contains("pid:4294967295")
+        );
     }
 
     #[test]

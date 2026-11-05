@@ -16,7 +16,6 @@ fn definition(id: &str, key: &str, default: u64) -> Definition {
         default: json!(default),
         description: "Fixture setting".into(),
         provider: id.into(),
-        version: "1".into(),
         sensitive: false,
     }
 }
@@ -163,7 +162,7 @@ fn uses_resolve_after_all_definitions_and_validate_namespaces() {
 }
 
 #[test]
-fn invalid_values_never_fall_back_but_cli_can_replace_invalid_user_value() {
+fn invalid_stored_values_use_defaults_but_explicit_cli_remains_strict() {
     let registry = Registry::core();
     for value in [
         json!(null),
@@ -175,7 +174,13 @@ fn invalid_values_never_fall_back_but_cli_can_replace_invalid_user_value() {
         json!(5001),
     ] {
         let user = config(json!({"sampling.interval_ms":value}));
-        assert!(registry.resolve(&user, &BTreeMap::new()).is_err());
+        assert_eq!(
+            registry
+                .resolve(&user, &BTreeMap::new())
+                .unwrap()
+                .get("sampling.interval_ms"),
+            Some(&json!(250))
+        );
         let cli = BTreeMap::from([("sampling.interval_ms".into(), json!(500))]);
         assert_eq!(
             registry
@@ -192,13 +197,15 @@ fn invalid_values_never_fall_back_but_cli_can_replace_invalid_user_value() {
         json!(1.5),
         json!(18446744073709551616.0),
     ] {
-        assert!(
+        assert_eq!(
             registry
                 .resolve(
                     &config(json!({"refresh.interval_ms":value})),
                     &BTreeMap::new()
                 )
-                .is_err()
+                .unwrap()
+                .get("refresh.interval_ms"),
+            Some(&json!(2000))
         );
     }
     for value in [200, 5000] {
@@ -251,9 +258,9 @@ fn exclusive_errors_are_isolated_and_sensitive_reports_are_redacted() {
     let result = registry
         .resolve(&config(json!({"extensions.a.token":123})), &BTreeMap::new())
         .unwrap();
-    assert!(result.get("extensions.a.token").is_none());
+    assert_eq!(result.get("extensions.a.token"), Some(&json!("SECRET")));
     assert!(result.get("sampling.interval_ms").is_some());
-    assert!(result.report().disabled_extensions.contains_key("a"));
+    assert!(!result.report().disabled_extensions.contains_key("a"));
     assert!(
         !serde_json::to_string(result.report())
             .unwrap()
@@ -280,11 +287,9 @@ fn config_is_versioned_read_only_and_missing_defaults_are_optional() {
         r#"{"settings":{}}"#,
     ] {
         std::fs::write(&path, contents).unwrap();
-        let error = Config::load_path(Some(&path), true)
-            .err()
-            .unwrap()
-            .to_string();
-        assert!(!error.contains("SECRET"));
+        let recovered = Config::load_path(Some(&path), true).unwrap();
+        assert!(recovered.settings.is_empty());
+        assert_eq!(recovered.recovery.as_deref(), Some(contents.as_bytes()));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), contents);
     }
     std::fs::write(
@@ -354,16 +359,18 @@ fn defaults_types_allowed_values_and_owners_are_validated_before_commit() {
             &BTreeMap::new(),
         )
         .unwrap();
-    assert!(invalid.report().disabled_extensions.contains_key("a"));
+    assert_eq!(invalid.get("extensions.a.enabled"), Some(&json!(true)));
     let mut choice = definition("b", "shared.choice", 1);
     choice.contract.limits.allowed = Some(vec![json!(1), json!(2)]);
     registry
         .register_extension("b", vec![choice], vec![])
         .unwrap();
-    assert!(
+    assert_eq!(
         registry
             .resolve(&config(json!({"shared.choice":3})), &BTreeMap::new())
-            .is_err()
+            .unwrap()
+            .get("shared.choice"),
+        Some(&json!(1))
     );
     let mut impostor = definition("a", "shared.impostor", 1);
     impostor.provider = "b".into();
@@ -449,7 +456,7 @@ fn allowed_sets_ignore_order_in_declarations_and_uses_without_changing_canonical
 
 #[test]
 fn public_scalar_metadata_supports_signed_fractional_numbers_and_safe_integer_intervals() {
-    let definition:Definition=serde_json::from_value(json!({"key":"shared.number","type":"number","min":-2.5,"max":2.5,"default":-1.25,"description":"number","provider":"a","version":"1.0.0","sensitive":false})).unwrap();
+    let definition:Definition=serde_json::from_value(json!({"key":"shared.number","type":"number","min":-2.5,"max":2.5,"default":-1.25,"description":"number","provider":"a","sensitive":false})).unwrap();
     let mut registry = Registry::core();
     registry
         .register_extension("a", vec![definition], vec![])
@@ -483,33 +490,39 @@ fn public_scalar_metadata_supports_signed_fractional_numbers_and_safe_integer_in
         json!("1"),
         json!(true),
     ] {
-        assert!(
+        assert_eq!(
             registry
                 .resolve(&config(json!({"shared.number":value})), &BTreeMap::new())
-                .is_err()
+                .unwrap()
+                .get("shared.number"),
+            Some(&json!(-1.25))
         );
     }
-    let exact:Definition=serde_json::from_value(json!({"key":"shared.exact","type":"number","integer":true,"min":9007199254740993u64,"default":9007199254740994u64,"description":"exact","provider":"exact","version":"1.0.0","sensitive":false})).unwrap();
+    let exact:Definition=serde_json::from_value(json!({"key":"shared.exact","type":"number","integer":true,"min":9007199254740993u64,"default":9007199254740994u64,"description":"exact","provider":"exact","sensitive":false})).unwrap();
     registry
         .register_extension("exact", vec![exact], vec![])
         .unwrap();
-    assert!(
+    assert_eq!(
         registry
             .resolve(
                 &config(json!({"shared.exact":9007199254740992u64})),
                 &BTreeMap::new()
             )
-            .is_err()
+            .unwrap()
+            .get("shared.exact"),
+        Some(&json!(9007199254740994u64))
     );
     assert!(serde_json::from_value::<Definition>(json!({"key":"shared.false","type":"number","integer":false,"default":1,"description":"false flag","sensitive":false})).is_err());
-    let integer:Definition=serde_json::from_value(json!({"key":"shared.integer","type":"number","integer":true,"default":-2,"description":"whole","provider":"b","version":"1.0.0","sensitive":false})).unwrap();
+    let integer:Definition=serde_json::from_value(json!({"key":"shared.integer","type":"number","integer":true,"default":-2,"description":"whole","provider":"b","sensitive":false})).unwrap();
     registry
         .register_extension("b", vec![integer], vec![])
         .unwrap();
-    assert!(
+    assert_eq!(
         registry
             .resolve(&config(json!({"shared.integer":-0.5})), &BTreeMap::new())
-            .is_err()
+            .unwrap()
+            .get("shared.integer"),
+        Some(&json!(-2))
     );
     assert_eq!(
         registry
@@ -522,7 +535,7 @@ fn public_scalar_metadata_supports_signed_fractional_numbers_and_safe_integer_in
 
 #[test]
 fn public_options_are_homogeneous_nonempty_scalar_sets_with_canonical_defaults() {
-    let wire = json!({"key":"shared.choice","type":"number","options":[-1.5,0,2.5],"default":-1.5,"description":"choice","provider":"a","version":"1.0.0","sensitive":false});
+    let wire = json!({"key":"shared.choice","type":"number","options":[-1.5,0,2.5],"default":-1.5,"description":"choice","provider":"a","sensitive":false});
     let first: Definition = serde_json::from_value(wire.clone()).unwrap();
     let mut registry = Registry::core();
     registry
@@ -551,10 +564,12 @@ fn public_options_are_homogeneous_nonempty_scalar_sets_with_canonical_defaults()
             .provider,
         "a"
     );
-    assert!(
+    assert_eq!(
         registry
             .resolve(&config(json!({"shared.choice":1})), &BTreeMap::new())
-            .is_err()
+            .unwrap()
+            .get("shared.choice"),
+        Some(&json!(-1.5))
     );
     for options in [
         json!([]),
@@ -616,29 +631,17 @@ fn public_options_are_homogeneous_nonempty_scalar_sets_with_canonical_defaults()
 }
 
 #[test]
-fn public_manifest_schema_and_report_agree_on_scalar_metadata() {
-    let schema: Value = serde_json::from_str(include_str!(
-        "../../schemas/reswho-extension-manifest-1.schema.json"
-    ))
-    .unwrap();
-    let example: Value =
-        serde_json::from_str(include_str!("../../examples/extensions/example.json")).unwrap();
-    assert!(
-        jsonschema::validator_for(&schema)
-            .unwrap()
-            .is_valid(&example)
-    );
-    let definition_schema = json!({"$defs":schema["$defs"],"$ref":"#/$defs/definition"});
-    let validator = jsonschema::validator_for(&definition_schema).unwrap();
+fn internal_definitions_expose_scalar_metadata_without_release_versions() {
     let report = Registry::core()
         .resolve(&Config::default(), &BTreeMap::new())
         .unwrap();
     for effective in report.report().settings.values() {
         let definition = serde_json::to_value(&effective.definition).unwrap();
-        assert!(validator.is_valid(&definition), "{definition}");
+        assert!(definition.get("type").is_some());
+        assert!(definition.get("version").is_none());
     }
     let invalid = json!({"key":"shared.x","type":"number","options":[1,"bad"],"default":1,"description":"invalid","sensitive":false});
-    assert!(!validator.is_valid(&invalid));
+    assert!(serde_json::from_value::<Definition>(invalid).is_err());
 }
 
 #[test]
@@ -792,14 +795,17 @@ fn private_repairs_save_real_sensitive_values_and_keep_prior_effective_on_failur
     let owner = tempfile::tempdir().unwrap();
     let path = owner.path().canonicalize().unwrap().join("config.json");
     let mut registry = Registry::core();
-    let secret: Definition = serde_json::from_value(json!({"key":"extensions.a.secret","type":"string","default":"private-default","description":"Secret","provider":"a","version":"1","sensitive":true})).unwrap();
+    let secret: Definition = serde_json::from_value(json!({"key":"extensions.a.secret","type":"string","default":"private-default","description":"Secret","provider":"a","sensitive":true})).unwrap();
     registry
         .register_extension("a", vec![secret], vec![])
         .unwrap();
     let baseline = config(json!({"extensions.a.secret":false}));
     std::fs::write(&path, serde_json::to_vec(&baseline).unwrap()).unwrap();
     let before = registry.resolve(&baseline, &BTreeMap::new()).unwrap();
-    assert!(before.get("extensions.a.secret").is_none());
+    assert_eq!(
+        before.get("extensions.a.secret"),
+        Some(&json!("private-default"))
+    );
     let mut editor = Settings::new(registry, baseline, BTreeMap::new(), Some(path.clone()));
     assert!(
         editor
@@ -820,7 +826,10 @@ fn private_repairs_save_real_sensitive_values_and_keep_prior_effective_on_failur
         applied.get("extensions.a.secret"),
         Some(&json!("new-private-value"))
     );
-    assert!(before.get("extensions.a.secret").is_none());
+    assert_eq!(
+        before.get("extensions.a.secret"),
+        Some(&json!("private-default"))
+    );
     assert_eq!(
         Config::load(Some(&path)).unwrap().settings["extensions.a.secret"],
         json!("new-private-value")
@@ -912,4 +921,209 @@ fn source_priority_persists_atomically_conflicts_and_does_not_change_definitions
     assert!(editor.save_priority(&["a".into()]).is_err());
     assert_eq!(saved.source_priority, config.source_priority);
     root.close().unwrap();
+}
+
+#[test]
+fn disabled_builtin_config_is_effective_after_restart() {
+    let user: Config = serde_json::from_value(json!({
+        "version": 1, "settings": {}, "disabled_builtins": ["project", "future", "bin", "app_bundle", "command"]
+    }))
+    .unwrap();
+    let registry = crate::extensions::settings_registry().unwrap();
+    let resolved = registry.resolve(&user, &BTreeMap::new()).unwrap();
+    assert!(resolved.is_disabled("project"));
+    for id in ["bin", "app_bundle", "command", "future"] {
+        assert!(!resolved.is_disabled(id), "{id} is not a builtin extension");
+    }
+    let inventory = crate::extensions::inventory::list(&resolved, true);
+    let project = inventory
+        .iter()
+        .find(|e| e.descriptor.id == "project")
+        .unwrap();
+    assert!(!project.explicit_enabled && !project.descriptor.enabled);
+    assert!(
+        project
+            .report
+            .iter()
+            .all(|r| r.result == "skipped" && r.duration_ms.is_none())
+    );
+}
+
+#[test]
+fn builtin_and_priority_transaction_preserves_concurrent_keys_and_rolls_back_conflicts() {
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let path = root.path().join("config.json");
+    let baseline: Config = serde_json::from_value(json!({"version":1,"settings":{"future.key":17},"disabled_builtins":["future"],"source_priority":["missing"],"ownership_priority":["unknown"]})).unwrap();
+    std::fs::write(&path, serde_json::to_vec(&baseline).unwrap()).unwrap();
+    let mut editor = edit::Settings::new(
+        crate::extensions::settings_registry().unwrap(),
+        baseline.clone(),
+        BTreeMap::new(),
+        Some(path.clone()),
+    );
+    let initial = editor
+        .registry
+        .resolve(&baseline, &BTreeMap::new())
+        .unwrap();
+    let mut concurrent = baseline.clone();
+    concurrent.settings.insert("other.key".into(), json!(19));
+    concurrent.disabled_builtins.push("node".into());
+    std::fs::write(&path, serde_json::to_vec(&concurrent).unwrap()).unwrap();
+    let applied = editor
+        .save_extensions(
+            Some(&["external".into(), "app_bundle".into(), "missing".into()]),
+            Some(&["project".into(), "unknown".into()]),
+            &BTreeMap::from([("project".into(), false)]),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(!initial.is_disabled("project"));
+    assert!(applied.is_disabled("project") && applied.is_disabled("node"));
+    let saved = Config::load_path(Some(&path), true).unwrap();
+    assert_eq!(saved.settings, concurrent.settings);
+    assert!(saved.disabled_builtins.contains(&"future".into()));
+    let mut conflict = saved.clone();
+    conflict.disabled_builtins.retain(|id| id != "project");
+    std::fs::write(&path, serde_json::to_vec(&conflict).unwrap()).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(
+        editor
+            .save_extensions(
+                Some(&["bin".into()]),
+                None,
+                &BTreeMap::from([("project".into(), true)])
+            )
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(editor.baseline.source_priority, saved.source_priority);
+    std::fs::write(&path, b"malformed").unwrap();
+    assert!(
+        editor
+            .save_extensions(None, None, &BTreeMap::from([("node".into(), true)]))
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"malformed");
+    root.close().unwrap();
+}
+
+#[test]
+fn stale_values_use_defaults_and_save_repairs_only_registered_values() {
+    use super::edit::Settings;
+    let owner = tempfile::tempdir_in("/private/tmp").unwrap();
+    let path = owner.path().join("config.json");
+    let mut registry = Registry::core();
+    registry
+        .register_extension(
+            "a",
+            vec![
+                definition("a", "shared.fixture", 7),
+                definition("a", "extensions.a.fixture", 8),
+            ],
+            vec![],
+        )
+        .unwrap();
+    let baseline = config(
+        json!({"refresh.interval_ms":"private-bad", "sampling.interval_ms":400, "shared.fixture":false, "extensions.a.fixture":null, "future.key":{"keep":true}}),
+    );
+    std::fs::write(&path, serde_json::to_vec(&baseline).unwrap()).unwrap();
+    let resolved = registry.resolve(&baseline, &BTreeMap::new()).unwrap();
+    assert_eq!(resolved.get("refresh.interval_ms"), Some(&json!(2000)));
+    assert_eq!(resolved.get("shared.fixture"), Some(&json!(7)));
+    assert_eq!(resolved.get("extensions.a.fixture"), Some(&json!(8)));
+    assert!(
+        !serde_json::to_string(resolved.report())
+            .unwrap()
+            .contains("private-bad")
+    );
+    let mut editor = Settings::new(registry, baseline, BTreeMap::new(), Some(path.clone()));
+    assert!(editor.save(&BTreeMap::new()).unwrap().is_some());
+    let saved = Config::load(Some(&path)).unwrap();
+    assert_eq!(saved.settings["refresh.interval_ms"], 2000);
+    assert_eq!(saved.settings["sampling.interval_ms"], 400);
+    assert_eq!(saved.settings["shared.fixture"], 7);
+    assert_eq!(saved.settings["extensions.a.fixture"], 8);
+    assert_eq!(saved.settings["future.key"], json!({"keep":true}));
+    assert!(editor.save(&BTreeMap::new()).unwrap().is_none());
+    owner.close().unwrap();
+}
+
+#[test]
+fn malformed_recovery_backs_up_exact_bytes_and_rejects_changed_baselines() {
+    use super::edit::Settings;
+    use std::os::unix::fs::PermissionsExt;
+    for bytes in [
+        b"{private-broken".as_slice(),
+        br#"{"version":2,"settings":{"private":"value"}}"#,
+    ] {
+        let owner = tempfile::tempdir_in("/private/tmp").unwrap();
+        let path = owner.path().join("config.json");
+        std::fs::write(&path, bytes).unwrap();
+        let baseline = Config::load(Some(&path)).unwrap();
+        assert!(baseline.settings.is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let mut editor = Settings::new(
+            Registry::core(),
+            baseline,
+            BTreeMap::new(),
+            Some(path.clone()),
+        );
+        std::fs::write(&path, b"different corruption").unwrap();
+        assert!(editor.save(&BTreeMap::new()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"different corruption");
+        std::fs::write(&path, bytes).unwrap();
+        assert!(editor.save(&BTreeMap::new()).unwrap().is_some());
+        let backups: Vec<_> = std::fs::read_dir(owner.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|e| e == "bak"))
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), bytes);
+        assert_eq!(
+            std::fs::metadata(&backups[0]).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let saved = Config::load(Some(&path)).unwrap();
+        assert_eq!(saved.version, 1);
+        assert!(editor.save(&BTreeMap::new()).unwrap().is_none());
+        std::fs::write(&path, b"fresh corruption").unwrap();
+        assert!(
+            editor
+                .save(&BTreeMap::from([(
+                    "sampling.interval_ms".into(),
+                    Some(json!(400))
+                )]))
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"fresh corruption");
+        owner.close().unwrap();
+    }
+}
+
+#[test]
+fn recovery_backup_creation_failure_never_replaces_original() {
+    use super::edit::Settings;
+    let owner = tempfile::tempdir_in("/private/tmp").unwrap();
+    let path = owner.path().join("c".repeat(230));
+    let original = b"owned malformed original";
+    std::fs::write(&path, original).unwrap();
+    let baseline = Config::load(Some(&path)).unwrap();
+    let mut editor = Settings::new(
+        Registry::core(),
+        baseline,
+        BTreeMap::new(),
+        Some(path.clone()),
+    );
+    assert!(editor.save(&BTreeMap::new()).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert!(editor.baseline.recovery.is_some());
+    assert!(!std::fs::read_dir(owner.path()).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_some_and(|ext| ext == "bak")
+    }));
+    owner.close().unwrap();
 }

@@ -115,13 +115,24 @@ fn settings_and_extensions_keep_navigation_in_their_own_context() {
     use serde_json::json;
     let mut app = app();
     let mut registry = Registry::core();
-    registry.register_extension("fixture", vec![serde_json::from_value(json!({
-        "key":"extensions.fixture.choice", "type":"string", "options":["a","b","c"],
-        "default":"a", "description":"Choice", "provider":"fixture", "version":"1", "sensitive":false
-    })).unwrap(), serde_json::from_value(json!({
-        "key":"extensions.fixture.text", "type":"string", "default":"initial",
-        "description":"Text", "provider":"fixture", "version":"1", "sensitive":false
-    })).unwrap()], vec![]).unwrap();
+    registry
+        .register_extension(
+            "fixture",
+            vec![
+                serde_json::from_value(json!({
+                    "key":"extensions.fixture.choice", "type":"string", "options":["a","b","c"],
+                    "default":"a", "description":"Choice", "provider":"fixture", "sensitive":false
+                }))
+                .unwrap(),
+                serde_json::from_value(json!({
+                    "key":"extensions.fixture.text", "type":"string", "default":"initial",
+                    "description":"Text", "provider":"fixture", "sensitive":false
+                }))
+                .unwrap(),
+            ],
+            vec![],
+        )
+        .unwrap();
     app.settings = Some(settings::Popup::new(Settings::new(
         registry,
         Config::default(),
@@ -131,7 +142,7 @@ fn settings_and_extensions_keep_navigation_in_their_own_context() {
     handle_key(&mut app, KeyCode::Char('s').into());
     handle_key(&mut app, KeyCode::End.into());
     handle_key(&mut app, KeyCode::Up.into());
-    handle_key(&mut app, KeyCode::Right.into());
+    handle_key(&mut app, KeyCode::Enter.into());
     assert_eq!(
         app.settings.as_ref().unwrap().changes["extensions.fixture.choice"],
         Some(json!("b"))
@@ -139,7 +150,7 @@ fn settings_and_extensions_keep_navigation_in_their_own_context() {
     handle_key(&mut app, KeyCode::Left.into());
     assert_eq!(
         app.settings.as_ref().unwrap().changes["extensions.fixture.choice"],
-        Some(json!("a"))
+        Some(json!("b"))
     );
     handle_key(&mut app, KeyCode::End.into());
     handle_key(&mut app, KeyCode::Enter.into());
@@ -165,8 +176,8 @@ fn settings_and_extensions_keep_navigation_in_their_own_context() {
     assert!(app.details.is_none() && !app.extensions_page);
     handle_key(&mut app, KeyCode::Esc.into());
     handle_key(&mut app, KeyCode::Esc.into());
-    app.inventory = crate::extensions::state::State::default()
-        .list(&crate::extensions::default_settings().unwrap(), true);
+    app.inventory =
+        crate::extensions::inventory::list(&crate::extensions::default_settings().unwrap(), true);
     for (right, left) in [
         (KeyCode::Right, KeyCode::Left),
         (KeyCode::Char('l'), KeyCode::Char('h')),
@@ -185,8 +196,65 @@ fn settings_and_extensions_keep_navigation_in_their_own_context() {
         assert_eq!(app.extension_selected, selected);
         assert_eq!(app.extensions_scroll, 2);
         handle_key(&mut app, left.into());
+        if left != KeyCode::Esc {
+            assert!(app.extensions_page);
+            assert_eq!(app.priority_draft, draft);
+            assert_eq!(app.extension_selected, selected);
+            assert_eq!(app.extensions_scroll, 2);
+            handle_key(&mut app, KeyCode::Esc.into());
+        }
         assert!(!app.extensions_page);
         assert!(app.priority_draft.is_none() && app.manual_refresh.is_none());
+    }
+}
+
+#[test]
+fn extensions_root_back_keys_preserve_both_tabs_and_all_drafts() {
+    for mode in [0, 1] {
+        let mut app = app();
+        app.inventory = crate::extensions::inventory::list(
+            &crate::extensions::default_settings().unwrap(),
+            true,
+        );
+        handle_key(&mut app, KeyCode::Char('e').into());
+        if mode == 1 {
+            handle_key(&mut app, KeyCode::Tab.into());
+        }
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+        app.builtin_draft.insert("node".into(), false);
+        app.builtin_draft.insert("fixture".into(), false);
+        app.extensions_scroll = 2;
+        let source = app.priority_draft.clone();
+        let ownership = app.ownership_draft.clone();
+        let builtin = app.builtin_draft.clone();
+        let toggles = app.builtin_draft.clone();
+        let selected = app.extension_selected.clone();
+        let main_selected = app.selected;
+        let expanded = app.expanded.clone();
+        for back in [KeyCode::Left, KeyCode::Char('h'), KeyCode::Esc] {
+            handle_key(&mut app, KeyCode::Right.into());
+            assert!(app.extension_details);
+            handle_key(&mut app, back.into());
+            assert!(app.extensions_page && !app.extension_details);
+            for code in [KeyCode::Left, KeyCode::Char('h'), KeyCode::Enter] {
+                assert!(!handle_key(&mut app, code.into()));
+                assert!(app.extensions_page && !app.extension_details);
+                assert_eq!(app.priority_mode, mode);
+                assert_eq!(app.priority_draft, source);
+                assert_eq!(app.ownership_draft, ownership);
+                assert_eq!(app.builtin_draft, builtin);
+                assert_eq!(app.builtin_draft, toggles);
+                assert_eq!(app.extension_selected, selected);
+                assert_eq!(app.extensions_scroll, 2);
+                assert_eq!(app.selected, main_selected);
+                assert_eq!(app.expanded, expanded);
+                assert!(app.manual_refresh.is_none());
+            }
+        }
+        handle_key(&mut app, KeyCode::Esc.into());
+        assert!(!app.extensions_page);
+        assert!(app.priority_draft.is_none() && app.ownership_draft.is_none());
+        assert!(app.builtin_draft.is_empty());
     }
 }
 
@@ -387,7 +455,7 @@ fn details_replace_the_list_with_a_single_page() {
     assert!(text.contains("Applications → Demo"));
     assert_eq!(text.matches("pid:11").count(), 1);
     assert_eq!(text.matches("q quit").count(), 0);
-    assert!(text.contains("Esc back"));
+    assert!(text.contains("Esc Back"));
 }
 
 #[test]
@@ -464,7 +532,7 @@ fn detail_page_wraps_unicode_paths_and_scrolls_visual_lines() {
     assert_ne!(before, *after);
     let text: String = after.content.iter().map(|cell| cell.symbol()).collect();
     assert!(text.contains("Applications → Demo"));
-    assert!(text.contains("Esc back"));
+    assert!(text.contains("Esc Back"));
     handle_key(&mut app, KeyEvent::from(KeyCode::Home));
     terminal
         .draw(|frame| view::draw(frame, &app, &mut table))
@@ -690,9 +758,205 @@ fn detail_scrolling_is_isolated_and_small_layouts_escape_controls() {
         assert!(!text.contains(['\x1b', '\u{202e}']));
         if width >= 36 {
             assert!(text.contains("Process details"));
-            assert!(text.contains("Esc back"));
+            assert!(text.contains("Esc Back"));
         }
     }
+}
+
+#[test]
+fn runtime_failure_reason_and_hint_show_in_status_bar() {
+    let mut source = snapshot();
+    let runtime = &mut source.root.children.last_mut().unwrap().children[0];
+    runtime.runtime = Some(Box::new(crate::containers::Runtime {
+        metrics_scope: None,
+        host_scope: None,
+        configuration: None,
+        name: "docker".into(),
+        context: Some("test".into()),
+        endpoint_ref: None,
+        daemon_id: None,
+        status: "unavailable".into(),
+        inventory_complete: false,
+        collection_ms: 1,
+        unavailable: vec![crate::model::Diagnostic::failure(
+            "collection_failed",
+            "docker",
+            "info failed",
+            crate::model::FailureReason::ConnectionRefused,
+            None,
+        )],
+    }));
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(source));
+    select(&mut app, "group:runtime");
+    let mut terminal = Terminal::new(TestBackend::new(200, 24)).unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(
+        text.contains(
+            "info failed · reason connection_refused: endpoint is not accepting connections"
+        ),
+        "{text}"
+    );
+}
+
+fn screen(app: &App, width: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, app, &mut TableState::default()))
+        .unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .chunks(usize::from(width))
+        .map(|line| line.iter().map(|cell| cell.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn versions_show_on_consistent_bin_rows_named_rows_details_and_search() {
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(crate::tree::versions::fixtures::snapshot("group:all")));
+    for (query, expected, absent) in [
+        ("24.18", "node 24.18.0", None),
+        ("24.22.1", "node 24.22.1", None),
+        ("1.0.0", "run pid:50", Some("run 1.0.0")),
+        ("2.1.316", "claude 2.1.316 pid:20", None),
+        ("claude", "claude 2.1.316 pid:20", None),
+        (
+            "1.99.1",
+            "rust-analyzer-proc-macro-srv pid:30",
+            Some("srv 1.99.1"),
+        ),
+    ] {
+        app.query = query.into();
+        app.rebuild();
+        let text = screen(&app, 160);
+        assert!(text.contains(expected), "{query}: {text}");
+        if let Some(absent) = absent {
+            assert!(!text.contains(absent), "{query}: {text}");
+        }
+    }
+    app.query.clear();
+    app.rebuild();
+    select(&mut app, "pid:20");
+    handle_key(&mut app, KeyEvent::from(KeyCode::Char('d')));
+    let text = screen(&app, 160);
+    assert!(
+        text.contains("2.1.316 · subject claude · from versioned_install (executable)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("2.1.316 · display name from versioned_install (executable)"),
+        "{text}"
+    );
+}
+
+#[test]
+fn details_label_name_and_version_tags_and_show_rejected_subjects() {
+    for (pid, tags, trace) in [
+        (
+            20,
+            "Tags  #executable · name claude · version claude 2.1.316",
+            "add version 2.1.316 · subject claude",
+        ),
+        (30, "Tags  #executable", "add version 1.99.1 · subject rust"),
+    ] {
+        let mut source = crate::tree::versions::fixtures::snapshot("group:all");
+        change(&mut source.root, pid, |process| {
+            process.command = Some(Default::default());
+        });
+        let mut app = App::new("group:all".into(), usize::MAX);
+        app.update(Ok(source.clone()));
+        select(&mut app, &format!("pid:{pid}"));
+        handle_key(&mut app, KeyCode::Char('d').into());
+        app.update(Ok(source));
+        let lines = app.details.as_ref().unwrap().lines();
+        assert!(lines.iter().any(|line| line.trim() == tags), "{lines:?}");
+        let text = lines.join("\n");
+        assert!(text.contains(trace), "{text}");
+        if pid == 30 {
+            assert!(
+                text.contains("rejected: version subject mismatch"),
+                "{text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn work_rows_show_work_labels_and_work_groups() {
+    let (temp, root) = crate::extensions::builtin::node::tests::work_tree();
+    let mut snapshot = crate::tree::versions::fixtures::snapshot("group:all");
+    snapshot.root = root;
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(snapshot));
+    let text = screen(&app, 160);
+    let group = text
+        .lines()
+        .find(|line| line.contains("v firecrawl-mcp "))
+        .unwrap();
+    assert!(group.contains("2 proc"), "{text}");
+    assert!(text.contains("codegraph pid:15"), "{text}");
+    assert!(text.contains("chrome-devtools-mcp pid:12"), "{text}");
+    assert!(!text.contains("firecrawl-mcp 22.1.0"), "{text}");
+    assert!(!text.contains("index.js"), "{text}");
+    temp.close().unwrap();
+}
+
+#[test]
+fn python_work_rows_show_script_and_module_labels() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    std::fs::write(root.join("sync_mail.py"), "").unwrap();
+    let user = unsafe { libc::geteuid() };
+    let python = |pid: u32, argv: &[&str]| Process {
+        pid,
+        ppid: Some(1),
+        uid: Some(user),
+        started_unix_us: Some(u64::from(pid)),
+        name: "python3.12".into(),
+        executable: Some(root.join("bin/python3.12")),
+        cwd: Some(root.clone()),
+        resident_bytes: Some(1),
+        command: Some(crate::model::ProcessCommand {
+            argv: Some(argv.iter().map(|a| (*a).to_owned()).collect()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut snapshot = crate::tree::versions::fixtures::snapshot("group:all");
+    snapshot.root = crate::tree::build(vec![
+        python(
+            70,
+            &["python3", "-u", "sync_mail.py", "--password", "hunter2"],
+        ),
+        python(71, &["python3", "-m", "mcp_server_fetch"]),
+        python(72, &["python3", "-c", "pass"]),
+    ])
+    .unwrap();
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(snapshot));
+    let text = screen(&app, 160);
+    for expected in [
+        "sync_mail pid:70",
+        "mcp_server_fetch pid:71",
+        "python3.12 pid:72",
+    ] {
+        assert!(text.contains(expected), "{expected}: {text}");
+    }
+    assert!(!text.contains("hunter2"));
+    temp.close().unwrap();
 }
 
 fn select(app: &mut App, reference: &str) {
@@ -865,7 +1129,7 @@ fn overview_skips_redundant_wrappers_without_changing_data_or_scoped_roots() {
     .unwrap();
     source.system.cpu_percent = Some(30.0);
     let wrapper = source.root.children[0].children[0].reference.clone();
-    source.project(None);
+    source.project(&[]);
     let original = serde_json::to_value(&source.root).unwrap();
     let mut app = App::new("group:all".into(), 2);
     app.update(Ok(source.clone()));
@@ -1216,6 +1480,97 @@ fn table_headers_mark_only_the_active_sort_in_ready_and_loading_views() {
 }
 
 #[test]
+fn resource_table_keeps_gutters_and_disclosure_at_boundary_sizes() {
+    use ratatui::style::{Color, Modifier};
+    for (width, height) in [
+        (36, 10),
+        (46, 12),
+        (50, 12),
+        (51, 12),
+        (88, 16),
+        (89, 16),
+        (100, 24),
+    ] {
+        let mut app = app();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        for (collapsed, query) in [(false, ""), (true, ""), (false, "pid:11")] {
+            if collapsed {
+                app.expanded.clear();
+                app.expanded.insert(app.rows[0].key.clone(), false);
+                app.rebuild();
+            }
+            app.query = query.into();
+            if !query.is_empty() {
+                app.rebuild();
+            }
+            terminal
+                .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let text = (0..height)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(buffer[(0, 2)].symbol(), "┌", "{text}");
+            assert_eq!(buffer[(width - 1, 2)].symbol(), "┐", "{text}");
+            for x in 1..width - 1 {
+                assert_eq!(buffer[(x, 2)].symbol(), "─", "{text}");
+            }
+            assert_eq!(buffer[(2, 3)].symbol(), "R", "{text}");
+            let border_y = (3..height)
+                .find(|&y| buffer[(0, y)].symbol() == "└")
+                .unwrap();
+            for y in 3..border_y {
+                for x in [1, width - 2] {
+                    assert_eq!(buffer[(x, y)].symbol(), " ", "{text}");
+                    assert_eq!(buffer[(x, y)].bg, Color::Reset, "{text}");
+                }
+                assert_eq!(buffer[(0, y)].symbol(), "│", "{text}");
+                assert_eq!(buffer[(width - 1, y)].symbol(), "│", "{text}");
+            }
+            let marker = if collapsed { ">" } else { "v" };
+            assert_eq!(buffer[(2, 4)].symbol(), marker, "{text}");
+            assert_eq!(buffer[(3, 4)].symbol(), " ", "{text}");
+            assert_eq!(buffer[(2, 4)].bg, Color::DarkGray);
+            assert!(buffer[(2, 4)].modifier.contains(Modifier::BOLD));
+            assert!(!text.contains('»'));
+            if !collapsed {
+                for (index, row) in app
+                    .rows
+                    .iter()
+                    .take(usize::from(border_y.saturating_sub(4)))
+                    .enumerate()
+                {
+                    let x = 2 + 2 * row.depth.min(12) as u16;
+                    if row.has_children {
+                        assert_eq!(buffer[(x, 4 + index as u16)].symbol(), "v", "{text}");
+                    }
+                }
+            }
+            if width >= 89 {
+                assert!(text.contains("State / Ports"), "{text}");
+            }
+            if !collapsed
+                && [36, 100].contains(&width)
+                && let Some(path) = std::env::var_os("RESWHO_UI_EVIDENCE")
+            {
+                std::fs::create_dir_all(&path).unwrap();
+                std::fs::write(
+                    std::path::Path::new(&path)
+                        .join(format!("pl1-{width}x{height}-{collapsed}.txt")),
+                    &text,
+                )
+                .unwrap();
+            }
+        }
+    }
+}
+
+#[test]
 fn first_snapshot_wait_shows_loading_then_data_or_error() {
     let mut app = App::new("group:all".into(), 2);
     app.collecting = true;
@@ -1225,6 +1580,36 @@ fn first_snapshot_wait_shows_loading_then_data_or_error() {
         terminal
             .draw(|frame| view::draw(frame, app, table))
             .unwrap();
+        let buffer = terminal.backend().buffer();
+        for y in 3..20 {
+            for x in [1, 78] {
+                assert_eq!(buffer[(x, y)].symbol(), " ");
+                assert_eq!(buffer[(x, y)].bg, ratatui::style::Color::Reset);
+            }
+        }
+        if let Some(path) = std::env::var_os("RESWHO_UI_EVIDENCE") {
+            let state = if app.snapshot.is_some() {
+                if app.rows.is_empty() {
+                    "empty"
+                } else {
+                    "ready"
+                }
+            } else if app.error.is_some() {
+                "error"
+            } else {
+                "loading"
+            };
+            let text = (0..24)
+                .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(
+                std::path::Path::new(&path).join(format!("pl1-{state}-80x24.txt")),
+                text,
+            )
+            .unwrap();
+        }
         terminal
             .backend()
             .buffer()
@@ -1238,9 +1623,9 @@ fn first_snapshot_wait_shows_loading_then_data_or_error() {
         (0..80).find(|&x| terminal.backend().buffer()[(x, 3)].symbol() == "R")
     };
     let loading_column = heading_column(&terminal);
-    assert_eq!(loading_column, Some(3));
+    assert_eq!(loading_column, Some(2));
     assert!(first.contains("| Loading resources..."));
-    assert!(first.contains("Resources"));
+    assert!(first.contains("Resource"));
     assert!(first.contains("Memory"));
     assert!(first.contains("Memory ↓"));
     assert!(first.contains("Path —"));
@@ -1271,7 +1656,7 @@ fn first_snapshot_wait_shows_loading_then_data_or_error() {
     assert!(header.starts_with("Host CPU"));
     assert!(header.contains("processes"));
     assert!(toolbar.starts_with("/ search"));
-    assert!(loaded.contains("Resources"));
+    assert!(loaded.contains("Resource"));
     assert!(!loaded.contains("Loading resources..."));
     app.query = "no-matching-fixture".into();
     app.rebuild();
@@ -1488,10 +1873,6 @@ fn extension_command_details_render_on_demand_with_core_redaction() {
         fn descriptor(&self) -> Descriptor {
             Descriptor {
                 id: "fixture".into(),
-                version: "1".into(),
-                protocol_version: 1,
-                source: "builtin",
-                platforms: vec!["macos".into()],
                 capabilities: vec![Capability::Details],
                 enabled: true,
                 availability: "unknown",
@@ -1550,60 +1931,6 @@ fn extension_command_details_render_on_demand_with_core_redaction() {
 }
 
 #[test]
-fn installed_external_example_renders_parsed_details_without_command_payload() {
-    use crate::extensions::{
-        self, external,
-        state::{Manifest, State},
-    };
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("extensions.json");
-    let manifest = Manifest::read(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("examples/extensions/example.json")
-            .as_path(),
-    )
-    .unwrap();
-    State::mutate(&path, |state| state.install(manifest)).unwrap();
-    let state = State::load(&path).unwrap();
-    let settings = state
-        .registry()
-        .unwrap()
-        .resolve(
-            &crate::settings::Config::default(),
-            &std::collections::BTreeMap::new(),
-        )
-        .unwrap();
-    let cancel = Cancellation::default();
-    let context = extensions::Context::new(&settings, &cancel);
-    let providers = external::installed(&state, &settings);
-    let mut app = app();
-    select(&mut app, "pid:10");
-    app.open_details();
-    let mut source = snapshot();
-    change(&mut source.root, 10, |process| {
-        assert!(external::attach_details(&[&providers[0]], &context, process).is_empty());
-    });
-    app.update(Ok(source));
-    let mut terminal = Terminal::new(TestBackend::new(150, 40)).unwrap();
-    terminal
-        .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
-        .unwrap();
-    let text: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect();
-    assert!(text.contains("Shared sample ms"));
-    assert!(text.contains("[filtered]"));
-    assert!(text.contains("Host CLI version"));
-    assert!(!text.contains("fixture-secret-value"));
-    assert!(!text.contains("Loading command"));
-    dir.close().unwrap();
-}
-
-#[test]
 fn extension_page_preserves_navigation_never_requests_collection_and_keeps_failed_report() {
     let mut app = app();
     select(&mut app, "pid:11");
@@ -1611,10 +1938,9 @@ fn extension_page_preserves_navigation_never_requests_collection_and_keeps_faile
     app.paused = true;
     app.extensions = vec![crate::extensions::report::Record::new(
         "broken",
-        Some("1.0.0"),
         "read",
         "failed",
-        Some("invalid_manifest"),
+        Some("invalid_data"),
         Some(Instant::now()),
     )];
     let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
@@ -1645,7 +1971,7 @@ fn extension_page_preserves_navigation_never_requests_collection_and_keeps_faile
         .map(|cell| cell.symbol())
         .collect();
     assert!(text.contains("Extensions") && text.contains("System diagnostics"));
-    assert!(text.contains("invalid_manifest"));
+    assert!(text.contains("invalid_data"));
     assert_eq!(table.offset(), offset);
     handle_key(&mut app, KeyEvent::from(KeyCode::Char('j')));
     handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
@@ -1655,10 +1981,94 @@ fn extension_page_preserves_navigation_never_requests_collection_and_keeps_faile
     assert!(!app.collecting);
     app.update(Err("synthetic worker failure".into()));
     assert_eq!(app.extensions.len(), 1);
-    assert_eq!(
-        app.extensions[0].reason.as_deref(),
-        Some("invalid_manifest")
-    );
+    assert_eq!(app.extensions[0].reason.as_deref(), Some("invalid_data"));
+}
+
+#[test]
+fn settings_left_never_starts_editing_or_changes_a_draft() {
+    use crate::settings::{Config, Registry, edit::Settings};
+    use serde_json::json;
+    for (value_type, default, options) in [
+        ("integer", json!(42), None),
+        ("number", json!(1.25), None),
+        ("boolean", json!(false), None),
+        ("string", json!("initial"), None),
+        ("string", json!("a"), Some(json!(["a", "b", "c"]))),
+        ("number", json!(1.25), Some(json!([1.25, 2.5, 3.75]))),
+    ] {
+        for (width, height) in [(100, 30), (36, 10)] {
+            let mut registry = Registry::core();
+            let mut definition = json!({
+                "key":"extensions.fixture.value", "type":if value_type == "integer" { "number" } else { value_type }, "default":default,
+                "description":"Value", "provider":"fixture", "sensitive":false
+            });
+            if value_type == "integer" {
+                definition["integer"] = json!(true);
+            }
+            if let Some(options) = &options {
+                definition["options"] = options.clone();
+            }
+            registry
+                .register_extension(
+                    "fixture",
+                    vec![serde_json::from_value(definition).unwrap()],
+                    vec![],
+                )
+                .unwrap();
+            let mut app = app();
+            app.settings = Some(settings::Popup::new(Settings::new(
+                registry,
+                Config::default(),
+                Default::default(),
+                None,
+            )));
+            for code in [KeyCode::Char('s'), KeyCode::End] {
+                assert!(!handle_key(&mut app, code.into()));
+            }
+            let render = |app: &App| {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| view::draw(frame, app, &mut TableState::default()))
+                    .unwrap();
+                terminal.backend().buffer().clone()
+            };
+            let before = render(&app);
+            handle_key(&mut app, KeyCode::Left.into());
+            assert_eq!(
+                render(&app),
+                before,
+                "passive Left must do nothing: {value_type}"
+            );
+            assert!(app.settings.as_ref().unwrap().changes.is_empty());
+            handle_key(&mut app, KeyCode::Enter.into());
+            let editing = render(&app);
+            assert_ne!(editing, before, "Enter must edit or toggle");
+            let input = options.is_none() && value_type != "boolean";
+            if input {
+                for code in [KeyCode::Left, KeyCode::Right] {
+                    handle_key(&mut app, code.into());
+                    assert_eq!(render(&app), editing, "arrows must preserve active input");
+                }
+                handle_key(&mut app, KeyCode::Enter.into());
+            }
+            let draft = app.settings.as_ref().unwrap().changes.clone();
+            assert!(!draft.is_empty());
+            let list = render(&app);
+            for back in [KeyCode::Left, KeyCode::Esc] {
+                handle_key(&mut app, KeyCode::Right.into());
+                assert_ne!(render(&app), list);
+                handle_key(&mut app, back.into());
+                assert_eq!(render(&app), list);
+                handle_key(&mut app, KeyCode::Left.into());
+                assert_eq!(render(&app), list);
+                assert_eq!(app.settings.as_ref().unwrap().changes, draft);
+                assert!(app.settings.as_ref().unwrap().open);
+            }
+            handle_key(&mut app, KeyCode::Esc.into());
+            assert!(!app.settings.as_ref().unwrap().open);
+            assert!(app.settings.as_ref().unwrap().changes.is_empty());
+        }
+    }
 }
 
 #[test]
@@ -1671,10 +2081,10 @@ fn settings_popup_routes_drafts_masks_values_and_restores_focus() {
     let path = owner.path().canonicalize().unwrap().join("config.json");
     let mut registry = Registry::core();
     let definitions = [
-        json!({"key":"extensions.fixture.flag","type":"boolean","default":false,"description":"A flag","provider":"fixture","version":"1","sensitive":false}),
-        json!({"key":"extensions.fixture.number","type":"number","options":[-1.25,2.5],"default":-1.25,"description":"A choice","provider":"fixture","version":"1","sensitive":false}),
-        json!({"key":"extensions.fixture.secret","type":"string","options":["secret-option","another-secret"],"default":"secret-option","description":"Sensitive choice","provider":"fixture","version":"1","sensitive":true}),
-        json!({"key":"extensions.fixture.text","type":"string","default":"initial","description":format!("{}Description end", "Long description ".repeat(50)),"provider":"fixture","version":"1","sensitive":false}),
+        json!({"key":"extensions.fixture.flag","type":"boolean","default":false,"description":"A flag","provider":"fixture","sensitive":false}),
+        json!({"key":"extensions.fixture.number","type":"number","options":[-1.25,2.5],"default":-1.25,"description":"A choice","provider":"fixture","sensitive":false}),
+        json!({"key":"extensions.fixture.secret","type":"string","options":["secret-option","another-secret"],"default":"secret-option","description":"Sensitive choice","provider":"fixture","sensitive":true}),
+        json!({"key":"extensions.fixture.text","type":"string","default":"initial","description":format!("{}Description end", "Long description ".repeat(50)),"provider":"fixture","sensitive":false}),
     ].into_iter().map(|value| serde_json::from_value(value).unwrap()).collect();
     registry
         .register_extension("fixture", definitions, vec![])
@@ -1684,12 +2094,12 @@ fn settings_popup_routes_drafts_masks_values_and_restores_focus() {
     )
     .unwrap();
     std::fs::write(&path, serde_json::to_vec(&baseline).unwrap()).unwrap();
-    assert!(
+    assert_eq!(
         registry
             .resolve(&baseline, &BTreeMap::new())
             .unwrap()
-            .get("extensions.fixture.flag")
-            .is_none()
+            .get("extensions.fixture.flag"),
+        Some(&json!(false))
     );
     let context = Settings::new(
         registry,
@@ -1706,6 +2116,7 @@ fn settings_popup_routes_drafts_masks_values_and_restores_focus() {
     let selected = app.selected;
     let offset = table.offset();
     assert!(!handle_key(&mut app, key(KeyCode::Char('s'))));
+    handle_key(&mut app, key(KeyCode::Down));
     handle_key(&mut app, key(KeyCode::Char(' ')));
     handle_key(&mut app, key(KeyCode::Down));
     handle_key(&mut app, key(KeyCode::Down));
@@ -1730,7 +2141,7 @@ fn settings_popup_routes_drafts_masks_values_and_restores_focus() {
         assert!(text.contains("Settings"));
     }
     handle_key(&mut app, key(KeyCode::Down));
-    handle_key(&mut app, key(KeyCode::PageDown));
+    handle_key(&mut app, key(KeyCode::Right));
     let mut pages = String::new();
     for _ in 0..8 {
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
@@ -1748,6 +2159,7 @@ fn settings_popup_routes_drafts_masks_values_and_restores_focus() {
         handle_key(&mut app, key(KeyCode::PageDown));
     }
     assert!(pages.contains("Description end"));
+    handle_key(&mut app, key(KeyCode::Left));
     handle_key(&mut app, key(KeyCode::End));
     handle_key(&mut app, key(KeyCode::Enter));
     handle_key(
@@ -1776,6 +2188,7 @@ fn settings_popup_routes_drafts_masks_values_and_restores_focus() {
     );
     handle_key(&mut app, key(KeyCode::Char('s')));
     handle_key(&mut app, key(KeyCode::Home));
+    handle_key(&mut app, key(KeyCode::Down));
     handle_key(&mut app, key(KeyCode::Enter));
     assert!(app.settings.as_ref().unwrap().changes.is_empty());
     handle_key(&mut app, key(KeyCode::Down));
@@ -1826,13 +2239,13 @@ fn compact_settings_keeps_primary_controls_input_and_scrollable_info_visible() {
         "Ctrl-S Save",
         "Ctrl-R Reset",
         "Esc discard",
-        "Sampling interva",
+        "Sampling inter",
         "Time between",
         "[250] ms",
     ] {
         assert!(initial.contains(label), "missing {label}: {initial}");
     }
-    handle_key(&mut app, KeyCode::PageDown.into());
+    handle_key(&mut app, KeyCode::Right.into());
     let mut pages = String::new();
     for _ in 0..8 {
         pages.push_str(&render(&app));
@@ -1850,6 +2263,7 @@ fn compact_settings_keeps_primary_controls_input_and_scrollable_info_visible() {
     for _ in 0..8 {
         handle_key(&mut app, KeyCode::PageUp.into());
     }
+    handle_key(&mut app, KeyCode::Left.into());
     assert!(render(&app).contains("Time between"));
     handle_key(&mut app, KeyCode::Enter.into());
     handle_key(
@@ -1867,6 +2281,107 @@ fn compact_settings_keeps_primary_controls_input_and_scrollable_info_visible() {
         "Esc Undo field",
     ] {
         assert!(invalid.contains(label), "missing {label}: {invalid}");
+    }
+}
+
+#[test]
+fn settings_children_indent_without_moving_values() {
+    use crate::settings::{Config, Registry, edit::Settings};
+    use ratatui::style::{Color, Modifier};
+    let mut registry = Registry::core();
+    for provider in ["node", "python", "zfixture"] {
+        registry
+            .register_extension(
+                provider,
+                vec![serde_json::from_value(serde_json::json!({
+            "key": format!("extensions.{provider}.entry_argv"), "type":"boolean",
+            "default":true, "description":"Entry", "provider":provider, "sensitive":false
+        })).unwrap()],
+                vec![],
+            )
+            .unwrap();
+    }
+    let mut app = app();
+    app.settings = Some(settings::Popup::new(Settings::new(
+        registry,
+        Config::default(),
+        Default::default(),
+        None,
+    )));
+    handle_key(&mut app, KeyCode::Char('s').into());
+    for index in 0..6 {
+        for (width, height) in [(100, 30), (60, 30), (36, 10)] {
+            for changed in [false, true] {
+                let popup = app.settings.as_mut().unwrap();
+                popup.changes = if changed {
+                    popup
+                        .context
+                        .registry
+                        .definitions()
+                        .map(|d| (d.key.clone(), Some(d.default.clone())))
+                        .collect()
+                } else {
+                    Default::default()
+                };
+                for tab in [KeyCode::Tab, KeyCode::BackTab] {
+                    handle_key(&mut app, tab.into());
+                    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                    terminal
+                        .draw(|frame| app.settings.as_ref().unwrap().draw(frame))
+                        .unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let text = (0..height)
+                        .map(|y| {
+                            (0..width)
+                                .map(|x| buffer[(x, y)].symbol())
+                                .collect::<String>()
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let group_x = (width - width.min(88)) / 2 + 2;
+                    let value_x = group_x + if width == 36 { 17 } else { 33 };
+                    let selected_y = (0..height)
+                        .find(|&y| buffer[(group_x, y)].bg == Color::DarkGray)
+                        .unwrap();
+                    assert_eq!(
+                        buffer[(group_x, selected_y)].symbol(),
+                        if changed { "*" } else { " " },
+                        "{text}"
+                    );
+                    assert_eq!(buffer[(group_x + 1, selected_y)].symbol(), " ", "{text}");
+                    assert_ne!(buffer[(group_x + 2, selected_y)].symbol(), " ", "{text}");
+                    assert_eq!(buffer[(value_x, selected_y)].symbol(), "[", "{text}");
+                    assert_ne!(buffer[(group_x - 1, selected_y)].bg, Color::DarkGray);
+                    assert_eq!(buffer[(value_x, selected_y)].bg, Color::DarkGray);
+                    assert!(
+                        !buffer[(group_x + 1, selected_y)]
+                            .modifier
+                            .contains(Modifier::DIM)
+                    );
+                    assert!(!text.contains('»'));
+                    if width >= 60 && index == 0 {
+                        for group in ["General", "node", "python", "zfixture"] {
+                            let y =
+                                text.lines().position(|line| line.contains(group)).unwrap() as u16;
+                            assert_eq!(buffer[(group_x, y)].symbol(), &group[..1], "{text}");
+                        }
+                    }
+                    if [0, 5].contains(&index)
+                        && [36, 100].contains(&width)
+                        && let Some(path) = std::env::var_os("RESWHO_UI_EVIDENCE")
+                    {
+                        std::fs::create_dir_all(&path).unwrap();
+                        std::fs::write(
+                            std::path::Path::new(&path)
+                                .join(format!("pl2-{width}x{height}-{index}.txt")),
+                            &text,
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
+        handle_key(&mut app, KeyCode::Down.into());
     }
 }
 
@@ -1912,14 +2427,12 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
         None,
     )));
     let resolved = crate::extensions::default_settings().unwrap();
-    let registry = crate::extensions::state::State::default();
-    app.inventory = registry.list(&resolved, true);
+    app.inventory = crate::extensions::inventory::list(&resolved, true);
     app.extensions = vec![crate::extensions::report::Record::new(
         "broken",
-        None,
         "read",
         "failed",
-        Some("invalid_manifest"),
+        Some("invalid_data"),
         None,
     )];
     let dump = |app: &App, width, height, name: &str| {
@@ -1967,20 +2480,28 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
     app.open_details();
     for (width, height) in [(100, 30), (36, 10)] {
         let text = dump(&app, width, height, "process-details");
-        assert!(text.contains("Esc back") && text.contains("p pause"));
+        assert!(text.contains("Esc Back") && text.contains("p pause"));
         assert!(!text.contains("j/k") && !text.contains("scroll"));
     }
     handle_key(&mut app, KeyCode::Esc.into());
     handle_key(&mut app, KeyCode::Char('s').into());
+    handle_key(&mut app, KeyCode::Down.into());
     for (width, height) in [(160, 45), (100, 30), (36, 10)] {
         let text = dump(&app, width, height, "settings");
-        assert!(text.contains("[Save]") && text.contains("[Cancel]"));
+        assert!(!text.contains("[Save]") && !text.contains("[Cancel]"));
+        assert!(!text.contains("Tab Controls"));
+        assert!(text.contains("Enter Edit · → Details"));
         assert!(
             text.contains("Ctrl-S Save")
                 && text.contains("Ctrl-R Reset")
                 && text.contains("Esc discard")
         );
         assert!(!text.contains("Move"));
+        let last = text
+            .lines()
+            .position(|line| line.contains("Esc discard"))
+            .unwrap();
+        assert!(text.lines().nth(last + 1).unwrap().contains('└'), "{text}");
         if width >= 100 {
             assert_eq!(text.matches("General").count(), 1);
             let hints = text
@@ -2007,12 +2528,12 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
         (&second, "Time between resource samples."),
     ] {
         assert!(row(text, "Sampling interval") < row(text, description));
-        assert!(row(text, "[Save]") < row(text, description));
         assert_eq!(row(text, description) + 1, row(text, "Enter Edit"));
         assert_eq!(text.matches(description).count(), 1);
     }
     dump(&app, 36, 10, "settings-second");
     handle_key(&mut app, KeyCode::Home.into());
+    handle_key(&mut app, KeyCode::Down.into());
     handle_key(&mut app, KeyCode::Enter.into());
     handle_key(
         &mut app,
@@ -2029,6 +2550,11 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
         assert!(
             !text.contains("Edit:") && !text.contains("Default:") && !text.contains("Constraints:")
         );
+        let last = text
+            .lines()
+            .position(|line| line.contains("Ctrl-R Reset"))
+            .unwrap();
+        assert!(text.lines().nth(last + 1).unwrap().contains('└'), "{text}");
         if width >= 100 {
             let hints = text
                 .lines()
@@ -2046,13 +2572,7 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
     handle_key(&mut app, KeyCode::Enter.into());
     for (width, height) in [(160, 45), (100, 30), (36, 10)] {
         let text = dump(&app, width, height, "settings-invalid");
-        for label in [
-            "Invalid value",
-            "[Cancel]",
-            "[Save]",
-            "Enter Accept",
-            "Ctrl-S Save",
-        ] {
+        for label in ["Invalid value", "Enter Accept", "Ctrl-S Save"] {
             assert!(text.contains(label), "missing {label}: {text}");
         }
         assert!(!text.contains("PgDn Info"));
@@ -2061,41 +2581,16 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
     assert!(app.settings.as_ref().unwrap().open);
     handle_key(&mut app, KeyCode::Esc.into());
     handle_key(&mut app, KeyCode::Char('s').into());
-    handle_key(&mut app, KeyCode::Tab.into());
-    for (width, height) in [(160, 45), (100, 30), (36, 10)] {
-        let text = dump(&app, width, height, "settings-controls");
-        for label in [
-            "Enter Choose",
-            "Ctrl-S Save",
-            "Esc Back",
-            "[Cancel]",
-            "[Save]",
-        ] {
-            assert!(text.contains(label), "missing {label}: {text}");
-        }
-        if width >= 100 {
-            let hints = text
-                .lines()
-                .find(|line| line.contains("Enter Choose"))
-                .unwrap();
-            assert!(hints.contains("Esc Back"));
-            assert!(
-                text.lines()
-                    .nth(row(&text, "Enter Choose") + 1)
-                    .unwrap()
-                    .contains('└')
-            );
-        }
+    for code in [KeyCode::Tab, KeyCode::BackTab] {
+        let before = dump(&app, 100, 30, "settings-before-tab");
+        handle_key(&mut app, code.into());
+        assert_eq!(dump(&app, 100, 30, "settings-after-tab"), before);
     }
     handle_key(&mut app, KeyCode::Enter.into());
-    assert!(!app.settings.as_ref().unwrap().open);
-    handle_key(&mut app, KeyCode::Char('s').into());
-    handle_key(
-        &mut app,
-        KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
-    );
-    handle_key(&mut app, KeyCode::Enter.into());
-    assert!(!app.settings.as_ref().unwrap().open);
+    assert!(app.settings.as_ref().unwrap().open);
+    assert!(dump(&app, 100, 30, "settings-edit-after-tab").contains("Enter Accept"));
+    handle_key(&mut app, KeyCode::Esc.into());
+    handle_key(&mut app, KeyCode::Esc.into());
     handle_key(&mut app, KeyCode::Char('e').into());
     handle_key(&mut app, KeyCode::Char('j').into());
     let selected = app.extension_selected.clone();
@@ -2104,10 +2599,9 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
     assert_eq!(app.extension_selected, selected);
     app.extensions = vec![crate::extensions::report::Record::new(
         "broken",
-        None,
         "read",
         "failed",
-        Some("invalid_manifest"),
+        Some("invalid_data"),
         None,
     )];
     for (id, phase, result, duration) in [
@@ -2117,7 +2611,6 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
     ] {
         let mut record = crate::extensions::report::Record::new(
             id,
-            Some(env!("CARGO_PKG_VERSION")),
             phase,
             result,
             if result == "failed" {
@@ -2130,53 +2623,65 @@ fn selected_settings_rows_stay_stable_and_extension_hints_wrap_only_when_needed(
         record.duration_ms = Some(duration);
         app.extensions.push(record);
     }
-    for (width, height) in [(160, 45), (100, 30), (36, 10)] {
+    app.extension_selected = Some("docker".into());
+    for (width, height) in [(160, 45), (160, 10), (100, 30), (36, 10)] {
         let text = dump(&app, width, height, "extensions");
-        assert!(text.contains("System diagnostics") && text.contains("invalid_manifest"));
-        assert!(text.contains("Name") && text.contains("State"));
+        assert!(
+            (width == 36 || text.contains("System diagnostics")) && text.contains("invalid_data"),
+            "{width}x{height}: {text}"
+        );
+        assert!(text.contains("ID") && text.contains("State") && !text.contains("Type"));
+        assert!(text.contains("Ctrl-S Save") && text.contains("Esc Cancel"));
+        for line in text.lines() {
+            assert!(!line.trim_end_matches([' ', '│']).ends_with('·'), "{text}");
+        }
+        assert!(
+            text.lines()
+                .any(|line| line.contains("docker") && line.contains("Enabled")),
+            "selected row must remain visible: {text}"
+        );
         assert!(
             !text.contains("s Settings")
                 && !text.contains("q Quit")
                 && !text.contains("Enter for details")
         );
-        assert!(text.contains("Shift") && text.contains("Save") && !text.contains("j/k"));
-        let hints = if width >= 71 {
-            ["→ Details", "←/Esc discard", "Ctrl-R Reset"]
-        } else {
-            ["→ Open", "Esc Back", "Ctrl-R Reset"]
-        };
+        assert!(text.contains("Space Disable") && text.contains("Save") && !text.contains("j/k"));
+        let hints = ["Space Disable", "Esc Cancel", "Ctrl-S Save"];
         for hint in hints {
             assert!(text.contains(hint), "missing {hint}: {text}");
         }
-        if width >= 100 {
-            assert!(
-                text.lines()
-                    .any(|line| line.contains("→ Details") && line.contains("←/Esc discard"))
-            );
-        }
-        if width >= 100 {
-            for column in ["Version", "Collect", "Classify", "Details"] {
+        if width >= 160 {
+            for column in ["Collect", "Classify", "Details"] {
                 assert!(text.contains(column));
             }
         }
     }
-    app.extension_selected = Some("command".into());
+    app.extension_selected = Some("python".into());
     handle_key(&mut app, KeyCode::Char('d').into());
     let text = dump(&app, 100, 30, "extension-details");
     assert!(text.contains("Availability: unknown") && text.contains("No invocation timing"));
     for (width, height) in [(100, 30), (36, 10)] {
         let text = dump(&app, width, height, "extension-details");
-        assert!(!text.contains("Scroll") && !text.contains("j/k"));
+        assert_eq!(text.matches("↑↓ Scroll").count(), 1);
+        assert!(!text.contains("j/k") && !text.contains("Pg"));
         assert_eq!(text.matches("←/Esc Back").count(), 1, "{text}");
-        assert!(text.contains("Process command"));
+        assert!(text.contains("Python"));
     }
     handle_key(&mut app, KeyCode::Esc.into());
     app.inventory[0].explicit_enabled = false;
+    app.settings
+        .as_mut()
+        .unwrap()
+        .context
+        .baseline
+        .disabled_builtins
+        .push(app.inventory[0].descriptor.id.clone());
+    app.extension_selected = Some(app.inventory[0].descriptor.id.clone());
     assert!(dump(&app, 100, 30, "extensions-disabled").contains("Disabled"));
 }
 
 #[test]
-fn invalid_setting_input_keeps_draft_while_controls_remain_reachable() {
+fn invalid_setting_input_ignores_tabs_and_keeps_shortcuts_reachable() {
     use crate::settings::{Config, Registry, edit::Settings};
     let mut app = app();
     app.settings = Some(settings::Popup::new(Settings::new(
@@ -2189,6 +2694,7 @@ fn invalid_setting_input_keeps_draft_while_controls_remain_reachable() {
         handle_key(app, KeyEvent::from(code));
     };
     send(&mut app, KeyCode::Char('s'));
+    send(&mut app, KeyCode::Down);
     send(&mut app, KeyCode::Enter);
     handle_key(
         &mut app,
@@ -2196,15 +2702,31 @@ fn invalid_setting_input_keeps_draft_while_controls_remain_reachable() {
     );
     send(&mut app, KeyCode::Char('0'));
     send(&mut app, KeyCode::Enter);
-    send(&mut app, KeyCode::BackTab);
-    send(&mut app, KeyCode::Enter);
-    assert!(app.settings.as_ref().unwrap().open);
-    assert!(app.settings.as_ref().unwrap().applied.is_none());
-    send(&mut app, KeyCode::Tab);
+    for code in [KeyCode::Tab, KeyCode::BackTab] {
+        send(&mut app, code);
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        );
+        assert!(app.settings.as_ref().unwrap().open);
+        assert!(app.settings.as_ref().unwrap().applied.is_none());
+        let mut terminal = Terminal::new(TestBackend::new(36, 10)).unwrap();
+        terminal
+            .draw(|frame| app.settings.as_ref().unwrap().draw(frame))
+            .unwrap();
+        let cursor = terminal.get_cursor_position().unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[cursor].symbol(), "_");
+        let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+        assert!(
+            text.contains("[0_]") && text.contains("Invalid value"),
+            "{text}"
+        );
+    }
     send(&mut app, KeyCode::Char(' '));
     let mut terminal = Terminal::new(TestBackend::new(36, 10)).unwrap();
     terminal
-        .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+        .draw(|frame| app.settings.as_ref().unwrap().draw(frame))
         .unwrap();
     let text: String = terminal
         .backend()
@@ -2214,21 +2736,15 @@ fn invalid_setting_input_keeps_draft_while_controls_remain_reachable() {
         .map(|cell| cell.symbol())
         .collect();
     assert!(text.contains("[0 _]"), "{text}");
-    send(&mut app, KeyCode::BackTab);
-    send(&mut app, KeyCode::BackTab);
     send(&mut app, KeyCode::Enter);
+    assert!(app.settings.as_ref().unwrap().open);
+    send(&mut app, KeyCode::Esc);
+    assert!(app.settings.as_ref().unwrap().open);
+    send(&mut app, KeyCode::Tab);
+    send(&mut app, KeyCode::BackTab);
+    send(&mut app, KeyCode::Esc);
     assert!(!app.settings.as_ref().unwrap().open);
     assert!(app.settings.as_ref().unwrap().changes.is_empty());
-    send(&mut app, KeyCode::Char('s'));
-    send(&mut app, KeyCode::Enter);
-    handle_key(
-        &mut app,
-        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
-    );
-    send(&mut app, KeyCode::Char('0'));
-    send(&mut app, KeyCode::Tab);
-    send(&mut app, KeyCode::Enter);
-    assert!(!app.settings.as_ref().unwrap().open);
     assert!(app.settings.as_ref().unwrap().applied.is_none());
 }
 
@@ -2239,7 +2755,7 @@ fn compact_explicit_info_exposes_current_long_label_boolean_and_masks_sensitive_
     for sensitive in [false, true] {
         let mut registry = Registry::core();
         let key = "extensions.fixture.a_very_long_boolean_setting_label";
-        registry.register_extension("fixture",vec![serde_json::from_value(json!({"key":key,"type":"boolean","default":false,"description":"Fixture checkbox","provider":"fixture","version":"1","sensitive":sensitive})).unwrap()],vec![]).unwrap();
+        registry.register_extension("fixture",vec![serde_json::from_value(json!({"key":key,"type":"boolean","default":false,"description":"Fixture checkbox","provider":"fixture","sensitive":sensitive})).unwrap()],vec![]).unwrap();
         let baseline: Config =
             serde_json::from_value(json!({"version":1,"settings":{key:true}})).unwrap();
         let mut app = app();
@@ -2255,7 +2771,7 @@ fn compact_explicit_info_exposes_current_long_label_boolean_and_masks_sensitive_
         initial
             .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
             .unwrap();
-        handle_key(&mut app, KeyCode::PageDown.into());
+        handle_key(&mut app, KeyCode::Right.into());
         handle_key(&mut app, KeyCode::PageUp.into());
         let mut pages = String::new();
         for _ in 0..10 {
@@ -2307,8 +2823,8 @@ fn modal_keys_stay_local_and_search_keeps_text() {
         Default::default(),
         None,
     )));
-    app.inventory = crate::extensions::state::State::default()
-        .list(&crate::extensions::default_settings().unwrap(), true);
+    app.inventory =
+        crate::extensions::inventory::list(&crate::extensions::default_settings().unwrap(), true);
     select(&mut app, "pid:11");
     let selected = app.selected;
     app.paused = true;
@@ -2344,6 +2860,13 @@ fn modal_keys_stay_local_and_search_keeps_text() {
     assert_eq!(app.query, "seqdhl");
     assert!(app.details.is_none());
     handle_key(&mut app, KeyCode::Esc.into());
+    let selected = app.selected;
+    for _ in 0..3 {
+        assert!(!handle_key(&mut app, KeyCode::Esc.into()));
+        assert!(!app.editing && app.query.is_empty());
+        assert!(app.details.is_none() && !app.extensions_page && !app.help);
+        assert_eq!(app.selected, selected);
+    }
     assert!(handle_key(&mut app, KeyCode::Char('q').into()));
     app.help = true;
     assert!(handle_key(
@@ -2363,7 +2886,7 @@ fn settings_escape_discards_only_active_field_before_popup() {
         Default::default(),
         None,
     )));
-    for code in [KeyCode::Char('s'), KeyCode::Enter] {
+    for code in [KeyCode::Char('s'), KeyCode::Down, KeyCode::Enter] {
         handle_key(&mut app, code.into());
     }
     handle_key(
@@ -2401,10 +2924,13 @@ fn inline_input_keeps_unicode_tail_cursor_visible_and_masks_secrets() {
         registry
             .register_extension(
                 "fixture",
-                vec![serde_json::from_value(json!({
-            "key":"extensions.fixture.long_text", "type":"string", "default":"initial",
-            "description":"Text", "provider":"fixture", "version":"1", "sensitive":sensitive
-        })).unwrap()],
+                vec![
+                    serde_json::from_value(json!({
+                        "key":"extensions.fixture.long_text", "type":"string", "default":"initial",
+                        "description":"Text", "provider":"fixture", "sensitive":sensitive
+                    }))
+                    .unwrap(),
+                ],
                 vec![],
             )
             .unwrap();
@@ -2424,6 +2950,15 @@ fn inline_input_keeps_unicode_tail_cursor_visible_and_masks_secrets() {
         );
         for ch in "專案內容很長很長很長尾端d".chars() {
             handle_key(&mut app, KeyCode::Char(ch).into());
+        }
+        for code in [
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Char('\t'),
+            KeyCode::Left,
+            KeyCode::Right,
+        ] {
+            handle_key(&mut app, code.into());
         }
         for (width, height) in [(100, 30), (36, 10)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -2469,8 +3004,7 @@ fn narrow_inline_input_reserves_tail_before_long_or_unicode_units() {
                         vec![
                             serde_json::from_value(json!({
                                 "key":"extensions.fixture.interval", "type":"number", "default":250,
-                                "unit":unit, "description":"Fixture interval", "provider":"fixture",
-                                "version":"1", "sensitive":sensitive
+                                "unit":unit, "description":"Fixture interval", "provider":"fixture", "sensitive":sensitive
                             }))
                             .unwrap(),
                         ],
@@ -2545,7 +3079,6 @@ fn generic_resource_list_and_details_show_units_without_process_queries() {
     node.grouping = None;
     node.resource = Some(crate::model::Resource {
         provider: "fixture".into(),
-        version: "1.0.0".into(),
         id: "disk0".into(),
         kind: "storage.volume".into(),
         label: "Data volume".into(),
@@ -2613,7 +3146,7 @@ fn generic_resource_list_and_details_show_units_without_process_queries() {
     let lines = details.lines().join("\n");
     assert!(lines.contains("Temperature: ? vendor.celsius"));
     assert!(lines.contains("/Volumes/Data"));
-    assert!(lines.contains("fixture/1.0.0"));
+    assert!(lines.contains("fixture") && !lines.contains("fixture/1.0.0"));
     handle_key(&mut app, KeyCode::Left.into());
     assert!(app.details.is_none());
     assert_eq!(
@@ -2664,13 +3197,10 @@ fn repair_empty_resource_provider_keeps_metric_scope_in_the_table() {
 fn priority_reset_app(path: &std::path::Path) -> App {
     let resolved = crate::extensions::default_settings().unwrap();
     let mut app = App::new("group:all".into(), 2);
-    app.inventory = crate::extensions::state::State::default().list(&resolved, false);
-    for id in ["z_external", "a_external"] {
-        let mut entry = crate::extensions::state::State::default()
-            .list(&resolved, false)
-            .remove(0);
+    app.inventory = crate::extensions::inventory::list(&resolved, false);
+    for id in ["z_module", "a_module"] {
+        let mut entry = crate::extensions::inventory::list(&resolved, false).remove(0);
         entry.descriptor.id = id.into();
-        entry.descriptor.source = "external";
         app.inventory.push(entry);
     }
     app.settings = Some(settings::Popup::new(crate::settings::edit::Settings::new(
@@ -2707,22 +3237,25 @@ fn priority_reset_frame(app: &App, width: u16, height: u16, name: &str) -> Strin
 }
 
 #[test]
-fn priority_reset_discards_saves_defaults_and_moves_external_sources() {
+fn priority_reset_discards_saves_defaults_and_moves_module_sources() {
     use crate::settings::Config;
     let root = tempfile::tempdir_in("/private/tmp").unwrap();
     let root_path = root.path().canonicalize().unwrap();
     let path = root_path.join("config.json");
     let saved = Config {
+        recovery: None,
+        disabled_builtins: vec![],
+        ownership_priority: vec![],
         version: 1,
-        source_priority: vec!["a_external".into(), "missing_source".into(), "bin".into()],
+        source_priority: vec!["a_module".into(), "missing_source".into(), "project".into()],
         settings: [("sampling.interval_ms".into(), serde_json::json!(250))].into(),
     };
     std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
     let before = std::fs::read(&path).unwrap();
     let mut app = priority_reset_app(&path);
-    app.extension_selected = Some("bin".into());
+    app.extension_selected = Some("project".into());
     let text = priority_reset_frame(&app, 100, 30, "priority-caption-saved");
-    assert!(text.contains("Executable fallback · builtin"), "{text}");
+    assert!(text.contains("Projects · → Details"), "{text}");
     assert!(
         text.contains(" Extensions ") && !text.contains("Extensions *"),
         "{text}"
@@ -2731,7 +3264,7 @@ fn priority_reset_discards_saves_defaults_and_moves_external_sources() {
         !text.contains("· saved") && !text.contains("· draft"),
         "{text}"
     );
-    app.extension_selected = Some("a_external".into());
+    app.extension_selected = Some("a_module".into());
     handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
     assert!(
         app.priority_draft
@@ -2754,33 +3287,37 @@ fn priority_reset_discards_saves_defaults_and_moves_external_sources() {
         KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
     );
     assert!(app.priority_draft.as_ref().unwrap().is_empty());
-    assert_eq!(app.extension_selected.as_deref(), Some("a_external"));
+    assert_eq!(app.extension_selected.as_deref(), Some("a_module"));
     for (width, height) in [(100, 30), (71, 30), (36, 10)] {
         let text = priority_reset_frame(&app, width, height, "priority-reset-draft");
-        for hint in ["Ctrl-R Reset", "Ctrl-S Save", "> A external"] {
+        for hint in ["Ctrl-R Reset", "Ctrl-S Save", "a_module"] {
             assert!(text.contains(hint), "missing {hint}: {text}");
         }
-        assert!(text.contains("Extensions *"), "{text}");
+        assert!(
+            !text.contains("Extensions *") && text.contains('*'),
+            "{text}"
+        );
         assert!(
             !text.contains("· saved") && !text.contains("· draft"),
             "{text}"
         );
         if width == 100 {
-            assert!(text.contains("Priority · highest first"), "{text}");
-            assert!(text.contains("A external · external"), "{text}");
+            assert!(text.contains("Sources"), "{text}");
+            assert!(text.contains("A module · → Details"), "{text}");
         }
         if width == 36 {
-            assert!(text.contains("Shift↑↓ Move  → Open  Esc Back"), "{text}");
+            assert!(text.contains("Shift↑↓ Move"), "{text}");
         }
         if width >= 71 {
             let footer = text
                 .lines()
-                .find(|line| line.contains("Ctrl-R Reset"))
+                .find(|line| line.contains("Ctrl-R Reset order"))
                 .unwrap();
             assert!(
-                footer.contains("Shift ↑/↓") && footer.contains("←/Esc discard"),
+                !footer.trim_end_matches([' ', '│']).ends_with('·'),
                 "{text}"
             );
+            assert!(text.contains("Esc Cancel"), "{text}");
         }
     }
     handle_key(&mut app, KeyCode::Esc.into());
@@ -2797,7 +3334,7 @@ fn priority_reset_discards_saves_defaults_and_moves_external_sources() {
         &mut app,
         KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
     );
-    assert!(!app.extensions_page && app.priority_error.is_none());
+    assert!(app.extensions_page && app.priority_error.is_none());
     let config = Config::load_path(Some(&path), true).unwrap();
     assert!(config.source_priority.is_empty());
     assert_eq!(config.settings, saved.settings);
@@ -2814,23 +3351,28 @@ fn priority_reset_discards_saves_defaults_and_moves_external_sources() {
     );
     handle_key(&mut restarted, KeyCode::Esc.into());
     handle_key(&mut restarted, KeyCode::Char('e').into());
-    restarted.extension_selected = Some("a_external".into());
+    restarted.extension_selected = Some("a_module".into());
     handle_key(&mut restarted, KeyCode::Char('r').into());
-    let order = restarted.priority_draft.as_ref().unwrap();
+    let order = extensions::order(&restarted, false);
     assert_eq!(
-        &order[..8],
+        &order[..13],
         [
             "app_bundle",
+            "bin",
+            "command",
             "project",
             "ancestor",
-            "bin",
+            "versioned_install",
+            "node",
+            "python",
+            "launched_by",
             "docker",
             "podman",
             "apple",
-            "command"
+            "vm",
         ]
     );
-    assert_eq!(&order[8..], ["z_external", "a_external"]);
+    assert_eq!(&order[13..], ["z_module", "a_module"]);
     handle_key(
         &mut restarted,
         KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
@@ -2840,14 +3382,14 @@ fn priority_reset_discards_saves_defaults_and_moves_external_sources() {
         KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT),
     );
     let order = restarted.priority_draft.as_ref().unwrap();
-    assert_eq!(&order[8..], ["a_external", "z_external"]);
-    for _ in 0..8 {
+    assert_eq!(&order[13..], ["a_module", "z_module"]);
+    for _ in 0..13 {
         handle_key(
             &mut restarted,
             KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT),
         );
     }
-    assert_eq!(restarted.priority_draft.as_ref().unwrap()[0], "a_external");
+    assert_eq!(restarted.priority_draft.as_ref().unwrap()[0], "a_module");
     assert!(restarted.manual_refresh.is_none() && restarted.extensions.is_empty());
     root.close().unwrap();
     assert!(!root_path.exists());
@@ -2935,7 +3477,7 @@ fn priority_dialog_reorders_builtins_saves_and_keeps_failures_as_draft() {
     let path = root.path().join("config.json");
     let resolved = crate::extensions::default_settings().unwrap();
     let mut app = App::new("group:all".into(), 2);
-    app.inventory = crate::extensions::state::State::default().list(&resolved, false);
+    app.inventory = crate::extensions::inventory::list(&resolved, false);
     app.settings = Some(settings::Popup::new(Settings::new(
         crate::extensions::settings_registry().unwrap(),
         Config::default(),
@@ -2943,11 +3485,19 @@ fn priority_dialog_reorders_builtins_saves_and_keeps_failures_as_draft() {
         Some(path.clone()),
     )));
     app.extensions_page = true;
-    app.extension_selected = Some("app_bundle".into());
+    app.priority_mode = 0;
+    app.extension_selected = Some("project".into());
     extensions::key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
     assert_eq!(
-        &app.priority_draft.as_ref().unwrap()[..3],
-        ["project", "app_bundle", "ancestor"]
+        &app.priority_draft.as_ref().unwrap()[..6],
+        [
+            "app_bundle",
+            "bin",
+            "command",
+            "ancestor",
+            "project",
+            "versioned_install"
+        ]
     );
     app.extensions_scroll = 2;
     let draft = app.priority_draft.clone();
@@ -2962,7 +3512,7 @@ fn priority_dialog_reorders_builtins_saves_and_keeps_failures_as_draft() {
     assert!(app.extension_details);
     handle_key(&mut app, KeyCode::Left.into());
     assert_eq!(app.priority_draft, draft);
-    assert_eq!(app.extension_selected.as_deref(), Some("app_bundle"));
+    assert_eq!(app.extension_selected.as_deref(), Some("project"));
     assert_eq!(app.extensions_scroll, 2);
     extensions::key(
         &mut app,
@@ -2973,11 +3523,12 @@ fn priority_dialog_reorders_builtins_saves_and_keeps_failures_as_draft() {
         &mut app,
         KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
     );
-    assert!(!app.extensions_page);
+    assert!(app.extensions_page);
     let saved = Config::load_path(Some(&path), true).unwrap();
-    assert_eq!(saved.source_priority[1], "app_bundle");
+    assert_eq!(saved.source_priority[4], "project");
     assert!(app.settings.as_mut().unwrap().applied.take().is_some());
     app.extensions_page = true;
+    app.priority_mode = 0;
     extensions::key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
     std::fs::write(&path, "malformed").unwrap();
     extensions::key(
@@ -3070,14 +3621,14 @@ fn ui10_effective_tags_and_classification_trace_are_separate_and_wrapped() {
         let tag = json!({"dimension":"bin","id":"bin:hash","label":"deleted","path":"/usr/local/bin/demo","basis":"executable"});
         let mut report = json!({
             "effective":[{"source":"bin","tag":tag}],
-            "proposals":[{"source":"bin","version":"1.0.0","proposal":{"id":"bin-add","identity":{"pid":10,"started_unix_us":100},"change":{"operation":"add","tag":tag}}}],
+            "proposals":[{"source":"bin","proposal":{"id":"bin-add","identity":{"pid":10,"started_unix_us":100},"change":{"operation":"add","tag":tag}}}],
             "decisions":[{"source":"bin","proposal_id":"bin-add","status":"effective","by_source":null,"reason":"source_priority"}],
             "diagnostics":[]
         });
         if conflict {
             report["effective"] = json!([]);
             report["proposals"].as_array_mut().unwrap().push(json!({
-                "source":"fixture","version":"1.0.0",
+                "source":"fixture",
                 "proposal":{"id":"exclude-bin","identity":{"pid":10,"started_unix_us":100},
                     "change":{"operation":"exclude","selector":{"dimension":"bin","tag_id":null,"source":"bin"}}}
             }));
@@ -3215,21 +3766,36 @@ fn help_pages_wrap_scroll_clamp_and_restore_main_state() {
     handle_key(&mut app, KeyCode::Char('?').into());
     for (page, name, last) in [
         (0, "Controls", "quit anywhere"),
-        (1, "Panels", "Scroll inventory / details"),
+        (1, "Panels", "List: 4 rows; details: visible height"),
         (2, "Metrics", "one query at a time"),
     ] {
         assert_eq!(app.help_view.page, page);
+        let scroll = app.help_view.scroll.get();
+        for code in [
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Enter,
+            KeyCode::Char('h'),
+        ] {
+            assert!(!handle_key(&mut app, code.into()));
+            assert!(app.help);
+            assert_eq!(app.help_view.page, page);
+            assert_eq!(app.help_view.scroll.get(), scroll);
+            assert_eq!(app.expanded, expanded);
+        }
         for (width, height) in [(160, 45), (100, 30), (36, 10)] {
             app.help_view.scroll.set(0);
             let text = dump(&app, width, height, name);
             assert_eq!(rendered_offset.get(), offset);
             assert!(text.contains(&format!("[{name}]")), "{text}");
-            let hint = if width == 36 {
-                "↑↓ Scroll  Tab Page  Esc Close"
+            for group in ["Tab/Shift-Tab page", "Esc/? close"] {
+                assert!(text.contains(group), "{text}");
+            }
+            let hint = if text.contains("↑↓ Scroll") {
+                "↑↓ Scroll"
             } else {
-                "Tab/Shift-Tab page  Esc/? close"
+                "Tab/Shift-Tab page"
             };
-            assert!(text.contains(hint), "{text}");
             let check_gap = |text: &str| {
                 let lines: Vec<_> = text.lines().collect();
                 let footer = lines.iter().position(|line| line.contains(hint)).unwrap();
@@ -3248,10 +3814,29 @@ fn help_pages_wrap_scroll_clamp_and_restore_main_state() {
             if width == 160 {
                 assert_eq!(app.help_view.scroll.get(), 0);
                 assert!(text.contains(last), "wide content should fit: {text}");
+                if page == 1 {
+                    assert!(text.contains("PgUp / PgDn"));
+                    assert!(text.contains("Page by visible content height"));
+                    assert!(text.contains("Scroll lines / page by visible height"));
+                }
+                if page == 2 {
+                    assert!(text.contains(
+                        "Host RSS and container memory have separate scopes; do not add them"
+                    ));
+                    assert!(text.contains("Filter visible rows, not aggregate totals"));
+                }
             }
             handle_key(&mut app, KeyCode::End.into());
             let bottom = dump(&app, width, height, &format!("{name}-bottom"));
-            assert!(bottom.contains(last), "{bottom}");
+            assert!(
+                bottom
+                    .replace('│', " ")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .contains(last),
+                "{bottom}"
+            );
             check_gap(&bottom);
             let lines: Vec<_> = bottom.lines().collect();
             let footer = lines.iter().position(|line| line.contains(hint)).unwrap();
@@ -3312,4 +3897,1486 @@ fn help_pages_wrap_scroll_clamp_and_restore_main_state() {
         &mut app,
         KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
     ));
+}
+
+#[test]
+fn inventory_layout_indents_ids_and_keeps_wide_columns_compact() {
+    use ratatui::style::Color;
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let mut app = priority_reset_app(&root.path().join("config.json"));
+    app.priority_mode = 0;
+    app.extension_selected = Some("project".into());
+    for (width, height) in [(160, 30), (240, 30), (122, 30), (123, 30), (36, 10)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| extensions::draw(frame, &app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let lines: Vec<String> = (0..height)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let locate = |text: &str| {
+            lines
+                .iter()
+                .enumerate()
+                .find_map(|(y, line)| {
+                    line.find(text)
+                        .map(|x| (line[..x].chars().count() as u16, y as u16))
+                })
+                .unwrap_or_else(|| panic!("missing {text}: {lines:?}"))
+        };
+        let (header_x, header_y) = locate("ID");
+        let (id_x, id_y) = locate("project");
+        assert_eq!(id_x, header_x + 2);
+        assert_eq!(buffer[(header_x, id_y)].symbol(), " ");
+        assert_eq!(buffer[(id_x, id_y)].bg, Color::DarkGray);
+        assert!(!lines[id_y as usize].contains(['>', '»']));
+        let (state_x, _) = locate("State");
+        let state: String = (state_x..state_x + 7)
+            .map(|x| buffer[(x, id_y)].symbol())
+            .collect();
+        assert_eq!(state, "Enabled");
+        if width >= 160 {
+            assert_eq!(locate("a_module").0, header_x + 2);
+            for (header, value) in [
+                ("Capabilities", "classify"),
+                ("State", "Enabled"),
+                ("Rank", "4"),
+                ("Collect", "—"),
+                ("Classify", "—"),
+                ("Details", "—"),
+            ] {
+                let (x, y) = locate(header);
+                assert_eq!(y, header_y);
+                let actual: String = (x..x + value.chars().count() as u16)
+                    .map(|x| buffer[(x, id_y)].symbol())
+                    .collect();
+                assert_eq!(actual, value, "{header} at width {width}");
+            }
+            assert_eq!(locate("Capabilities").0, header_x + 43);
+            let (last_x, _) = locate("Details");
+            assert!(last_x < 150);
+            assert!(
+                lines[header_y as usize]
+                    .chars()
+                    .skip(last_x as usize + 7)
+                    .take((width - last_x - 9) as usize)
+                    .all(|c| c == ' ')
+            );
+        }
+        assert_eq!(
+            lines[header_y as usize].contains("Capabilities"),
+            width >= 123
+        );
+        if width == 160 || width == 36 {
+            priority_reset_frame(&app, width, height, "pl4-pl5-inventory");
+        }
+    }
+    let long_id = "module_with_a_very_long_identifier_that_exceeds_the_inventory_column";
+    app.inventory.last_mut().unwrap().descriptor.id = long_id.into();
+    app.extension_selected = Some(long_id.into());
+    handle_key(&mut app, KeyCode::Char(' ').into());
+    for (width, height) in [(160, 30), (36, 10)] {
+        let text = priority_reset_frame(&app, width, height, "sources-long-id-marker");
+        let row = text.lines().find(|line| line.contains("module_w")).unwrap();
+        assert!(
+            row.contains("* module_w") && row.contains("Disabled"),
+            "{text}"
+        );
+    }
+    let text = priority_reset_frame(&app, 160, 30, "pl4-pl5-long-id");
+    assert!(text.contains(" module_with_a_very"));
+    assert!(!text.contains(long_id));
+    handle_key(&mut app, KeyCode::Right.into());
+    assert!(
+        priority_reset_frame(&app, 160, 30, "pl4-pl5-details").contains(&format!("ID: {long_id}"))
+    );
+    let mut pages = String::new();
+    for _ in 0..10 {
+        pages.push_str(&priority_reset_frame(&app, 36, 10, "pl4-pl5-long-details"));
+        handle_key(&mut app, KeyCode::Down.into());
+    }
+    let unwrapped: String = pages
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '│')
+        .collect();
+    assert!(unwrapped.contains(long_id));
+    handle_key(&mut app, KeyCode::Left.into());
+    {
+        app.priority_mode = 1;
+        app.extension_selected = Some("project".into());
+        let text = priority_reset_frame(&app, 160, 30, "pl4-pl5-priority");
+        let header = text
+            .lines()
+            .find(|line| line.contains("Rank / Name"))
+            .unwrap();
+        let row = text.lines().find(|line| line.contains("Projects")).unwrap();
+        let x = header.find("Rank / Name").unwrap();
+        assert_eq!(&row[x..x + 2], "  ");
+        assert!(row.as_bytes()[x + 2].is_ascii_digit());
+        let id_x = header.find("ID").unwrap();
+        assert_eq!(&row[id_x..id_x + 7], "project");
+    }
+    root.close().unwrap();
+}
+
+#[test]
+fn extension_actions_follow_bundled_draft_intent() {
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let path = root.path().join("config.json");
+    let mut app = priority_reset_app(&path);
+    app.extension_selected = Some("docker".into());
+    app.extensions.push(crate::extensions::report::Record::new(
+        "docker",
+        "collect",
+        "failed",
+        Some("provider_failed"),
+        None,
+    ));
+    for (width, height) in [(160, 30), (36, 10)] {
+        let text = priority_reset_frame(&app, width, height, "pl6-blocked-action");
+        for hint in ["Space Disable", "Ctrl-S Save", "Esc Cancel", "Blocked"] {
+            assert!(text.contains(hint), "{hint}: {text}");
+        }
+        if width == 160 {
+            assert!(text.contains("Blocked / error"));
+        }
+        assert!(text.contains("Shift↑↓ Move") && text.contains("Ctrl-R Reset"));
+        if width == 160 {
+            assert!(text.contains("Ctrl-R Reset order"));
+        }
+    }
+    app.extensions.push(crate::extensions::report::Record::new(
+        "broken",
+        "read",
+        "failed",
+        Some("invalid_data"),
+        None,
+    ));
+    app.priority_error = Some("Config changed on disk".into());
+    let error = priority_reset_frame(&app, 36, 10, "sources-error-row");
+    assert!(error.contains("Config changed on disk"));
+    assert!(
+        error
+            .lines()
+            .any(|line| line.contains("docker") && line.contains("Blocked")),
+        "{error}"
+    );
+    app.priority_error = None;
+    handle_key(&mut app, KeyCode::Char(' ').into());
+    for (width, height) in [(160, 30), (36, 10)] {
+        let text = priority_reset_frame(&app, width, height, "pl6-disabled-action");
+        for hint in [
+            "Space Enable",
+            "* docker",
+            "Ctrl-S Save",
+            "Esc Cancel",
+            "Disabled",
+        ] {
+            assert!(text.contains(hint), "{hint}: {text}");
+        }
+    }
+    handle_key(&mut app, KeyCode::Char(' ').into());
+    let text = priority_reset_frame(&app, 36, 10, "pl6-restored-action");
+    assert!(text.contains("Space Disable") && !text.contains("* docker"));
+    assert!(!text.contains("Unsaved draft") && !text.contains("Extensions *"));
+    app.extension_selected = Some("a_module".into());
+    for (width, height) in [(160, 30), (36, 10)] {
+        let text = priority_reset_frame(&app, width, height, "pl6-module-cli");
+        assert!(text.contains("Space Disable"), "{text}");
+        assert!(!text.contains("enable|disable ID") && !text.contains("Toggle"));
+    }
+    {
+        handle_key(&mut app, KeyCode::Tab.into());
+        assert_eq!(app.priority_mode, 1);
+        for (width, height) in [(160, 30), (36, 10)] {
+            let text = priority_reset_frame(&app, width, height, "pl6-priority-controls");
+            for hint in ["Shift↑↓ Move", "Ctrl-R Reset", "Ctrl-S Save", "Esc Cancel"] {
+                assert!(text.contains(hint), "{hint}: {text}");
+            }
+            assert!(!text.contains("Space ") && !text.contains("enable|disable"));
+        }
+    }
+    let owned_path = root.path().to_path_buf();
+    root.close().unwrap();
+    assert!(!owned_path.exists());
+}
+
+#[test]
+fn sources_and_ownership_keep_drafts_and_highlight_without_prefixes() {
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let path = root.path().join("config.json");
+    std::fs::write(&path, serde_json::json!({"version":1,"settings":{"future.key":1},"source_priority":["unknown_source"],"ownership_priority":["unknown_dimension"]}).to_string()).unwrap();
+    let mut app = priority_reset_app(&path);
+    assert_eq!(app.priority_mode, 0);
+    app.extension_selected = Some("project".into());
+    handle_key(&mut app, KeyCode::Char(' ').into());
+    assert_eq!(app.builtin_draft.get("project"), Some(&false));
+    for (width, height) in [(160, 30), (36, 10)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| extensions::draw(frame, &app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let cells: Vec<_> = buffer
+            .content
+            .iter()
+            .filter(|c| c.bg == ratatui::style::Color::DarkGray)
+            .collect();
+        assert!(!cells.is_empty());
+        assert!(cells.iter().all(|c| !matches!(c.symbol(), ">" | "»")));
+
+        let selected_y = (0..height)
+            .find(|&y| buffer[(3, y)].symbol() == "*")
+            .unwrap();
+        assert_eq!(buffer[(3, selected_y)].bg, ratatui::style::Color::DarkGray);
+        assert_eq!(buffer[(4, selected_y)].symbol(), " ");
+        assert_eq!(buffer[(5, selected_y)].symbol(), "p");
+        assert_ne!(buffer[(2, selected_y)].bg, ratatui::style::Color::DarkGray);
+    }
+    handle_key(&mut app, KeyCode::Home.into());
+    let inventory = priority_reset_frame(&app, 160, 30, "rw49-groups");
+    app.extension_selected = Some("project".into());
+    assert!(!inventory.contains("Type") && !inventory.contains("Version"));
+    assert!(inventory.contains("Capabilities") && inventory.contains("Rank"));
+    assert!(
+        inventory.contains("app_bundle")
+            && inventory.contains("Fixed")
+            && !inventory.contains("Required")
+    );
+    handle_key(&mut app, KeyCode::Right.into());
+    let mut pages = String::new();
+    for _ in 0..30 {
+        pages.push_str(&priority_reset_frame(&app, 36, 10, "rw49-narrow-details"));
+        handle_key(&mut app, KeyCode::Down.into());
+    }
+    for label in [
+        "ID: project",
+        "Capabilities:",
+        "classify",
+        "Source rank:",
+        "Disabled",
+        "Timings",
+    ] {
+        assert!(pages.contains(label), "{label}: {pages}");
+    }
+    handle_key(&mut app, KeyCode::Esc.into());
+    assert_eq!(app.priority_mode, 0);
+    app.extension_selected = Some("a_module".into());
+    for _ in 0..20 {
+        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+    }
+    assert_eq!(app.priority_draft.as_ref().unwrap()[0], "a_module");
+    assert!(
+        app.priority_draft
+            .as_ref()
+            .unwrap()
+            .contains(&"app_bundle".into())
+    );
+    let sources = app.priority_draft.clone();
+    handle_key(&mut app, KeyCode::Tab.into());
+    assert_eq!(app.priority_mode, 1);
+    app.extension_selected = Some("project".into());
+    handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+    assert_eq!(app.priority_draft, sources);
+    assert!(
+        app.ownership_draft
+            .as_ref()
+            .unwrap()
+            .contains(&"unknown_dimension".into())
+    );
+    assert!(priority_reset_frame(&app, 100, 30, "rw49-ownership").contains("Ownership"));
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    );
+    let saved = crate::settings::Config::load_path(Some(&path), true).unwrap();
+    assert_eq!(saved.source_priority[0], "a_module");
+    assert!(
+        saved
+            .ownership_priority
+            .contains(&"unknown_dimension".into())
+    );
+    assert_eq!(saved.disabled_builtins, ["project"]);
+    assert_eq!(saved.settings["future.key"], 1);
+    assert!(app.extensions_page && app.priority_mode == 1);
+    handle_key(&mut app, KeyCode::Esc.into());
+    handle_key(&mut app, KeyCode::Char('e').into());
+    app.extension_selected = Some("project".into());
+    handle_key(&mut app, KeyCode::Char(' ').into());
+    handle_key(&mut app, KeyCode::Esc.into());
+    assert_eq!(
+        crate::settings::Config::load_path(Some(&path), true)
+            .unwrap()
+            .disabled_builtins,
+        ["project"]
+    );
+    assert!(app.manual_refresh.is_none());
+    root.close().unwrap();
+}
+
+#[test]
+fn settings_tabs_keep_selection_highlight_and_main_disclosure_markers() {
+    use ratatui::style::{Color, Modifier};
+    let mut app = app();
+    app.settings = Some(settings::Popup::new(crate::settings::edit::Settings::new(
+        crate::settings::Registry::core(),
+        Default::default(),
+        Default::default(),
+        None,
+    )));
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(!text.contains('»'));
+    assert!(text.contains('v') || text.contains('>'));
+    handle_key(&mut app, KeyCode::Char('s').into());
+    for tab in [KeyCode::Tab, KeyCode::BackTab] {
+        handle_key(&mut app, tab.into());
+        terminal
+            .draw(|frame| app.settings.as_ref().unwrap().draw(frame))
+            .unwrap();
+        let selected: Vec<_> = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .filter(|c| c.bg == Color::DarkGray)
+            .collect();
+        assert!(!selected.is_empty());
+        assert!(selected.iter().all(|c| !matches!(c.symbol(), ">" | "»")));
+        assert!(selected.iter().all(|c| !c.modifier.contains(Modifier::DIM)));
+    }
+}
+
+#[test]
+fn review_priority_noop_and_return_to_baseline_do_not_materialize_defaults() {
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let path = root.path().join("config.json");
+    let baseline = serde_json::json!({"version":1,"settings":{"unknown.key":1},"source_priority":["unknown_source"],"ownership_priority":["unknown_dimension"]});
+    for mode in [0, 1] {
+        for movement in [vec![KeyCode::Up], vec![KeyCode::Down, KeyCode::Up], vec![]] {
+            std::fs::write(&path, baseline.to_string()).unwrap();
+            let before = std::fs::read(&path).unwrap();
+            let mut app = priority_reset_app(&path);
+            app.priority_mode = mode;
+            handle_key(&mut app, KeyCode::Home.into());
+            for key in movement {
+                handle_key(&mut app, KeyEvent::new(key, KeyModifiers::SHIFT));
+            }
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+            terminal
+                .draw(|frame| extensions::draw(frame, &app))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let highlighted: Vec<_> = buffer
+                .content
+                .iter()
+                .filter(|c| c.bg == ratatui::style::Color::DarkGray)
+                .collect();
+            let selected: String = highlighted.iter().map(|c| c.symbol()).collect();
+            assert!(selected.contains("unknown"), "{selected}");
+            assert!(highlighted.iter().all(|c| !matches!(c.symbol(), ">" | "»")));
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), before, "mode {mode}");
+        }
+    }
+    root.close().unwrap();
+}
+
+#[test]
+fn review_ownership_ties_match_core_and_main_selected_style_is_visible() {
+    use crate::extensions::{
+        placement::{Ownership, Registry},
+        tags::{Effective, Report},
+    };
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let mut app = priority_reset_app(&root.path().join("config.json"));
+    app.ownership_draft = Some(vec!["extensions.fixture.owner".into(), "work".into()]);
+    app.priority_mode = 1;
+    let ids = extensions::order(&app, true);
+    assert!(
+        ids.iter()
+            .position(|id| id == "extensions.fixture.owner")
+            .unwrap()
+            < ids.iter().position(|id| id == "work").unwrap()
+    );
+    let registry = Registry {
+        categories: Default::default(),
+        ownership: [
+            Ownership::new("work", "unclassified", 300),
+            Ownership::new("extensions.fixture.owner", "extensions.fixture.jobs", 300),
+        ]
+        .into_iter()
+        .map(|o| (o.dimension.clone(), o))
+        .collect(),
+    };
+    let report = Report { effective: ["work","extensions.fixture.owner"].map(|dimension| Effective { source:"fixture".into(), tag:serde_json::from_value(serde_json::json!({"dimension":dimension,"id":format!("{dimension}:job"),"label":"Job","path":null,"basis":"observed"})).unwrap() }).into(), ..Default::default() };
+    assert_eq!(
+        registry
+            .selected(&report, &crate::extensions::default_settings().unwrap())
+            .unwrap()
+            .tag
+            .dimension,
+        "extensions.fixture.owner"
+    );
+    let mut main = super::tests::app();
+    select(&mut main, "pid:11");
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, &main, &mut TableState::default()))
+        .unwrap();
+    let cells: Vec<_> = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .filter(|c| c.bg == ratatui::style::Color::DarkGray)
+        .collect();
+    let selected: String = cells.iter().map(|c| c.symbol()).collect();
+    assert!(selected.contains("pid:11"), "{selected}");
+    assert!(
+        cells
+            .iter()
+            .all(|c| c.modifier.contains(ratatui::style::Modifier::BOLD))
+    );
+    assert!(!selected.contains('»'));
+    root.close().unwrap();
+}
+
+#[test]
+fn launched_by_details_and_search_survive_snapshot_projection_and_disable() {
+    use crate::extensions::builtin::launched_by::tests::snapshot;
+    let mut app = App::new("group:all".into(), usize::MAX);
+    let mut initial = snapshot(true, "group:all");
+    initial.project(&[]);
+    app.update(Ok(initial));
+    app.query = "lumina".into();
+    app.rebuild();
+    let text = screen(&app, 160);
+    assert!(text.contains("pid:40"), "{text}");
+    assert!(
+        !serde_json::to_string(&app.snapshot.as_ref().unwrap().root)
+            .unwrap()
+            .contains("evidence_chain")
+    );
+    select(&mut app, "pid:40");
+    app.open_details();
+    app.update(Ok(snapshot(true, "group:all")));
+    let text = screen(&app, 160);
+    assert!(text.contains("Launched by Lumina"), "{text}");
+    for pid in [40, 30, 20] {
+        assert!(text.contains(&format!("via pid:{pid}")), "{text}");
+    }
+    assert!(
+        text.contains("/Applications/Lumina.app/Contents/Helpers/agent"),
+        "{text}"
+    );
+    app.details = None;
+    app.update(Ok(snapshot(false, "group:all")));
+    let text = screen(&app, 160);
+    assert!(!text.contains("pid:40"), "{text}");
+}
+
+#[test]
+fn vm_host_and_in_vm_metrics_have_separate_details_without_command_queries() {
+    for apple in [false, true] {
+        let source = crate::extensions::builtin::vm::tests::fixture_snapshot(apple, true);
+        let mut app = App::new("group:all".into(), usize::MAX);
+        app.update(Ok(source));
+        let mut pending = vec![&app.snapshot.as_ref().unwrap().root];
+        let mut reference = None;
+        while let Some(node) = pending.pop() {
+            if !node.host_resources.is_empty() {
+                reference = Some(node.reference.clone());
+                break;
+            }
+            pending.extend(&node.children);
+        }
+        select(&mut app, &reference.unwrap());
+        app.open_details();
+        assert!(app.details.as_ref().unwrap().query_pid().is_none());
+        let lines = app.details.as_ref().unwrap().lines().join("\n");
+        assert!(lines.contains("VM host pid:40"), "{lines}");
+        assert!(lines.contains("separate from in-VM usage"), "{lines}");
+        if !apple {
+            assert!(lines.contains("in-VM usage: CPU"), "{lines}");
+        }
+        assert!(lines.contains("Config ("), "{lines}");
+        if apple {
+            assert!(lines.contains("VM total RAM unknown"), "{lines}");
+            assert!(lines.contains("in-VM"), "{lines}");
+        }
+        let text = screen(&app, 160);
+        assert!(text.contains("VM host pid:40"), "{text}");
+    }
+}
+
+pub(crate) fn assert_aggregate_metrics_scope(snapshot: Snapshot, expected_in_vm: bool) {
+    let mut app = App::new(snapshot.scope.clone(), 0);
+    app.update(Ok(snapshot));
+    let text = screen(&app, 160);
+    assert_eq!(text.contains("in-VM"), expected_in_vm, "{text}");
+}
+
+#[test]
+fn priority_markers_follow_changed_displayed_ranks_and_reset() {
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let path = root.path().join("config.json");
+    let mut app = priority_reset_app(&path);
+    for mode in [0, 1] {
+        app.priority_mode = mode;
+        let ids = extensions::order(&app, mode == 1);
+        app.extension_selected = Some(ids[0].clone());
+        let initial = priority_reset_frame(&app, 160, 30, "pl6-priority-clean");
+        let initial_narrow = priority_reset_frame(&app, 36, 10, "priority-clean-narrow");
+        assert!(!initial.contains('*'));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+        assert!(!priority_reset_frame(&app, 160, 30, "pl6-priority-noop").contains('*'));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+        let changed = priority_reset_frame(&app, 160, 30, "pl6-priority-changed");
+        assert_eq!(changed.matches('*').count(), 2);
+        let narrow = priority_reset_frame(&app, 36, 10, "priority-narrow-marker");
+        assert!(
+            narrow.contains('*') && !narrow.contains("Extensions *"),
+            "{narrow}"
+        );
+        assert!(!changed.contains("Extensions *") && !changed.contains("Unsaved draft"));
+        for (text, clean) in [(&changed, &initial), (&narrow, &initial_narrow)] {
+            let header = text
+                .lines()
+                .find(|line| line.contains(if mode == 0 { "ID" } else { "Rank / Name" }))
+                .unwrap();
+            let x = header
+                .find(if mode == 0 { "ID" } else { "Rank / Name" })
+                .unwrap();
+            for row in text.lines().filter(|line| line.contains('*')) {
+                assert_eq!(&row[x..x + 2], "* ", "{row}");
+                assert_ne!(&row[x + 2..x + 3], " ", "{row}");
+            }
+            if mode == 0 {
+                let id = &ids[0];
+                let before = clean.lines().find(|line| line.contains(id)).unwrap();
+                let after = text.lines().find(|line| line.contains(id)).unwrap();
+                assert_eq!(before.find(id), after.find(id));
+            }
+        }
+        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+        assert!(!priority_reset_frame(&app, 160, 30, "pl6-priority-undo").contains('*'));
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        );
+        assert!(!priority_reset_frame(&app, 160, 30, "pl6-priority-reset").contains('*'));
+    }
+    root.close().unwrap();
+}
+
+#[test]
+fn extension_tabs_stay_visible_and_highlight_active_mode_at_both_widths() {
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let mut app = priority_reset_app(&root.path().join("config.json"));
+    for (expected, key) in [
+        (0, None),
+        (1, Some(KeyCode::Tab)),
+        (0, Some(KeyCode::Tab)),
+        (1, Some(KeyCode::BackTab)),
+    ] {
+        if let Some(key) = key {
+            handle_key(&mut app, key.into());
+        }
+        assert_eq!(app.priority_mode, expected);
+        for (width, height, labels) in [
+            (160, 30, ["Sources", "Ownership"]),
+            (36, 10, ["Sources", "Ownership"]),
+        ] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| extensions::draw(frame, &app))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let (y, line) = (0..height)
+                .map(|y| {
+                    (
+                        y,
+                        (0..width)
+                            .map(|x| buffer[(x, y)].symbol())
+                            .collect::<String>(),
+                    )
+                })
+                .find(|(_, line)| labels.iter().all(|label| line.contains(label)))
+                .expect("all tabs must share a visible strip");
+            for (mode, label) in labels.iter().enumerate() {
+                let x = line[..line.find(label).unwrap()].chars().count() as u16;
+                assert_eq!(
+                    buffer[(x, y)].bg == ratatui::style::Color::DarkGray,
+                    mode == usize::from(expected),
+                    "active tab {mode} at {width}: {line}"
+                );
+            }
+            assert!(line.contains("Source") && line.contains("Ownership"));
+        }
+    }
+    root.close().unwrap();
+}
+
+#[test]
+fn sources_mix_core_inventory_and_unavailable_ids_without_extension_side_effects() {
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let path = root.path().join("config.json");
+    std::fs::write(&path, serde_json::json!({"version":1,"settings":{},"source_priority":["missing_source","project","a_module","command","invalid_package"]}).to_string()).unwrap();
+    let mut app = priority_reset_app(&path);
+    let inventory_ids: Vec<_> = app
+        .inventory
+        .iter()
+        .map(|e| e.descriptor.id.clone())
+        .collect();
+    assert!(
+        !inventory_ids
+            .iter()
+            .any(|id| matches!(id.as_str(), "app_bundle" | "bin" | "command"))
+    );
+    let baseline = extensions::order(&app, false);
+    let initial = priority_reset_frame(&app, 160, 30, "sources-mixed");
+    for (id, kind, state) in [
+        ("command", "Core", "Fixed"),
+        ("project", "Builtin", "Enabled"),
+        ("a_module", "Module", "Enabled"),
+        ("missing_source", "Unknown", "Unavailable"),
+        ("invalid_package", "Unknown", "Unavailable"),
+    ] {
+        let row = initial
+            .lines()
+            .find(|line| line.contains(&format!(" {id} ")))
+            .unwrap();
+        assert!(row.contains(state), "{row}");
+        if kind == "Core" || kind == "Unknown" {
+            assert!(
+                !row.contains("classify")
+                    && !row.contains("1.1.0")
+                    && !row.contains("invented-version")
+            );
+        }
+    }
+    assert!(!initial.contains('*'));
+    for id in ["command", "missing_source", "invalid_package"] {
+        app.extension_selected = Some(id.into());
+        handle_key(&mut app, KeyCode::Char(' ').into());
+        assert!(app.builtin_draft.is_empty());
+        for (width, height) in [(160, 30), (36, 10)] {
+            let text = priority_reset_frame(&app, width, height, "sources-fixed-action");
+            assert!(
+                text.contains("State")
+                    && !text.contains("Space Enable")
+                    && !text.contains("Space Disable"),
+                "{text}"
+            );
+        }
+        handle_key(&mut app, KeyCode::Right.into());
+        let details = priority_reset_frame(&app, 160, 30, "sources-fixed-details");
+        assert!(details.contains(&format!("ID: {id}")) && details.contains("Rank:"));
+        assert!(
+            !details.contains("Capabilities:")
+                && !details.contains("Timings")
+                && !details.contains("invented-version")
+        );
+        assert_eq!(details.contains("fixed enabled"), id == "command");
+        handle_key(&mut app, KeyCode::Left.into());
+    }
+    app.extension_selected = Some("a_module".into());
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+    assert_eq!(
+        &extensions::order(&app, false)[..4],
+        ["missing_source", "project", "command", "a_module"]
+    );
+    assert_eq!(app.extension_selected.as_deref(), Some("a_module"));
+    app.extension_selected = Some("command".into());
+    let core_frame = priority_reset_frame(&app, 160, 30, "sources-core-prefix");
+    assert!(core_frame.contains("* command"), "{core_frame}");
+    app.extension_selected = Some("a_module".into());
+    handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+    assert_eq!(extensions::order(&app, false), baseline);
+    assert!(!priority_reset_frame(&app, 160, 30, "sources-undo-core").contains('*'));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+    assert_eq!(
+        &extensions::order(&app, false)[..3],
+        ["missing_source", "a_module", "project"]
+    );
+    assert_eq!(
+        priority_reset_frame(&app, 160, 30, "sources-cross-type")
+            .matches('*')
+            .count(),
+        2
+    );
+    handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+    assert_eq!(extensions::order(&app, false)[0], "a_module");
+    app.extension_selected = Some("missing_source".into());
+    assert!(
+        priority_reset_frame(&app, 160, 30, "sources-unknown-prefix").contains("* missing_source")
+    );
+    assert_eq!(
+        inventory_ids,
+        app.inventory
+            .iter()
+            .map(|e| e.descriptor.id.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(app.manual_refresh.is_none() && app.extensions.is_empty());
+    root.close().unwrap();
+}
+
+#[test]
+fn sources_reset_only_order_and_tabs_retain_identity_and_scroll() {
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let path = root.path().join("config.json");
+    let mut app = priority_reset_app(&path);
+    app.extension_selected = Some("project".into());
+    handle_key(&mut app, KeyCode::Char(' ').into());
+    app.extension_selected = Some("a_module".into());
+    handle_key(&mut app, KeyCode::Char(' ').into());
+    handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+    let ownership = app.ownership_draft.clone();
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    );
+    assert!(app.priority_draft.as_ref().unwrap().is_empty());
+    assert_eq!(app.ownership_draft, ownership);
+    assert_eq!(app.builtin_draft.get("project"), Some(&false));
+    assert_eq!(app.builtin_draft.get("a_module"), Some(&false));
+    priority_reset_frame(&app, 36, 10, "sources-scroll-before");
+    let offset = app.extension_tables.borrow()[0].offset();
+    assert!(offset > 0);
+    handle_key(&mut app, KeyCode::Tab.into());
+    app.extension_selected = Some("project".into());
+    handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+    let sources = app.priority_draft.clone();
+    handle_key(&mut app, KeyCode::Char(' ').into());
+    assert_eq!(app.builtin_draft.len(), 2);
+    handle_key(&mut app, KeyCode::Right.into());
+    let details = priority_reset_frame(&app, 160, 30, "ownership-dimension-details");
+    assert!(details.contains("Ownership: main placement"));
+    assert!(!details.contains("Capabilities:") && !details.contains("Timings"));
+    handle_key(&mut app, KeyCode::Left.into());
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    );
+    assert_eq!(app.priority_draft, sources);
+    assert!(app.ownership_draft.as_ref().unwrap().is_empty());
+    priority_reset_frame(&app, 36, 10, "ownership-scroll");
+    let owner_offset = app.extension_tables.borrow()[1].offset();
+    handle_key(&mut app, KeyCode::BackTab.into());
+    assert_eq!(app.extension_selected.as_deref(), Some("a_module"));
+    let text = priority_reset_frame(&app, 36, 10, "sources-scroll-restored");
+    assert_eq!(app.extension_tables.borrow()[0].offset(), offset);
+    assert!(text.contains("* a_module") && text.contains("State"));
+    handle_key(&mut app, KeyCode::BackTab.into());
+    assert_eq!(app.extension_selected.as_deref(), Some("project"));
+    priority_reset_frame(&app, 36, 10, "ownership-scroll-restored");
+    assert_eq!(app.extension_tables.borrow()[1].offset(), owner_offset);
+    handle_key(&mut app, KeyCode::Tab.into());
+    handle_key(&mut app, KeyCode::Esc.into());
+    assert!(app.builtin_draft.is_empty() && !path.exists());
+    root.close().unwrap();
+}
+
+#[test]
+fn settings_details_keep_drafts_and_expose_complete_descriptions_at_both_sizes() {
+    use crate::settings::{Config, edit::Settings};
+    for (width, height) in [(100, 30), (36, 10)] {
+        let mut registry = crate::extensions::settings_registry().unwrap();
+        registry
+            .register_extension(
+                "zzz",
+                vec![
+                    serde_json::from_value(serde_json::json!({
+                        "key":"extensions.zzz.secret", "type":"string", "default":"hidden-default",
+                        "options":["hidden-default", "hidden-choice"], "sensitive":true,
+                        "description":format!("{}Description end", "Long description ".repeat(100)),
+                        "provider":"zzz"
+                    }))
+                    .unwrap(),
+                ],
+                vec![],
+            )
+            .unwrap();
+        let mut app = app();
+        app.settings = Some(settings::Popup::new(Settings::new(
+            registry,
+            Config::default(),
+            Default::default(),
+            None,
+        )));
+        let render = |app: &App| {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| view::draw(frame, app, &mut TableState::default()))
+                .unwrap();
+            (0..height)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        handle_key(&mut app, KeyCode::Char('s').into());
+        handle_key(&mut app, KeyCode::End.into());
+        handle_key(&mut app, KeyCode::Enter.into());
+        let draft = app.settings.as_ref().unwrap().changes.clone();
+        let before = render(&app);
+        handle_key(&mut app, KeyCode::PageDown.into());
+        assert_eq!(render(&app), before, "list PageDown must not open details");
+        for back in [KeyCode::Left, KeyCode::Esc] {
+            handle_key(&mut app, KeyCode::Right.into());
+            let top = render(&app);
+            let rows: Vec<_> = top.lines().collect();
+            let border = rows
+                .iter()
+                .position(|line| line.contains("┌ Settings details"))
+                .unwrap();
+            let footer = rows
+                .iter()
+                .position(|line| line.contains("↑↓ Scroll"))
+                .unwrap();
+            let body_height = footer - border - 1;
+            assert!(!rows[footer..].iter().any(|line| line.contains("Pg")));
+            handle_key(&mut app, KeyCode::PageDown.into());
+            let page = render(&app);
+            handle_key(&mut app, KeyCode::Left.into());
+            handle_key(&mut app, KeyCode::Right.into());
+            render(&app);
+            for _ in 0..body_height {
+                handle_key(&mut app, KeyCode::Down.into());
+            }
+            assert_eq!(render(&app), page);
+            handle_key(&mut app, KeyCode::PageUp.into());
+            assert_eq!(render(&app), top);
+            let mut pages = String::new();
+            for _ in 0..20 {
+                pages.push_str(&render(&app));
+                handle_key(&mut app, KeyCode::PageDown.into());
+            }
+            for expected in [
+                "Key:",
+                "Default: [masked]",
+                "Constraints: [masked]",
+                "Value: [masked]",
+                "Description end",
+                "Back",
+                "Scroll",
+            ] {
+                assert!(pages.contains(expected), "missing {expected}: {pages}");
+            }
+            assert!(!pages.contains("hidden-default") && !pages.contains("hidden-choice"));
+            let bottom = render(&app);
+            handle_key(&mut app, KeyCode::Up.into());
+            assert_ne!(render(&app), bottom);
+            for _ in 0..20 {
+                handle_key(&mut app, KeyCode::PageUp.into());
+            }
+            assert!(render(&app).contains("Label:"), "PageUp stays in details");
+            handle_key(&mut app, back.into());
+            assert_eq!(render(&app), before);
+            assert_eq!(app.settings.as_ref().unwrap().changes, draft);
+        }
+        handle_key(&mut app, KeyCode::Home.into());
+        for _ in 0..3 {
+            handle_key(&mut app, KeyCode::Down.into());
+        }
+        let summary = render(&app);
+        assert!(summary.contains("Entry argv"));
+        assert!(!summary.contains("once per round"));
+        if width == 100 {
+            assert!(summary.contains("Identify entry work from your processes' launch arguments."));
+        }
+        handle_key(&mut app, KeyCode::Right.into());
+        let mut pages = String::new();
+        for _ in 0..25 {
+            pages.push_str(&render(&app));
+            handle_key(&mut app, KeyCode::Down.into());
+        }
+        let words = pages
+            .replace('│', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(words.contains("once per round"), "{pages}");
+        handle_key(&mut app, KeyCode::Left.into());
+        handle_key(&mut app, KeyCode::Down.into());
+        if width == 100 {
+            assert!(
+                render(&app).contains(
+                    "Identify scripts and modules from your processes' launch arguments."
+                )
+            );
+        }
+        handle_key(&mut app, KeyCode::Right.into());
+        let mut pages = String::new();
+        for _ in 0..20 {
+            pages.push_str(&render(&app));
+            handle_key(&mut app, KeyCode::PageDown.into());
+        }
+        assert!(
+            pages
+                .replace('│', " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains("own python processes once per round")
+        );
+    }
+}
+
+#[test]
+fn main_footer_ends_at_last_row_and_separates_actions_without_clipping() {
+    for (width, height) in [(36, 10), (36, 30), (79, 30), (80, 30), (100, 30), (160, 30)] {
+        let app = app();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+            .unwrap();
+        let rows: Vec<String> = (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect()
+            })
+            .collect();
+        assert!(
+            !rows[usize::from(height - 1)].trim().is_empty(),
+            "unused bottom row: {rows:?}"
+        );
+        let footer = rows.join("\n");
+        for group in ["→ Open", "s Settings", "? Help", "q Quit", "r refresh"] {
+            assert_eq!(footer.matches(group).count(), 1, "{footer}");
+        }
+        assert!(footer.contains("Path") && footer.contains("group:applications"));
+        for line in rows.iter().filter(|line| line.contains(" · ")) {
+            assert!(!line.trim().ends_with('·'), "{footer}");
+        }
+        if width >= 80 {
+            assert!(
+                footer.contains("→ Open · / Search · s Settings · e Extensions"),
+                "{footer}"
+            );
+        }
+    }
+}
+
+#[test]
+fn hint_groups_pack_atomically_by_cell_width_without_dangling_separators() {
+    use ratatui::text::Line;
+    let groups = ["Tab Switch", "鍵 動作", "e\u{301} 👩‍💻", "Esc Back"];
+    assert_eq!(Line::raw(groups[1]).width(), 7);
+    assert_eq!(Line::raw(groups[2]).width(), 4);
+    let joined = groups.join(" · ");
+    let boundary = Line::raw(&joined).width() as u16;
+    assert_eq!(view::hint_lines(&groups, boundary), vec![Line::raw(joined)]);
+    assert_eq!(view::hint_lines(&groups, boundary - 1).len(), 2);
+    for width in [0, 1, 7, 10, 20, boundary] {
+        let lines = view::hint_lines(&groups, width);
+        assert!(lines.len() <= groups.len());
+        let actual: Vec<_> = lines.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            actual
+                .iter()
+                .flat_map(|line| line.split(" · "))
+                .collect::<Vec<_>>(),
+            groups
+        );
+        for line in &lines {
+            let text = line.to_string();
+            assert!(!text.starts_with('·') && !text.ends_with('·'));
+            assert!(line.width() <= usize::from(width) || groups.contains(&text.as_str()));
+        }
+    }
+    assert!(view::hint_lines(&["", ""], 10).is_empty());
+    let mut terminal = Terminal::new(TestBackend::new(3, 2)).unwrap();
+    terminal
+        .draw(|frame| {
+            frame.render_widget(
+                ratatui::widgets::Paragraph::new(view::hint_lines(&["Tab Switch", "Esc Back"], 3)),
+                frame.area(),
+            );
+        })
+        .unwrap();
+    let clipped: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert_eq!(clipped, "TabEsc");
+}
+
+#[test]
+fn extension_footer_uses_exact_inner_width_and_finishes_above_border() {
+    use ratatui::text::Line;
+    let mut app = app();
+    app.inventory =
+        crate::extensions::inventory::list(&crate::extensions::default_settings().unwrap(), true);
+    extensions::open(&mut app);
+    app.extension_selected = Some("project".into());
+    let full = "Tab Switch · Space Disable · Shift↑↓ Move · → Details · Ctrl-S Save · Ctrl-R Reset order · Esc Cancel";
+    let boundary = Line::raw(full).width() as u16 + 6;
+    for (width, height, expected_rows) in [
+        (36, 10, 4),
+        (boundary - 1, 20, 2),
+        (boundary, 20, 1),
+        (160, 20, 1),
+    ] {
+        let text = priority_reset_frame(&app, width, height, "hint-boundary");
+        let rows: Vec<_> = text.lines().collect();
+        let first = rows
+            .iter()
+            .position(|row| row.contains("Tab Switch"))
+            .unwrap();
+        let last = rows
+            .iter()
+            .position(|row| row.contains("Esc Cancel"))
+            .unwrap();
+        assert_eq!(last - first + 1, expected_rows, "{text}");
+        assert!(rows[last + 1].contains('└'), "{text}");
+        for group in [
+            "Tab Switch",
+            "Space Disable",
+            "Shift↑↓ Move",
+            "Ctrl-S Save",
+            "Ctrl-R Reset",
+            "Esc Cancel",
+        ] {
+            assert_eq!(text.matches(group).count(), 1, "{text}");
+        }
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("project") && row.contains("Enabled")),
+            "{text}"
+        );
+        if expected_rows == 1 {
+            assert!(rows[first].contains(full), "{text}");
+        }
+    }
+}
+
+#[test]
+fn search_and_loading_hints_keep_context_and_last_terminal_row() {
+    let mut app = App::new("group:all".into(), 2);
+    for editing in [false, true] {
+        app.editing = editing;
+        app.snapshot = None;
+        app.collecting = true;
+        let mut terminal = Terminal::new(TestBackend::new(36, 10)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..10)
+            .map(|y| (0..36).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let text = rows.join("\n");
+        assert!(!rows[9].trim().is_empty(), "{text}");
+        assert!(text.contains("Path"), "{text}");
+        if editing {
+            assert!(rows[9].contains("Enter Accept · Esc Clear"), "{text}");
+            assert!(
+                !text.contains("q Quit") && !text.contains("r refresh"),
+                "{text}"
+            );
+        } else {
+            for group in [
+                "→ Open",
+                "/ Find",
+                "s Settings",
+                "e Exts",
+                "? Help",
+                "q Quit",
+                "r refresh",
+            ] {
+                assert_eq!(text.matches(group).count(), 1, "{text}");
+            }
+        }
+    }
+}
+
+#[test]
+fn detail_pages_follow_rendered_height_and_clamp_after_resize() {
+    fn render(app: &App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, app, &mut TableState::default()))
+            .unwrap();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+    for family in 0..3 {
+        let mut app = app();
+        if family == 0 {
+            select(&mut app, "pid:11");
+            app.open_details();
+            let mut source = command_snapshot(11);
+            change(&mut source.root, 11, |process| {
+                process.cwd = Some(format!("/{}END", "long-path/".repeat(300)).into());
+            });
+            app.update(Ok(source));
+        } else if family == 1 {
+            let mut node = Node::group(
+                "group:resource".into(),
+                "Resource".into(),
+                vec![],
+                Grouping::Category,
+            );
+            node.kind = "resource";
+            node.resource = Some(crate::model::Resource {
+                provider: "fixture".into(),
+                id: "resource".into(),
+                kind: "storage.volume".into(),
+                label: "Resource".into(),
+                path: Some(format!("/{}END", "long-path/".repeat(300)).into()),
+                metrics: vec![],
+            });
+            app.details = Some(details::Details::new(node));
+        } else {
+            app.inventory = crate::extensions::inventory::list(
+                &crate::extensions::default_settings().unwrap(),
+                true,
+            );
+            handle_key(&mut app, KeyCode::Char('e').into());
+            app.extension_selected = Some("node".into());
+            app.priority_error = Some(format!("{}END", "long-error ".repeat(300)));
+            handle_key(&mut app, KeyCode::Right.into());
+        }
+        assert!(!handle_key(&mut app, KeyCode::PageDown.into()));
+        for (width, height) in [(100, 30), (36, 10), (80, 18)] {
+            let lines = render(&app, width, height);
+            let footer = lines
+                .iter()
+                .position(|line| line.contains("↑↓ Scroll"))
+                .unwrap();
+            assert!(lines[footer..].iter().all(|line| !line.contains("Pg")));
+            let body_height = if family == 2 {
+                let caption = lines
+                    .iter()
+                    .position(|line| line.contains("Sources"))
+                    .unwrap();
+                footer - caption - 1
+            } else {
+                let title = lines
+                    .iter()
+                    .position(|line| line.contains("details ·"))
+                    .unwrap();
+                let position = lines
+                    .iter()
+                    .position(|line| line.contains("Lines "))
+                    .unwrap();
+                position - title - 2
+            };
+            handle_key(&mut app, KeyCode::Home.into());
+            render(&app, width, height);
+            handle_key(&mut app, KeyCode::PageDown.into());
+            let page = render(&app, width, height);
+            handle_key(&mut app, KeyCode::Home.into());
+            for _ in 0..body_height {
+                handle_key(&mut app, KeyCode::Down.into());
+            }
+            assert_eq!(
+                render(&app, width, height),
+                page,
+                "family {family}, {width}x{height}"
+            );
+            handle_key(&mut app, KeyCode::PageUp.into());
+            let top = render(&app, width, height);
+            handle_key(&mut app, KeyCode::Up.into());
+            assert_eq!(render(&app, width, height), top);
+            handle_key(&mut app, KeyCode::End.into());
+            let bottom = render(&app, width, height);
+            handle_key(&mut app, KeyCode::Home.into());
+            let mut pages = String::new();
+            for _ in 0..200 {
+                let current = render(&app, width, height);
+                pages.push_str(&current.join("\n"));
+                if current == bottom {
+                    break;
+                }
+                handle_key(&mut app, KeyCode::PageDown.into());
+            }
+            assert_eq!(render(&app, width, height), bottom);
+            assert!(pages.contains("END"), "family {family}, {width}x{height}");
+            handle_key(&mut app, KeyCode::Down.into());
+            assert_eq!(render(&app, width, height), bottom);
+            handle_key(&mut app, KeyCode::PageUp.into());
+            let previous = render(&app, width, height);
+            handle_key(&mut app, KeyCode::End.into());
+            for _ in 0..body_height {
+                handle_key(&mut app, KeyCode::Up.into());
+            }
+            assert_eq!(render(&app, width, height), previous);
+        }
+        render(&app, 36, 10);
+        handle_key(&mut app, KeyCode::End.into());
+        render(&app, 36, 10);
+        let bottom = render(&app, 100, 30);
+        handle_key(&mut app, KeyCode::Up.into());
+        assert_ne!(render(&app, 100, 30), bottom);
+    }
+}
+
+#[test]
+fn extension_core_unknown_and_ownership_details_clamp_at_document_end() {
+    let mut app = app();
+    handle_key(&mut app, KeyCode::Char('e').into());
+    for (mode, id) in [(0, "app_bundle"), (0, "unknown-fixture"), (1, "project")] {
+        app.priority_mode = mode;
+        if mode == 0 {
+            app.priority_draft = Some(vec![id.into()]);
+        }
+        app.extension_selected = Some(id.into());
+        handle_key(&mut app, KeyCode::Right.into());
+        for (width, height) in [(36, 10), (100, 30)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+                .unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(text.contains(&format!("ID: {id}")), "{text}");
+            assert!(
+                text.contains("↑↓ Scroll") && text.contains("←/Esc Back") && !text.contains("Pg")
+            );
+            handle_key(&mut app, KeyCode::End.into());
+            let end = app.extension_details_scroll.get();
+            handle_key(&mut app, KeyCode::PageDown.into());
+            assert_eq!(app.extension_details_scroll.get(), end);
+            handle_key(&mut app, KeyCode::Home.into());
+            handle_key(&mut app, KeyCode::PageUp.into());
+            assert_eq!(app.extension_details_scroll.get(), 0);
+        }
+        handle_key(&mut app, KeyCode::Left.into());
+        assert!(!app.extension_details && app.extensions_page);
+    }
+}
+
+#[test]
+fn bundled_source_details_show_metadata_without_forcing_columns() {
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let mut app = priority_reset_app(&root.path().join("config.json"));
+    app.extension_selected = Some("project".into());
+    for (width, height) in [(160, 30), (36, 10)] {
+        let list = priority_reset_frame(&app, width, height, "bundled-list");
+        assert!(
+            !list.contains("Type") && !list.contains("Version") && !list.contains("Author"),
+            "{list}"
+        );
+    }
+    handle_key(&mut app, KeyCode::Right.into());
+    let detail = priority_reset_frame(&app, 160, 30, "bundled-detail");
+    assert!(detail.contains("ID: project") && detail.contains("Capabilities: classify"));
+    for removed in [
+        "Source:",
+        "Origin:",
+        "Requires:",
+        "Compatible:",
+        "Path:",
+        "Author:",
+        "Version:",
+        "Provenance:",
+    ] {
+        assert!(!detail.contains(removed), "{detail}");
+    }
+    root.close().unwrap();
+}
+
+pub(crate) fn assert_extension_category(snapshot: Snapshot, category: &str, owner: &str) -> String {
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(snapshot));
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, &app, &mut TableState::default()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let text = (0..30)
+        .map(|y| {
+            (0..120)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains(category), "{text}");
+    assert!(text.contains(owner), "{text}");
+    assert_eq!(app.snapshot.as_ref().unwrap().root.totals.processes, 1);
+    text
+}
+
+#[test]
+fn review_r2_linked_enablement_ignores_unknown_native_intent_key() {
+    let root = tempfile::tempdir_in("/private/tmp").unwrap();
+    let path = root.path().join("config.json");
+    let original = br#"{"version":1,"settings":{"extensions.project.enabled":false}}"#;
+    std::fs::write(&path, original).unwrap();
+    let mut app = priority_reset_app(&path);
+    app.extension_selected = Some("project".into());
+    assert!(
+        app.inventory
+            .iter()
+            .find(|e| e.descriptor.id == "project")
+            .unwrap()
+            .explicit_enabled
+    );
+    handle_key(&mut app, KeyCode::Right.into());
+    assert!(
+        priority_reset_frame(&app, 160, 40, "review-r2-linked-enabled").contains("State: Enabled")
+    );
+    handle_key(&mut app, KeyCode::Left.into());
+    handle_key(&mut app, KeyCode::Char(' ').into());
+    assert_eq!(app.builtin_draft.get("project"), Some(&false));
+    handle_key(&mut app, KeyCode::Char(' ').into());
+    assert!(app.builtin_draft.is_empty());
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    );
+    assert!(app.settings.as_ref().unwrap().applied.is_none());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    handle_key(&mut app, KeyCode::Char(' ').into());
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    );
+    assert!(app.extensions_page && app.priority_error.is_none() && app.builtin_draft.is_empty());
+    let popup = app.settings.as_ref().unwrap();
+    let applied = popup.applied.as_ref().unwrap();
+    assert!(applied.is_disabled("project"));
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["settings"]["extensions.project.enabled"], false);
+    assert_eq!(saved["disabled_builtins"], serde_json::json!(["project"]));
+    let cancel = crate::snapshot::Cancellation::default();
+    let context = crate::extensions::Context::new(applied, &cancel);
+    let facts = crate::extensions::host::Facts::new(&[]);
+    assert!(
+        crate::extensions::dispatch(
+            &crate::extensions::Builtin::Project,
+            &context,
+            crate::extensions::Request::Classify(&facts)
+        )
+        .is_err()
+    );
+    assert!(
+        context
+            .report
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|record| record.provider == "project" && record.result == "skipped")
+    );
+    root.close().unwrap();
+}
+
+#[test]
+fn sources_save_all_disabled_restarts_with_core_categories_and_totals() {
+    let owner = tempfile::tempdir().unwrap();
+    let path = owner.path().canonicalize().unwrap().join("config.json");
+    let mut app = priority_reset_app(&path);
+    app.inventory =
+        crate::extensions::inventory::list(&crate::extensions::default_settings().unwrap(), true);
+    let ids: Vec<_> = app
+        .inventory
+        .iter()
+        .map(|e| e.descriptor.id.clone())
+        .collect();
+    for id in &ids {
+        app.extension_selected = Some(id.clone());
+        handle_key(&mut app, KeyCode::Char(' ').into());
+    }
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    );
+    assert!(
+        app.priority_error.is_none() && app.builtin_draft.is_empty(),
+        "{:?}",
+        app.priority_error
+    );
+    assert!(app.settings.as_ref().unwrap().applied.is_some());
+    let config = crate::settings::Config::load_path(Some(&path), true).unwrap();
+    let settings = crate::extensions::settings_registry()
+        .unwrap()
+        .resolve(&config, &Default::default())
+        .unwrap();
+    assert!(ids.iter().all(|id| settings.is_disabled(id)));
+    let mut restarted = priority_reset_app(&path);
+    restarted.inventory = crate::extensions::inventory::list(&settings, true);
+    assert!(
+        restarted
+            .inventory
+            .iter()
+            .all(|e| !e.explicit_enabled && !e.descriptor.enabled)
+    );
+    for id in &ids {
+        restarted.extension_selected = Some(id.clone());
+        handle_key(&mut restarted, KeyCode::Right.into());
+        assert!(
+            priority_reset_frame(&restarted, 120, 30, "all-disabled").contains("State: Disabled")
+        );
+        handle_key(&mut restarted, KeyCode::Left.into());
+    }
+    let processes = [
+        "/Applications/Demo.app/Contents/MacOS/demo",
+        "/usr/libexec/demo",
+        "/opt/other/demo",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, executable)| Process {
+        pid: i as u32 + 1,
+        started_unix_us: Some(i as u64 + 1),
+        name: "demo".into(),
+        executable: Some(executable.into()),
+        resident_bytes: Some(100),
+        ..Default::default()
+    })
+    .collect();
+    let cancel = Cancellation::default();
+    let context = crate::extensions::Context::new(&settings, &cancel);
+    let root = tree::build_with_providers(processes, &context, &[]).unwrap();
+    assert_eq!(root.totals.processes, 3);
+    assert_eq!(root.totals.resident_bytes, 300);
+    for category in ["applications", "system", "unclassified"] {
+        assert_eq!(
+            tree::select(&root, &format!("group:{category}"))
+                .unwrap()
+                .totals
+                .processes,
+            1
+        );
+    }
+    tree::validate_references(&root).unwrap();
+    assert_eq!(root.children.len(), 3);
+    let owned = owner.path().to_path_buf();
+    owner.close().unwrap();
+    assert!(!owned.exists());
 }

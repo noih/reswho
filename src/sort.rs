@@ -28,6 +28,7 @@ impl Sort {
             (None, Some(_)) => Ordering::Greater,
             _ => Ordering::Equal,
         }
+        .then(left.category_order.cmp(&right.category_order))
         .then(left.reference.cmp(&right.reference))
     }
 
@@ -60,6 +61,9 @@ impl Sort {
             };
         }
         if let Some(totals) = &node.container_totals {
+            if node.totals.processes > 0 {
+                return None;
+            }
             let count = totals.containers - totals.inactive_containers;
             return match self {
                 Self::Name => None,
@@ -150,7 +154,7 @@ mod tests {
         node.kind = "process";
         node.grouping = None;
         node.totals.add_process(&process);
-        node.process = Some(process);
+        node.process = Some(Box::new(process));
         node
     }
 
@@ -256,7 +260,13 @@ mod tests {
         assert!(md.find("node1 pid:1").unwrap() < md.find("node2 pid:2").unwrap());
         assert!(md.find("node2 pid:2").unwrap() < md.find("node10 pid:10").unwrap());
         let json = serde_json::to_value(snapshot).unwrap();
-        assert_eq!(json["root"]["children"][0]["reference"], "pid:1");
-        assert_eq!(json["root"]["children"][2]["reference"], "pid:10");
+        assert_eq!(
+            json["selections"][0]["root"]["children"][0]["reference"],
+            "pid:1"
+        );
+        assert_eq!(
+            json["selections"][0]["root"]["children"][2]["reference"],
+            "pid:10"
+        );
     }
 }

@@ -4,6 +4,12 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Runtime {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_scope: Option<String>,
+    #[serde(skip)]
+    pub host_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<Box<crate::model::ResourceConfiguration>>,
     pub name: String,
     pub context: Option<String>,
     pub endpoint_ref: Option<String>,
@@ -16,6 +22,12 @@ pub struct Runtime {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Container {
+    #[serde(skip)]
+    pub host_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<Box<crate::model::ResourceConfiguration>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_scope: Option<String>,
     pub runtime: String,
     pub endpoint_ref: String,
     pub id: String,
@@ -95,6 +107,8 @@ pub struct Project {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ContainerTotals {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_scope: Option<Box<str>>,
     pub containers: usize,
     pub active_containers: usize,
     pub inactive_containers: usize,
@@ -110,6 +124,11 @@ pub struct ContainerTotals {
 
 impl ContainerTotals {
     pub fn add(&mut self, container: &Container) {
+        if self.containers == 0 {
+            self.metrics_scope = container.metrics_scope.as_deref().map(Into::into);
+        } else if self.metrics_scope.as_deref() != container.metrics_scope.as_deref() {
+            self.metrics_scope = None;
+        }
         self.containers += 1;
         if container.is_inactive() {
             self.inactive_containers += 1;

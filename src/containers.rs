@@ -1,9 +1,9 @@
 use crate::model::{Attribution, AttributionSource};
 #[cfg(target_os = "macos")]
-mod apple;
+pub(crate) mod apple;
 mod attribution;
 pub(crate) mod command;
-mod docker;
+pub(crate) mod docker;
 mod http;
 #[cfg(test)]
 mod measure;
@@ -12,8 +12,8 @@ mod podman;
 mod stats;
 
 use crate::{
+    extensions::host::stable_ref,
     model::{Grouping, Node},
-    tree::stable_ref,
 };
 use anyhow::{Result, bail};
 pub use model::{Container, ContainerTotals, Mount, Port, Project, ProjectSource, Runtime};
@@ -123,6 +123,23 @@ pub(crate) fn collect_apple(
     {
         let _ = context;
         bail!("Apple Container requires macOS");
+    }
+}
+
+pub(crate) fn retain_host_metadata(
+    enabled: bool,
+    runtime: &mut Runtime,
+    containers: &mut [Container],
+) {
+    if !enabled {
+        runtime.host_scope = None;
+        runtime.metrics_scope = None;
+        runtime.configuration = None;
+        for container in containers {
+            container.host_scope = None;
+            container.configuration = None;
+            container.metrics_scope = None;
+        }
     }
 }
 
@@ -267,7 +284,7 @@ fn build(runtime: Runtime, containers: Vec<Container>) -> Result<Node> {
         .children
         .sort_by(|a, b| a.name.cmp(&b.name).then(a.reference.cmp(&b.reference)));
     runtime_node.container_totals = Some(totals.clone());
-    runtime_node.runtime = Some(runtime);
+    runtime_node.runtime = Some(Box::new(runtime));
     let mut root = Node::group(
         "group:containers".into(),
         "Containers".into(),

@@ -93,9 +93,14 @@ pub(super) fn row(node: &Node, container: &Container) -> String {
         }
     };
     format!(
-        "{} [container] {} · {}  {}  {}  {}  {ports}",
+        "{} [container] {} · {}{}  {}  {}  {}  {ports}",
         name_markdown(&node.name),
         node.reference,
+        if container.metrics_scope.as_deref() == Some("in_vm") {
+            "in-VM "
+        } else {
+            ""
+        },
         metric(percent(container.cpu_percent)),
         metric(memory(container.memory_bytes)),
         metric(uptime(container.uptime_seconds)),

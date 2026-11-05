@@ -1,7 +1,7 @@
 use super::super::command::Output;
 use super::*;
 use serde_json::{Value, json};
-use std::collections::VecDeque;
+use std::{collections::VecDeque, path::PathBuf};
 const ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 struct Fake {
     replies: VecDeque<Result<Output>>,
@@ -17,6 +17,8 @@ fn output(text: String) -> Result<Output> {
     Ok(Output {
         stdout: text.into_bytes(),
         issue: None,
+        timed_out: false,
+        exit_code: None,
     })
 }
 fn inspect() -> Value {
@@ -33,14 +35,15 @@ fn configured() -> Fake {
     ].into_iter().map(output).collect(), calls: vec![] }
 }
 fn run(fake: &mut Fake) -> (Runtime, Vec<Container>) {
-    collect(
+    let result = collect(
         fake,
         &Cancellation::default(),
         Instant::now() + Duration::from_secs(1),
         Duration::ZERO,
         (None, None),
         OffsetDateTime::parse("2026-11-03T02:00:00Z", &Rfc3339).unwrap(),
-    )
+    );
+    crate::extensions::collection::assert_adapter("podman", result)
 }
 #[test]
 fn raw_paired_counters_inventory_attribution_and_secret_omission() {
@@ -252,158 +255,6 @@ fn configured_wait_is_once() {
 }
 
 #[test]
-fn nested_provider_fixture() {
-    let Ok(root) = std::env::var("RESWHO_PODMAN_GUARD_ROOT") else {
-        return;
-    };
-    std::fs::write(
-        std::path::Path::new(&root).join("provider.pid"),
-        format!("{} {}", std::process::id(), unsafe { libc::getppid() }),
-    )
-    .unwrap();
-    let cancel = Cancellation::default();
-    let mut runner = PodmanCommand {
-        program: std::path::Path::new(&root).join("cli"),
-        cancel: &cancel,
-        deadline: Instant::now() + Duration::from_secs(8),
-    };
-    let _ = runner.run(&[]);
-}
-#[test]
-fn nested_host_fixture() {
-    if std::env::var_os("RESWHO_PODMAN_GUARD_ROOT").is_none() {
-        return;
-    }
-    let timed = std::env::var_os("RESWHO_PODMAN_OUTER_TIMEOUT").is_some();
-    let result = command::run_bounded(
-        &std::env::current_exe().unwrap(),
-        &[
-            "--exact".into(),
-            "containers::podman::tests::nested_provider_fixture".into(),
-        ],
-        Some(b""),
-        &Cancellation::default(),
-        Instant::now()
-            + if timed {
-                Duration::from_millis(250)
-            } else {
-                Duration::from_secs(9)
-            },
-    );
-    if timed {
-        assert!(result.unwrap().issue.unwrap().contains("deadline"));
-    }
-}
-#[test]
-fn nested_native_cli_guard_reaps_on_host_death_timeout_and_cancel() {
-    use std::process::{Command, Stdio};
-    let dir = tempfile::tempdir().unwrap();
-    let source = dir.path().join("cli.c");
-    std::fs::write(&source,r#"#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-int main(void){const char *root=getenv("RESWHO_PODMAN_GUARD_ROOT");if(!root)return 2;int p=fork();if(p==0){close(0);close(1);close(2);sleep(30);return 0;}char f[4096],t[4096];snprintf(f,sizeof f,"%s/cli.pid",root);snprintf(t,sizeof t,"%s/cli.tmp",root);FILE *o=fopen(t,"w");fprintf(o,"%d %d %d",getpid(),getppid(),p);fclose(o);rename(t,f);sleep(30);return 0;}
-"#).unwrap();
-    let program = dir.path().join("cli");
-    assert!(
-        Command::new("cc")
-            .arg(&source)
-            .arg("-o")
-            .arg(&program)
-            .status()
-            .unwrap()
-            .success()
-    );
-    for timed in [false, true] {
-        let mut host_command = Command::new(std::env::current_exe().unwrap());
-        if timed {
-            host_command.env("RESWHO_PODMAN_OUTER_TIMEOUT", "1");
-        }
-        let mut host = host_command
-            .args(["--exact", "containers::podman::tests::nested_host_fixture"])
-            .env("RESWHO_PODMAN_GUARD_ROOT", dir.path())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let start = Instant::now();
-        let mut observed_exit = None;
-        while !dir.path().join("cli.pid").exists() && start.elapsed() < Duration::from_secs(2) {
-            if observed_exit.is_none()
-                && let Some(status) = host.try_wait().unwrap()
-            {
-                observed_exit = Some((start.elapsed(), status));
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        let launched = dir.path().join("cli.pid").exists();
-        eprintln!(
-            "nested fixture: timed={timed}, readiness_elapsed={:?}, launched={launched}, host_exit={observed_exit:?}",
-            start.elapsed()
-        );
-        if timed {
-            while host.try_wait().unwrap().is_none() && start.elapsed() < Duration::from_secs(2) {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            if host.try_wait().unwrap().is_none() {
-                host.kill().unwrap();
-            }
-        } else {
-            host.kill().unwrap();
-        }
-        let status = host.wait().unwrap();
-        let elapsed = start.elapsed();
-        let mut pids = Vec::new();
-        for file in ["provider.pid", "cli.pid"] {
-            if let Ok(text) = std::fs::read_to_string(dir.path().join(file)) {
-                pids.extend(text.split_whitespace().map(|v| v.parse::<i32>().unwrap()));
-                std::fs::remove_file(dir.path().join(file)).unwrap();
-            }
-        }
-        let start = Instant::now();
-        while pids.iter().any(|pid| unsafe { libc::kill(*pid, 0) } == 0)
-            && start.elapsed() < Duration::from_secs(3)
-        {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        for pid in pids {
-            assert_eq!(
-                unsafe { libc::kill(pid, 0) },
-                -1,
-                "owned nested PID {pid} survived"
-            );
-        }
-        if timed {
-            assert!(status.success(), "outer deadline fixture failed");
-            assert!(elapsed < Duration::from_secs(2));
-        } else {
-            assert!(launched, "nested CLI never launched");
-        }
-    }
-    for canceled in [false, true] {
-        let cancel = Cancellation::default();
-        if canceled {
-            cancel.cancel();
-        }
-        let mut runner = PodmanCommand {
-            program: "/bin/sleep".into(),
-            cancel: &cancel,
-            deadline: Instant::now() + Duration::from_millis(60),
-        };
-        let start = Instant::now();
-        let result = runner.run(&["30".into()]);
-        if canceled {
-            assert!(result.is_err());
-        } else {
-            assert!(result.unwrap().issue.unwrap().contains("deadline"));
-        }
-        assert!(start.elapsed() < Duration::from_secs(1));
-    }
-    dir.close().unwrap();
-}
-
-#[test]
 fn native_missing_fixture() {
     if std::env::var_os("RESWHO_PODMAN_MISSING_FIXTURE").is_none() {
         return;
@@ -503,4 +354,100 @@ fn podman_tree_uses_common_schema_markdown_and_separate_host_totals() {
     assert!(markdown.contains("podman"));
     assert!(markdown.contains("worker"));
     assert!(markdown.contains("18080"));
+}
+
+fn assert_cli_failure(
+    program: PathBuf,
+    host: Option<String>,
+    expected: crate::model::FailureReason,
+    budget: u64,
+) {
+    let cancel = Cancellation::default();
+    let deadline = Instant::now() + Duration::from_millis(budget);
+    let mut runner = PodmanCommand {
+        program,
+        cancel: &cancel,
+        deadline,
+    };
+    let (runtime, containers) = collect(
+        &mut runner,
+        &cancel,
+        deadline,
+        Duration::ZERO,
+        (None, host.as_deref()),
+        OffsetDateTime::parse("2026-11-03T02:00:00Z", &Rfc3339).unwrap(),
+    );
+    assert!(containers.is_empty());
+    let [failure] = runtime.unavailable.as_slice() else {
+        panic!("{:?}", runtime.unavailable)
+    };
+    assert_eq!(
+        (failure.code.as_str(), failure.reason),
+        ("collection_failed", Some(expected))
+    );
+    assert!(
+        failure
+            .message
+            .contains(&format!("reason {}: ", expected.code()))
+    );
+    assert!(
+        !serde_json::to_string(&runtime)
+            .unwrap()
+            .contains("private-credential")
+    );
+}
+
+#[test]
+fn cli_failures_report_structured_reasons_without_stderr() {
+    use crate::containers::command::failure_fixtures::cli;
+    use crate::model::FailureReason;
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let missing = Some(format!("unix://{}", root.join("missing.sock").display()));
+    for (program, host, expected, budget) in [
+        (
+            root.join("missing-cli"),
+            None,
+            FailureReason::CliNotFound,
+            2000,
+        ),
+        (
+            cli(root, "failing", "echo private-credential >&2; exit 1"),
+            None,
+            FailureReason::Unknown,
+            2000,
+        ),
+        (
+            cli(root, "failing", "echo private-credential >&2; exit 1"),
+            missing.clone(),
+            FailureReason::EndpointNotFound,
+            2000,
+        ),
+        (
+            cli(root, "slow", "exec /bin/sleep 5"),
+            None,
+            FailureReason::Timeout,
+            150,
+        ),
+        (
+            cli(root, "garbled", "echo not-json"),
+            None,
+            FailureReason::DaemonError,
+            2000,
+        ),
+    ] {
+        assert_cli_failure(program, host, expected, budget);
+    }
+    directory.close().unwrap();
+}
+
+#[test]
+fn cli_failures_classify_owned_socket_states() {
+    use crate::containers::command::failure_fixtures::{Endpoints, cli};
+    let endpoints = Endpoints::new();
+    let failing = cli(endpoints.directory.path(), "podman", "exit 125");
+    for (host, expected) in endpoints.cases() {
+        assert_cli_failure(failing.clone(), Some(host), expected, 2000);
+    }
+    endpoints.directory.close().unwrap();
 }

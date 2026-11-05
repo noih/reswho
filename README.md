@@ -1,25 +1,22 @@
 # reswho — see what your resources belong to
 
-Quickly see which apps, projects, and containers are using CPU and memory on
-your Mac. reswho groups related processes so you can find what a busy process
-belongs to without tracing a list of unfamiliar names by hand.
-
-- **TUI** — Browse live usage interactively and drill into process details.
-- **Markdown** — Read and share a resource snapshot as plain text.
-- **JSON** — Feed structured snapshots into scripts and other tools.
+See which apps, projects and containers are using CPU and memory on your Mac.
+reswho groups related processes into a resource tree you can browse in a TUI
+or export as Markdown or JSON.
 
 Monitoring is read-only: reswho does not stop processes or start container services.
 
 ## Install
 
+Requires Apple Silicon and macOS 15 or newer.
+
 ```sh
 brew install noih/tap/reswho
 ```
 
-Requires Apple Silicon and macOS 15 or newer. Prebuilt binaries are also on
+Prebuilt binaries are also available on
 [GitHub Releases](https://github.com/noih/reswho/releases).
-
-Or, with a current stable Rust toolchain and Xcode Command Line Tools:
+With a stable Rust toolchain and Xcode Command Line Tools, you can install from source:
 
 ```sh
 cargo install reswho --locked
@@ -28,18 +25,30 @@ cargo install reswho --locked
 ## Use
 
 ```sh
-reswho                        # Interactive resource tree
-reswho --md --sort cpu        # Markdown snapshot sorted by CPU usage
-reswho --json                 # JSON snapshot
+reswho                                       # Interactive resource tree
+reswho --md --sort cpu                       # Markdown snapshot sorted by CPU usage
+reswho --json                                # JSON snapshot
+reswho --md --from pid:1234                  # Details for a process
+reswho --md --from pid:1234 --from pid:5678  # Several PIDs, one snapshot
 ```
 
-Interactive terminals open the TUI automatically; redirected output defaults
-to Markdown. Use `reswho --help` for options, `reswho --help-md` for the output
-guide, or `?` inside the TUI for controls.
+Interactive terminals open the TUI; redirected output defaults to Markdown.
+Use `reswho settings` to list settings and `--set KEY=VALUE` for a per-run override.
+Use `reswho extensions` to list features you can enable or disable.
+Settings and extensions can also be managed in the TUI.
 
-## Links
+Use `reswho --help` for options, `reswho --help-md` for the Markdown guide,
+or `?` in the TUI for controls. For scripts, see the [JSON contract](docs/json-format.md).
 
-[GitHub](https://github.com/noih/reswho) · [crates.io](https://crates.io/crates/reswho)
+## Contributing
+
+Bug fixes, features, tests and documentation are welcome.
+See [Contributing](CONTRIBUTING.md) for the development workflow.
+
+## Versioning
+
+reswho follows [EffVer](https://jacobtomlinson.dev/effver/), based on upgrade effort.
+See the [changelog](CHANGELOG.md) for changes and migration steps.
 
 ## License
 

@@ -1,4 +1,5 @@
-use crate::snapshot::Cancellation;
+use super::command::{fail, reason_of};
+use crate::{model::FailureReason, snapshot::Cancellation};
 use anyhow::{Context, Result, bail};
 use curl::{
     easy::{Easy2, Handler, WriteError},
@@ -50,9 +51,13 @@ pub(super) struct Response {
 impl Response {
     pub fn json<T: serde::de::DeserializeOwned>(self) -> Result<T> {
         if self.status != 200 {
-            bail!("Docker API HTTP {}; response withheld", self.status);
+            return Err(fail(
+                FailureReason::DaemonError,
+                format!("Docker API HTTP {}; response withheld", self.status),
+            ));
         }
-        serde_json::from_slice(&self.body).map_err(|_| anyhow::anyhow!("invalid Docker API JSON"))
+        serde_json::from_slice(&self.body)
+            .map_err(|_| fail(FailureReason::DaemonError, "invalid Docker API JSON"))
     }
 }
 
@@ -66,7 +71,10 @@ impl Client<'_> {
     pub fn check(&self) -> Result<()> {
         self.cancel.check()?;
         if Instant::now() >= self.deadline {
-            bail!("Docker collection deadline exceeded");
+            return Err(fail(
+                FailureReason::Timeout,
+                "Docker collection deadline exceeded",
+            ));
         }
         Ok(())
     }
@@ -90,9 +98,10 @@ impl Client<'_> {
             .flat_map(|chunk| match self.request_chunk(chunk) {
                 Ok(results) => results,
                 Err(error) => {
+                    let reason = reason_of(&error);
                     let message = error.to_string();
                     (0..chunk.len())
-                        .map(|_| Err(anyhow::anyhow!(message.clone())))
+                        .map(|_| Err(fail(reason, message.clone())))
                         .collect()
                 }
             })
@@ -124,14 +133,23 @@ impl Client<'_> {
                         completed[index] = Some(result.map_err(|error| {
                             if error.is_operation_timedout() {
                                 if collection_limited[index] {
-                                    "Docker collection deadline exceeded".into()
+                                    (
+                                        FailureReason::Timeout,
+                                        "Docker collection deadline exceeded".to_owned(),
+                                    )
                                 } else {
-                                    "Docker API request timed out".into()
+                                    (
+                                        FailureReason::Timeout,
+                                        "Docker API request timed out".to_owned(),
+                                    )
                                 }
                             } else {
-                                format!(
-                                    "Docker API transport failed (curl code {}); details withheld",
-                                    error.code()
+                                (
+                                    FailureReason::Unknown,
+                                    format!(
+                                        "Docker API transport failed (curl code {}); details withheld",
+                                        error.code()
+                                    ),
                                 )
                             }
                         }));
@@ -149,16 +167,17 @@ impl Client<'_> {
             .map(|(handle, result)| {
                 let mut request = multi.remove2(handle)?;
                 if request.get_ref().exceeded {
-                    bail!("Docker API response exceeds size limit");
+                    return Err(fail(
+                        FailureReason::DaemonError,
+                        "Docker API response exceeds size limit",
+                    ));
                 }
                 match result {
                     Some(Ok(())) => Ok(Response {
                         status: request.response_code()?,
                         body: std::mem::take(&mut request.get_mut().bytes),
                     }),
-                    Some(Err(message)) => {
-                        bail!("{message}")
-                    }
+                    Some(Err((reason, message))) => Err(fail(reason, message)),
                     None => bail!("Docker API transfer incomplete"),
                 }
             })

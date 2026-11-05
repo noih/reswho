@@ -26,14 +26,14 @@ pub(super) struct Details {
     node: Option<Node>,
     status: Status,
     pub needs_query: bool,
-    vertical: usize,
+    vertical: Cell<usize>,
     height: Cell<usize>,
     width: Cell<usize>,
 }
 
 impl Details {
     pub fn new(mut node: Node) -> Self {
-        if node.resource.is_some() {
+        if node.process.is_none() {
             return Self {
                 resource_ref: Some(node.reference.clone()),
                 pid: 0,
@@ -41,7 +41,7 @@ impl Details {
                 node: Some(node),
                 status: Status::Ready,
                 needs_query: false,
-                vertical: 0,
+                vertical: Cell::new(0),
                 height: Cell::new(1),
                 width: Cell::new(1),
             };
@@ -63,7 +63,7 @@ impl Details {
                 Status::Unavailable("Process identity unavailable; command not queried".into())
             },
             needs_query: started.is_some(),
-            vertical: 0,
+            vertical: Cell::new(0),
             height: Cell::new(1),
             width: Cell::new(1),
         }
@@ -162,10 +162,7 @@ impl Details {
         if let Some(node) = &self.node {
             if let Some(resource) = &node.resource {
                 rows.push(DetailRow::heading(&resource.label));
-                rows.push(DetailRow::field(
-                    "Provider",
-                    format!("{}/{}", resource.provider, resource.version),
-                ));
+                rows.push(DetailRow::field("Provider", resource.provider.clone()));
                 rows.push(DetailRow::field("Identity", &resource.id));
                 rows.push(DetailRow::field("Kind", &resource.kind));
                 if let Some(path) = &resource.path {
@@ -179,8 +176,38 @@ impl Details {
                 );
                 return rows;
             }
+            if node.process.is_none() {
+                rows.push(DetailRow::heading(node.display_name()));
+                if let Some(container) = &node.container {
+                    rows.push(DetailRow::text(format!(
+                        "{} · CPU {} · RAM {}",
+                        if container.metrics_scope.as_deref() == Some("in_vm") {
+                            "in-VM"
+                        } else {
+                            "container"
+                        },
+                        output::percent(container.cpu_percent),
+                        output::memory(container.memory_bytes)
+                    )));
+                }
+                rows.extend(
+                    output::host_resource_lines(node, true)
+                        .into_iter()
+                        .map(DetailRow::text),
+                );
+                return rows;
+            }
+            rows.extend(
+                output::host_resource_lines(node, true)
+                    .into_iter()
+                    .map(DetailRow::text),
+            );
             let process = node.process.as_ref().expect("detail process");
-            rows.push(DetailRow::heading(&node.name));
+            rows.push(DetailRow::heading(node.display_name()));
+            rows.push(DetailRow::field("Version", output::version_text(process)));
+            if let Some(text) = output::original_name_text(process) {
+                rows.push(DetailRow::field("Reported name", text));
+            }
             rows.push(DetailRow::text(format!(
                 "CPU/core {}  RAM {}  Uptime {}  PPID {}  UID {}",
                 output::percent(process.cpu_percent),
@@ -217,8 +244,8 @@ impl Details {
             }
             for details in &process.extension_details {
                 rows.push(DetailRow::heading(format!(
-                    "Extension {}/{}",
-                    details.provider, details.version
+                    "Extension {}",
+                    details.provider
                 )));
                 for field in &details.fields {
                     rows.push(DetailRow::field(&field.label, field.value.to_string()));
@@ -331,15 +358,30 @@ impl Details {
 
     pub fn scroll(&mut self, delta: isize) {
         let max = self.wrapped_lines().len().saturating_sub(self.height.get());
-        self.vertical = self.vertical.min(max).saturating_add_signed(delta).min(max);
+        self.vertical.set(
+            self.vertical
+                .get()
+                .min(max)
+                .saturating_add_signed(delta)
+                .min(max),
+        );
+    }
+
+    pub fn page_height(&self) -> isize {
+        self.height.get().max(1) as isize
     }
 
     pub fn draw(&self, frame: &mut Frame, area: Rect, paused: bool, refresh_hint: &str) {
+        let keys = super::view::hint_lines(
+            &["↑↓ Scroll", "←/Esc Back", refresh_hint, "p pause"],
+            area.width,
+        );
+        let keys_height = keys.len().min(usize::from(area.height.saturating_sub(4))) as u16;
         let [title, body, position, controls] = Layout::vertical([
             Constraint::Length(2),
             Constraint::Min(1),
             Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(keys_height),
         ])
         .areas(area);
         frame.render_widget(
@@ -360,7 +402,11 @@ impl Details {
         self.width.set(body.width as usize);
         let lines = self.wrapped_lines();
         let count = lines.len();
-        let vertical = self.vertical.min(count.saturating_sub(self.height.get()));
+        let vertical = self
+            .vertical
+            .get()
+            .min(count.saturating_sub(self.height.get()));
+        self.vertical.set(vertical);
         frame.render_widget(
             Paragraph::new(
                 lines
@@ -382,12 +428,6 @@ impl Details {
             .style(Style::default().fg(Color::DarkGray)),
             position,
         );
-        let refresh = if refresh_hint.is_empty() {
-            String::new()
-        } else {
-            format!("{refresh_hint}  ")
-        };
-        let keys = format!("{refresh}p pause  ←/Esc back");
         frame.render_widget(Paragraph::new(keys), controls);
     }
 }

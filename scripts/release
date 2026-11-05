@@ -12,7 +12,7 @@ tap_repo=noih/homebrew-tap
 phase=preflight
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/reswho-release.XXXXXX")
 trap 'rm -rf "$temporary"' EXIT
-trap 'echo "Release stopped during $phase. Do not rerun blindly or move an existing tag. See docs/releasing.md for recovery; no rollback of public state was attempted." >&2' ERR
+trap 'echo "Release stopped during $phase. Do not rerun blindly or move an existing tag. No rollback of public state was attempted." >&2' ERR
 die() { echo "release: $*" >&2; exit 1; }
 
 for tool in git gh cargo python3 brew curl ruby shasum; do
@@ -54,9 +54,9 @@ tap_head=$(git -C "$tap" rev-parse HEAD)
 
 phase='local version preparation'
 python3 - "$version" <<'PY'
-import json, os, pathlib, re, sys
+import os, pathlib, re, sys
 version = sys.argv[1]
-paths = [pathlib.Path(p) for p in ("Cargo.toml", "Cargo.lock", "examples/extensions/example.json")]
+paths = [pathlib.Path(p) for p in ("Cargo.toml", "Cargo.lock")]
 original = [p.read_text() for p in paths]
 current = re.search(r'(?ms)\[package\]\n.*?^version = "([^"]+)"', original[0])[1]
 assert tuple(map(int, version.split('.'))) >= tuple(map(int, current.split('.'))), "version must not go backwards"
@@ -64,9 +64,7 @@ manifest, count = re.subn(r'(?ms)(\[package\]\n.*?^version = ")[^"]+("$)', lambd
 assert count == 1, "package version missing"
 lock, count = re.subn(r'(\[\[package\]\]\nname = "reswho"\nversion = ")[^"]+("\n)', lambda m: m[1] + version + m[2], original[1])
 assert count == 1, "lockfile package version missing"
-example = json.loads(original[2])
-example["engines"]["reswho"] = ">=" + version + " <" + str(int(version.split('.')[0]) + 1) + ".0.0"
-updated = [manifest, lock, json.dumps(example, indent=2) + "\n"]
+updated = [manifest, lock]
 try:
     for path, content in zip(paths, updated):
         path.with_suffix(path.suffix + ".release-tmp").write_text(content)
@@ -94,8 +92,8 @@ python3 scripts/package-release "$tag" target/aarch64-apple-darwin/release/reswh
 mkdir "$temporary/Formula"
 cp "$temporary/preflight-dist/reswho.rb" "$temporary/Formula/reswho.rb"
 HOMEBREW_NO_AUTO_UPDATE=1 brew style "$temporary/Formula/reswho.rb"
-if ! git diff --quiet -- Cargo.toml Cargo.lock examples/extensions/example.json; then
-  git add Cargo.toml Cargo.lock examples/extensions/example.json
+if ! git diff --quiet -- Cargo.toml Cargo.lock; then
+  git add Cargo.toml Cargo.lock
   git commit -m "chore(release): prepare $version"
 fi
 [[ -z $(git status --porcelain) ]] || die 'verification left unexpected changes; inspect before tagging'

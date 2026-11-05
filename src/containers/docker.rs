@@ -1,11 +1,11 @@
 use super::{
     attribution,
-    command::{Output, Runner},
+    command::{self, Output, Runner, fail},
     model::{Container, Mount, Port, Runtime},
     stats::{API_MEMORY_BASIS, Batch, CLI_MEMORY_BASIS, Metrics},
 };
-use crate::model::Diagnostic;
-use crate::tree::{projects::Discovery, stable_ref};
+use crate::extensions::host::{projects::Discovery, stable_ref};
+use crate::model::{Diagnostic, FailureReason};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::{
@@ -53,6 +53,10 @@ struct Stats {
 
 #[derive(Deserialize)]
 struct Info {
+    #[serde(default)]
+    cpus: Option<u32>,
+    #[serde(default)]
+    memory: Option<u64>,
     id: String,
     #[serde(default)]
     os: String,
@@ -70,8 +74,8 @@ fn strings(args: &[&str]) -> Vec<String> {
 
 fn required(runner: &mut impl Runner, args: &[String]) -> Result<String> {
     let output = runner.run(args)?;
-    if let Some(issue) = output.issue {
-        bail!("{issue}");
+    if let Some(issue) = &output.issue {
+        return Err(output.failure(issue));
     }
     String::from_utf8(output.stdout).context("Docker returned invalid UTF-8")
 }
@@ -150,14 +154,22 @@ fn inventory(
         &["container", "ls", "--all", "--quiet", "--no-trunc"],
         &[],
     )?;
-    if let Some(issue) = output.issue {
-        bail!("inventory: {issue}");
+    if let Some(issue) = &output.issue {
+        return Err(output.failure(format!("inventory: {issue}")));
     }
-    let text = String::from_utf8(output.stdout).context("invalid Docker inventory encoding")?;
+    let text = String::from_utf8(output.stdout).map_err(|_| {
+        fail(
+            FailureReason::DaemonError,
+            "invalid Docker inventory encoding",
+        )
+    })?;
     let mut ids = BTreeSet::new();
     for id in text.lines().map(str::trim).filter(|id| !id.is_empty()) {
         if !valid_id(id) || !ids.insert(id.to_owned()) {
-            bail!("invalid or duplicate Docker container ID");
+            return Err(fail(
+                FailureReason::DaemonError,
+                "invalid or duplicate Docker container ID",
+            ));
         }
     }
     runtime.inventory_complete = ids.len() <= MAX_CONTAINERS;
@@ -176,6 +188,7 @@ fn inspections(
     source: &Source,
     ids: &[String],
     issues: &mut Vec<Diagnostic>,
+    probe: &mut command::Probe,
 ) -> BTreeMap<String, Inspect> {
     let mut result = BTreeMap::new();
     for batch in ids.chunks(BATCH_SIZE) {
@@ -187,19 +200,21 @@ fn inspections(
         ) {
             Ok(output) => output,
             Err(error) => {
-                issues.push(Diagnostic::new(
+                issues.push(probe.diagnose(
                     "command_failed",
                     "docker.inspect",
-                    format!("inspect: {error}"),
+                    &error.context("inspect"),
+                    Some(&source.host),
                 ));
                 break;
             }
         };
-        if let Some(issue) = output.issue {
-            issues.push(Diagnostic::new(
+        if let Some(issue) = &output.issue {
+            issues.push(probe.diagnose(
                 "command_failed",
                 "docker.inspect",
-                format!("inspect: {issue}"),
+                &output.failure(format!("inspect: {issue}")),
+                Some(&source.host),
             ));
         }
         for line in output
@@ -252,18 +267,25 @@ fn stats(
     source: &Source,
     ids: &[String],
     issues: &mut Vec<Diagnostic>,
+    probe: &mut command::Probe,
 ) -> Batch {
     match runner.direct_stats(&source.host, ids) {
-        Ok(Some(batch)) => return batch,
+        Ok(Some(mut batch)) => {
+            for diagnostic in &mut batch.unavailable {
+                probe.refine(diagnostic, Some(&source.host));
+            }
+            return batch;
+        }
         Ok(None) => {}
         Err(error) => {
             return Batch {
                 metrics: BTreeMap::new(),
                 memory_basis: API_MEMORY_BASIS,
-                unavailable: vec![Diagnostic::new(
+                unavailable: vec![probe.diagnose(
                     "unavailable",
                     "docker.stats",
-                    error.to_string(),
+                    &error,
+                    Some(&source.host),
                 )],
             };
         }
@@ -285,19 +307,21 @@ fn stats(
         ) {
             Ok(output) => output,
             Err(error) => {
-                issues.push(Diagnostic::new(
+                issues.push(probe.diagnose(
                     "command_failed",
                     "docker.stats",
-                    format!("stats: {error}"),
+                    &error.context("stats"),
+                    Some(&source.host),
                 ));
                 break;
             }
         };
-        if let Some(issue) = output.issue {
-            issues.push(Diagnostic::new(
+        if let Some(issue) = &output.issue {
+            issues.push(probe.diagnose(
                 "command_failed",
                 "docker.stats",
-                format!("stats: {issue}"),
+                &output.failure(format!("stats: {issue}")),
+                Some(&source.host),
             ));
             continue;
         }
@@ -425,6 +449,9 @@ pub(super) fn collect(
 ) -> (Runtime, Vec<Container>) {
     let started = Instant::now();
     let mut runtime = Runtime {
+        metrics_scope: None,
+        host_scope: None,
+        configuration: None,
         name: "docker".into(),
         context: None,
         endpoint_ref: None,
@@ -434,14 +461,25 @@ pub(super) fn collect(
         collection_ms: 0,
         unavailable: Vec::new(),
     };
-    let result = collect_inner(runner, context, host, now, &mut runtime);
+    let mut endpoint = host.clone().filter(|_| context.is_none());
+    let mut probe = command::Probe::new(runner);
+    let result = collect_inner(
+        runner,
+        context,
+        host,
+        now,
+        &mut runtime,
+        &mut endpoint,
+        &mut probe,
+    );
     let containers = match result {
         Ok(containers) => containers,
         Err(error) => {
-            runtime.unavailable.push(Diagnostic::new(
+            runtime.unavailable.push(probe.diagnose(
                 "collection_failed",
                 "docker",
-                error.to_string(),
+                &error,
+                endpoint.as_deref(),
             ));
             Vec::new()
         }
@@ -460,8 +498,11 @@ fn collect_inner(
     host: Option<String>,
     now: OffsetDateTime,
     runtime: &mut Runtime,
+    endpoint: &mut Option<String>,
+    probe: &mut command::Probe,
 ) -> Result<Vec<Container>> {
     let source = source(runner, context, host)?;
+    *endpoint = Some(source.host.clone());
     runtime.context = source.context.clone();
     runtime.endpoint_ref = Some(stable_ref("endpoint", &format!("docker\0{}", source.host)));
     let info = request(
@@ -470,22 +511,35 @@ fn collect_inner(
         &[
             "info",
             "--format",
-            r#"{"id":{{json .ID}},"os":{{json .OSType}}}"#,
+            r#"{"id":{{json .ID}},"os":{{json .OSType}},"cpus":{{json .NCPU}},"memory":{{json .MemTotal}}}"#,
         ],
         &[],
     )?;
-    if let Some(issue) = info.issue {
-        bail!("info: {issue}");
+    if let Some(issue) = &info.issue {
+        return Err(info.failure(format!("info: {issue}")));
     }
-    let info: Info =
-        serde_json::from_slice(&info.stdout).context("invalid Docker daemon metadata")?;
+    let info: Info = serde_json::from_slice(&info.stdout)
+        .map_err(|_| fail(FailureReason::DaemonError, "invalid Docker daemon metadata"))?;
     if info.id.is_empty() {
-        bail!("Docker daemon identity unavailable");
+        return Err(fail(
+            FailureReason::DaemonError,
+            "Docker daemon identity unavailable",
+        ));
     }
     runtime.daemon_id = Some(info.id);
+    if desktop_endpoint(&source.host) {
+        runtime.host_scope = Some("docker".into());
+        runtime.metrics_scope = Some("in_vm".into());
+        runtime.configuration = Some(Box::new(crate::model::ResourceConfiguration {
+            scope: "vm".into(),
+            cpus: info.cpus.filter(|n| *n > 0),
+            memory_bytes: info.memory.filter(|n| *n > 0),
+            cpu_overhead: None,
+        }));
+    }
     let ids = inventory(runner, &source, runtime)?;
     runtime.status = "available".into();
-    let before = inspections(runner, &source, &ids, &mut runtime.unavailable);
+    let before = inspections(runner, &source, &ids, &mut runtime.unavailable, probe);
     let active_ids: Vec<_> = ids
         .iter()
         .filter(|id| {
@@ -496,7 +550,13 @@ fn collect_inner(
         .cloned()
         .collect();
     let batch = if info.os == "linux" {
-        stats(runner, &source, &active_ids, &mut runtime.unavailable)
+        stats(
+            runner,
+            &source,
+            &active_ids,
+            &mut runtime.unavailable,
+            probe,
+        )
     } else {
         runtime.unavailable.push(Diagnostic::new(
             "unsupported",
@@ -512,7 +572,13 @@ fn collect_inner(
     runtime.unavailable.extend(batch.unavailable);
     let metrics = batch.metrics;
     let after = if !metrics.is_empty() {
-        inspections(runner, &source, &active_ids, &mut runtime.unavailable)
+        inspections(
+            runner,
+            &source,
+            &active_ids,
+            &mut runtime.unavailable,
+            probe,
+        )
     } else {
         BTreeMap::new()
     };
@@ -521,6 +587,7 @@ fn collect_inner(
     for id in ids {
         let mut container = Container {
             runtime: "docker".into(),
+            metrics_scope: runtime.host_scope.as_ref().map(|_| "in_vm".into()),
             endpoint_ref: runtime.endpoint_ref.clone().unwrap_or_default(),
             name: id[..12].into(),
             id: id.clone(),
@@ -612,3 +679,58 @@ fn collect_inner(
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn vm_disk(path: &std::path::Path, home: &std::path::Path) -> Option<String> {
+    let root = home.join("Library/Containers/com.docker.docker/Data/vms");
+    let parts: Vec<_> = path.strip_prefix(root).ok()?.components().collect();
+    if let [
+        std::path::Component::Normal(index),
+        std::path::Component::Normal(data),
+        std::path::Component::Normal(disk),
+    ] = parts.as_slice()
+        && index
+            .to_str()
+            .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        && *data == "data"
+        && *disk == "Docker.raw"
+    {
+        return Some("docker".into());
+    }
+    None
+}
+
+pub(crate) fn vm_helper(
+    executable: &std::path::Path,
+) -> Option<(std::path::PathBuf, Option<std::path::PathBuf>, String)> {
+    if executable
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let app = crate::extensions::host::bundles::app_bundle(executable)?;
+    if app.file_name()? == "Docker.app"
+        && executable.strip_prefix(&app).ok()?
+            == std::path::Path::new("Contents/MacOS/com.docker.backend")
+    {
+        Some((app.clone(), Some(app), "Docker".into()))
+    } else {
+        None
+    }
+}
+
+fn desktop_endpoint(host: &str) -> bool {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return false;
+    };
+    let Some(path) = host.strip_prefix("unix://").map(std::path::Path::new) else {
+        return false;
+    };
+    let canonical = |path: std::path::PathBuf| path.canonicalize().unwrap_or(path);
+    [
+        home.join(".docker/run/docker.sock"),
+        home.join("Library/Containers/com.docker.docker/Data/docker.sock"),
+    ]
+    .iter()
+    .any(|candidate| canonical(path.to_path_buf()) == canonical(candidate.clone()))
+}

@@ -1,6 +1,55 @@
 # Changelog
 
+## 1.1.0
+
+### Upgrade effort
+
+Meso: scripts may need small updates; external extensions are no longer loaded.
+Interactive use keeps the default grouping, refs, and totals.
+
+- JSON moves from `reswho/12` to `reswho/13`: use `.selections[0].root`
+  instead of `.root`, and `.selections[0].selector` instead of `.scope`.
+- A partially missing selection exits with 3; no matches exits with 1,
+  and invalid arguments exit with 2.
+- Projects and Containers are extension-provided categories. All extensions can
+  be disabled; `app_bundle`, `bin`, and `command` are core sources and leave
+  the extension inventory. Source and Ownership priorities are separate.
+- Extensions are internal modules reviewed through PRs and shipped with the CLI.
+  External discovery, executable transport, staging, signatures, trust roots and
+  package/signing tools are removed. Existing external files and stale enable
+  settings cannot load code; user files are left untouched.
+- Schema 13 reports module IDs, capabilities, state, diagnostics and timings;
+  extension version, revision, author and installation provenance are removed.
+  Detected program/runtime software versions remain available.
+- Downgrading: 1.0.x rejects the new top-level config fields even though the
+  format version remains 1. Use a pre-upgrade backup or a separate config.
+
+### Changes
+
+- Query several scopes from one snapshot, with ordered selections and missing-target diagnostics.
+- Show process names and versions from app bundles and install layouts;
+  identify Node.js and Python work without exposing raw arguments.
+- Add launched-by ancestry and VM attribution, with separate host refs,
+  in-VM usage, and scoped Docker/Apple configuration.
+- Save extension enablement in the TUI, with conflict
+  checks and retry; apply changes to the next sample.
+- Unify source status, enablement, and priority in Sources, with a separate
+  Ownership tab; keep selection and scroll position after saving.
+- Simplify Settings controls and hints, keep arrow keys for navigation,
+  and page details by the visible height, including on small terminals.
+- Use defaults for invalid saved settings; repair stale priorities on Save
+  and back up malformed or unknown-version configs before replacing them.
+- Explain runtime failures with structured reasons and actionable hints.
+- Share per-round facts across internal modules, with generic categories,
+  ownership, parent projection, precise integers and secret filtering.
+- Document internal module contributions and required wiring in a short guide;
+  remove the obsolete native examples and package protocol documentation.
+
 ## 1.0.1
+
+### Upgrade effort
+
+Micro: no user changes needed.
 
 Updated the README with a clearer introduction, quick-start examples, and links to detailed guides.
 
@@ -8,20 +57,38 @@ No functional changes.
 
 ## 1.0.0
 
-首次公開發佈，已提供 GitHub Release、crates.io package 與公開 Homebrew tap formula。
+### Upgrade effort
 
-- macOS 唯讀程序與資源歸屬，依 application、project、executable 分組。
-- Ratatui TUI、Markdown、版本化 JSON 與離線 JSON Schema；排序、搜尋、範圍查詢與程序詳細資訊。
-- Docker、Apple Container、Podman 探查；顯示缺失、部分資料與診斷，不啟動 runtime。
-- 原生 extension discovery、安裝與隔離執行；來源優先順序、多維 tags 與 typed resources。
-- Settings popup、離線設定查詢、`--config` 與 `--set KEY=VALUE`。
-- Apple Silicon 預編譯 tar.gz、SHA256 與供 `noih/tap` 更新的 `reswho.rb`；MIT 授權。
+Initial release: no prior public version to migrate.
 
-已知限制：
+First public release, available through GitHub Releases, crates.io and the
+public Homebrew tap.
 
-- 第一版僅以 macOS Apple Silicon 為支援目標；deployment target 為15.0，macOS 15 release Actions 已通過，不代表已測過所有 macOS 版本。
-- 程序資料受作業系統權限、程序退出與取樣競態影響；數據可能缺失或不完整。唯讀監測不代表永不寫檔：設定、extension 安裝與 discovery metadata 會寫入 config root。
-- Apple Container stats 僅啟用已驗證的1.6.1 wire version；其他版本保留 inventory 與診斷。Podman 真實驗證僅涵蓋 nested Linux 4.9.4，macOS machine、SSH、rootless 與新版尚未驗證。
-- 外部 extension 以使用者權限執行，並非安全 sandbox。使用者需信任來源。
-- 不提供穩定 Rust library API。JSON 與 extension 協定以各自版本契約為準。
-- 尚未提供 Developer ID 簽章或 notarization。Homebrew 實際安裝與 `brew test` 尚未驗證。
+- Read-only macOS process and resource attribution, grouped by application,
+  project and executable.
+- Ratatui TUI, Markdown, versioned JSON and an offline JSON Schema, with sorting,
+  search, scope selection and process details.
+- Docker, Apple Container and Podman inspection, with partial-data diagnostics
+  and no automatic runtime startup.
+- Native extension discovery, installation and isolated execution; source
+  priorities, multidimensional tags and typed resources.
+- Settings popup, offline settings queries, `--config` and `--set KEY=VALUE`.
+- Apple Silicon tar.gz binaries, SHA256 checksums and a `reswho.rb` formula for
+  `noih/tap`; MIT license.
+
+Known limitations at release:
+
+- macOS Apple Silicon only, with deployment target 15.0. macOS 15 release Actions
+  passed; this does not establish compatibility with every macOS version.
+- Permissions, process exits and sampling races can leave data incomplete.
+  Read-only monitoring still writes settings, extension installations and
+  discovery metadata under the config root.
+- Apple Container stats support the verified 1.6.1 protocol. Other versions
+  retain inventory and diagnostics. Podman live validation covers nested Linux
+  4.9.4 only; macOS machine, SSH, rootless and newer versions remain unverified.
+- External extensions run with the user's permissions and require trust in
+  their source; execution isolation is not a security sandbox.
+- The Rust library API is unstable. JSON and extension protocols have their own
+  versioned contracts.
+- No Developer ID signing or notarization. Actual Homebrew installation and
+  `brew test` remain unverified.

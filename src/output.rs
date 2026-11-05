@@ -6,16 +6,16 @@ pub(crate) mod containers;
 #[cfg(test)]
 mod markdown_tests;
 
-pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-12.schema.json");
+pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-13.schema.json");
 
-pub const FORMAT_HELP: &str = r#"# Markdown reading guide — reswho-md/19
+pub const FORMAT_HELP: &str = r#"# Markdown reading guide — reswho-md/20
 
 Synthetic snapshot excerpt (names, refs and values are illustrative):
 
 ```markdown
 # reswho
 
-Format: reswho-md/19 · help: reswho --help-md
+Format: reswho-md/20 · help: reswho --help-md
 Captured: 1793664000000ms Unix · sample 251ms · collection 312ms
 Host CPU 8.0% · RAM 8.0GiB/16.0GiB · swap 0.0KiB · 8 logical CPUs · Σ120
 
@@ -60,7 +60,10 @@ Depth hides rows without changing totals. See --help for selection examples.
 Fields after `·` have two spaces between them in raw output:
 
 - Process: name pid:REF · CPU  RSS  uptime  ports
+  (`name VERSION pid:REF` only when a name tag set the name and the version
+  belongs to that name)
 - Host group: name [grouping] group:REF · CPU sum  RSS sum  ⏱︎ uptime  ΣN
+  (bin groups show `name VERSION [bin]` when every member has the same version)
 - Category: group:REF · the same scope totals, without a name/grouping tag
 - Container: name [container] group:REF · CPU  memory  uptime  state  ports
 - Container group: name [grouping] group:REF · CPU sum  memory sum  ⏱︎ uptime
@@ -109,7 +112,19 @@ Container `tcp:HOST->CONTAINER` ports are published configuration, not observed
 listeners or traffic. Selected container details show mounts, start time,
 service and attribution candidates when available.
 
+Repeated --from renders one header (one shared capture) and a
+`## Selection I/N: REF` section per selection in input order. A missing
+selection keeps its section with `! target not found`; `Inside REF` means its
+totals are already included in that other selection, so do not add them.
+Exit status 3 means some selections were missing; 1 means none were found;
+2 is reserved for invalid arguments.
+
 Selecting a PID adds details for that PID only; descendants remain summaries.
+`version V · subject S · from SOURCE (BASIS)` is the effective version tag:
+S is the program the version belongs to and SOURCE the extension that
+proposed it; `?` means no source proposed one. Built-in sources read install
+layouts and bundle metadata, never run the program. `reported name` shows the
+OS-reported name when a name tag from SOURCE replaced it on the row.
 `cmd:` preserves argument order; quotes mark empty/whitespace arguments, not a
 runnable shell command. `entry:` is a supported script/JAR launch argument,
 not verified ownership; relative paths are not resolved against current cwd.
@@ -119,10 +134,19 @@ Environment variables and container-internal processes are not collected.
 
 ## Tags, Classification and evidence
 
-Tags lists effective hashtags (`bin` displays as #executable). Classification
-shows proposals, exclusions and source-priority decisions by dimension.
+Tags lists effective hashtags (`bin` displays as #executable, runtime tags
+as their name), then the effective `name LABEL`, `work LABEL (BASIS)` and
+`version SUBJECT VALUE` after `·`. A work comes from a node or python entry:
+BASIS is `argv_package`, `argv_package_json` or `argv_script` for node, and
+`argv_script` or `argv_module` (`-m MODULE`) for python; the entry path and
+arguments are never shown. `[work]` groups gather unowned processes by
+executable and work. Classification
+shows proposals (version adds include their subject, also when rejected for
+`version subject mismatch`), exclusions and source-priority decisions.
 Effective app and project tags may coexist; the tree chooses its primary group
-from effective app, then project, then bin tags. Nested groups show attribution;
+by ownership priority: app, project, work, then bin by default. `ownership_priority`
+can change this order and include custom dimensions; `source_priority` only decides
+sources within a dimension. Nested groups show attribution;
 nested processes show observed parenthood. PPID may point into another group.
 
 `app PATH` is bundle evidence; `git PATH` is a checkout root; `repo PATH` is a
@@ -144,10 +168,7 @@ attribution do not establish that a process is safe to stop.
 
 --profile optionally appends an extension timing table to Markdown output.
 Use --help for commands, flags, sorting and copyable examples.
-See docs/markdown-format.md for structure and evidence conventions,
-docs/collection-probe.md for project markers and classification boundaries,
-and docs/containers.md for runtime support, API/XPC transport, sampling limits
-and memory accounting. See docs/extension-protocol.md for typed resources.
+See README.md for installation and usage.
 For JSON, use --json-schema and docs/json-format.md.
 "#;
 
@@ -157,11 +178,7 @@ pub fn markdown(snapshot: &Snapshot) -> String {
 
 pub fn markdown_with_depth(snapshot: &Snapshot, depth: usize) -> String {
     let mut snapshot = snapshot.clone();
-    let detail_pid = snapshot
-        .scope
-        .strip_prefix("pid:")
-        .and_then(|pid| pid.parse().ok());
-    snapshot.project(detail_pid);
+    snapshot.project(crate::model::selector_pid(&snapshot.scope).as_slice());
     flatten_system(&mut snapshot.root);
     crate::tree::limit_depth(&mut snapshot.root, depth);
     render_markdown(&snapshot)
@@ -186,10 +203,16 @@ fn flatten_system(node: &mut Node) {
 }
 
 fn render_markdown(snapshot: &Snapshot) -> String {
+    let mut text = header(snapshot, snapshot.root.reference == "group:all");
+    body(&mut text, snapshot, "##");
+    text
+}
+
+fn header(snapshot: &Snapshot, host_count: bool) -> String {
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "# reswho\n\nFormat: reswho-md/19 · help: reswho --help-md  "
+        "# reswho\n\nFormat: reswho-md/20 · help: reswho --help-md  "
     );
     let _ = writeln!(
         text,
@@ -207,7 +230,7 @@ fn render_markdown(snapshot: &Snapshot) -> String {
         system
             .logical_cpus
             .map_or("?".into(), |value| value.to_string()),
-        if snapshot.root.reference == "group:all" {
+        if host_count {
             format!(
                 " · Σ{}{}",
                 snapshot.root.totals.processes,
@@ -237,9 +260,13 @@ fn render_markdown(snapshot: &Snapshot) -> String {
         .filter(|warning| !crate::collect::COLLECTION_NOTES.contains(&warning.as_str()))
         .map(|warning| format!("! {}", escaped(warning.as_str())));
     write_notes(&mut text, warnings, "");
+    text
+}
+
+fn body(text: &mut String, snapshot: &Snapshot, heading: &str) {
     if snapshot.root.reference == "group:all" {
         write_notes(
-            &mut text,
+            text,
             snapshot
                 .root
                 .evidence
@@ -247,9 +274,61 @@ fn render_markdown(snapshot: &Snapshot) -> String {
                 .map(|value| evidence_markdown(value)),
             "",
         );
-        write_children(&mut text, &snapshot.root, 1, true);
+        write_children(text, &snapshot.root, 1, Some(heading));
     } else {
-        write_node(&mut text, &snapshot.root, 0);
+        write_node(text, &snapshot.root, 0);
+    }
+}
+
+pub fn markdown_selections(
+    snapshot: &Snapshot,
+    selections: &[crate::model::Selection],
+    depth: usize,
+) -> String {
+    let part = |selection: &crate::model::Selection, root: &Node| {
+        let mut part = snapshot.clone();
+        part.root = root.clone();
+        part.scope = selection.selector.clone();
+        part
+    };
+    if let [selection] = selections
+        && let Some(root) = &selection.root
+    {
+        return markdown_with_depth(&part(selection, root), depth);
+    }
+    let mut text = header(snapshot, false);
+    for (index, selection) in selections.iter().enumerate() {
+        blank_line(&mut text);
+        let _ = writeln!(
+            text,
+            "## Selection {}/{}: {}\n",
+            index + 1,
+            selections.len(),
+            escaped(&selection.selector)
+        );
+        let mut notes: Vec<String> = selection
+            .diagnostics
+            .iter()
+            .map(|diagnostic| format!("! {}", escaped(diagnostic.as_str())))
+            .collect();
+        if !selection.nested_in.is_empty() {
+            notes.push(format!(
+                "Inside {}; totals overlap, do not add across these selections",
+                escaped(&selection.nested_in.join(", "))
+            ));
+        }
+        write_notes(&mut text, notes, "");
+        let Some(root) = &selection.root else {
+            continue;
+        };
+        let mut part = part(selection, root);
+        part.project(crate::model::selector_pid(&part.scope).as_slice());
+        flatten_system(&mut part.root);
+        crate::tree::limit_depth(&mut part.root, depth);
+        if part.root.reference == "group:all" {
+            let _ = writeln!(text, "{}\n", group_values(&part.root));
+        }
+        body(&mut text, &part, "###");
     }
     text
 }
@@ -295,7 +374,26 @@ fn group_values(node: &Node) -> String {
         return format!("{} · independent metrics{collapsed}", node.reference);
     }
     if let Some(totals) = &node.container_totals {
-        return containers::totals(&node.reference, totals, &collapsed);
+        let scope = if metrics_scope(node) == Some("in_vm") {
+            "in-VM "
+        } else {
+            ""
+        };
+        if node.totals.processes > 0 {
+            return format!(
+                "{} · host {}  {}  ⏱︎ {}  Σ{}; {}{collapsed}",
+                node.reference,
+                group_cpu(&node.totals),
+                group_memory(&node.totals),
+                group_uptime(&node.totals),
+                node.totals.processes,
+                containers::totals(&format!("{scope}containers"), totals, "")
+            );
+        }
+        return format!(
+            "{scope}{}",
+            containers::totals(&node.reference, totals, &collapsed)
+        );
     }
     format!(
         "{} · {}  {}  ⏱︎ {}  Σ{}{collapsed}",
@@ -305,6 +403,100 @@ fn group_values(node: &Node) -> String {
         group_uptime(&node.totals),
         node.totals.processes
     )
+}
+
+pub(crate) fn metrics_scope(node: &Node) -> Option<&str> {
+    if let Some(totals) = &node.container_totals
+        && totals.containers > 0
+    {
+        return totals.metrics_scope.as_deref();
+    }
+    node.runtime
+        .as_ref()
+        .and_then(|r| r.metrics_scope.as_deref())
+}
+
+pub(crate) fn host_resource_lines(node: &Node, details: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(totals) = &node.container_totals
+        && metrics_scope(node) == Some("in_vm")
+    {
+        let metrics = containers::summary_metrics(totals);
+        lines.push(format!(
+            "in-VM usage: CPU {} · RAM {}",
+            metrics[0], metrics[1]
+        ));
+    }
+    if let Some(process) = &node.process
+        && let Some(resource) = &process.host_resource
+    {
+        lines.push(format!(
+            "VM host: {} · {} · CPU {} · RAM {}",
+            resource.label,
+            resource.confidence,
+            percent(process.cpu_percent),
+            memory(process.resident_bytes)
+        ));
+        if details {
+            if let Some(responsible) = &resource.responsible {
+                lines.push(format!(
+                    "Responsible pid:{} · started {} · {}",
+                    responsible.identity.pid,
+                    responsible.identity.started_unix_us,
+                    responsible.executable.display()
+                ));
+            }
+            lines.extend(resource.evidence.clone());
+            lines.extend(resource.diagnostics.iter().map(|d| format!("! {d}")));
+        }
+    }
+    for usage in &node.host_resources {
+        lines.push(format!(
+            "VM host {} · started {} · CPU {} · RAM {} (separate from in-VM usage)",
+            usage.reference,
+            usage.identity.started_unix_us,
+            percent(usage.cpu_percent),
+            memory(usage.resident_bytes)
+        ));
+    }
+    let configuration = node
+        .runtime
+        .as_ref()
+        .and_then(|r| r.configuration.as_ref())
+        .or_else(|| {
+            node.container
+                .as_ref()
+                .and_then(|c| c.configuration.as_ref())
+        })
+        .or_else(|| {
+            node.process
+                .as_ref()
+                .and_then(|p| p.host_resource.as_ref())
+                .and_then(|r| r.configuration.as_ref())
+        });
+    if let Some(config) = configuration {
+        let cpus = config.cpus.map_or("?".into(), |n| n.to_string());
+        let cpu = config.cpu_overhead.map_or(format!("CPUs {cpus}"), |n| {
+            format!(
+                "CPUs {cpus} + VM overhead {n} = VM {}",
+                config
+                    .cpus
+                    .and_then(|c| c.checked_add(n))
+                    .map_or("?".into(), |c| c.to_string())
+            )
+        });
+        lines.push(format!(
+            "Config ({}): {cpu} · memory {}{}",
+            config.scope,
+            memory(config.memory_bytes),
+            if config.scope == "container_limit" {
+                " · VM total RAM unknown"
+            } else {
+                ""
+            }
+        ));
+    }
+    lines
 }
 
 pub(crate) fn metric_text(metric: &crate::model::ResourceMetric) -> String {
@@ -346,7 +538,7 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
         let _ = writeln!(
             text,
             "{indent}{bullet}{} {} · {}  {}  {}  {}{collapsed}",
-            name_markdown(&node.name),
+            name_markdown(&node.display_name()),
             node.reference,
             percent(process.cpu_percent),
             memory(process.resident_bytes),
@@ -366,16 +558,20 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
         let _ = writeln!(
             text,
             "{indent}{bullet}{}{grouping} {}",
-            name_markdown(&node.name),
+            name_markdown(&node.display_name()),
             group_values(node)
         );
     }
     let mut notes = containers::notes(node, level == 0);
+    notes.extend(
+        host_resource_lines(node, level == 0)
+            .iter()
+            .map(|line| escaped(line)),
+    );
     if let Some(resource) = &node.resource {
         notes.push(format!(
-            "Provider {}/{} · id {}",
+            "Provider {} · id {}",
             escaped(&resource.provider),
-            escaped(&resource.version),
             code(&resource.id)
         ));
         if let Some(path) = &resource.path {
@@ -409,10 +605,10 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
         notes.extend(node.evidence.iter().map(|value| evidence_markdown(value)));
     }
     write_notes(text, notes, &"    ".repeat(level));
-    write_children(text, node, level + 1, level == 0);
+    write_children(text, node, level + 1, (level == 0).then_some("##"));
 }
 
-fn write_children(text: &mut String, node: &Node, level: usize, categories: bool) {
+fn write_children(text: &mut String, node: &Node, level: usize, categories: Option<&str>) {
     if node.children.is_empty() {
         return;
     }
@@ -422,16 +618,18 @@ fn write_children(text: &mut String, node: &Node, level: usize, categories: bool
     let mut unreadable = 0;
     let mut previous_group = None;
     for child in &node.children {
-        if child.process.as_ref().is_some_and(Process::is_unreadable)
+        if child.process.as_ref().is_some_and(|p| p.is_unreadable())
             && child.children.is_empty()
             && child.omitted_children == 0
         {
             unreadable += 1;
-        } else if categories && matches!(child.grouping, Some(crate::model::Grouping::Category)) {
+        } else if let Some(heading) = categories
+            && matches!(child.grouping, Some(crate::model::Grouping::Category))
+        {
             blank_line(text);
             let _ = writeln!(
                 text,
-                "## {}\n\n{}",
+                "{heading} {}\n\n{}",
                 name_markdown(&child.name),
                 group_values(child)
             );
@@ -440,7 +638,7 @@ fn write_children(text: &mut String, node: &Node, level: usize, categories: bool
                 child.evidence.iter().map(|value| evidence_markdown(value)),
                 "",
             );
-            write_children(text, child, 1, false);
+            write_children(text, child, 1, None);
         } else {
             let is_group = child.process.is_none() && child.container.is_none();
             if previous_group.is_some_and(|previous| previous || is_group) {
@@ -476,12 +674,36 @@ pub(crate) fn command_text(argv: &[String]) -> String {
         .join(" ")
 }
 
+pub(crate) fn version_text(process: &Process) -> String {
+    match &process.version {
+        Some(version) => format!(
+            "{} · subject {} · from {} ({})",
+            version.value, version.subject, version.source, version.basis
+        ),
+        None => "?".into(),
+    }
+}
+
+pub(crate) fn original_name_text(process: &Process) -> Option<String> {
+    let source = process.name_source.as_ref()?;
+    Some(format!(
+        "{} · display name from {} ({})",
+        process.original_name.as_deref().unwrap_or_default(),
+        source.source,
+        source.basis
+    ))
+}
+
 fn process_details(process: &Process) -> Vec<String> {
     let mut notes = vec![format!(
         "PPID {} · UID {}",
         process.ppid.map_or("?".into(), |pid| pid.to_string()),
         process.uid.map_or("?".into(), |uid| uid.to_string())
     )];
+    notes.push(format!("version {}", escaped(&version_text(process))));
+    if let Some(text) = original_name_text(process) {
+        notes.push(format!("reported name {}", escaped(&text)));
+    }
     for (label, path) in [("cwd", &process.cwd), ("exe", &process.executable)] {
         if let Some(path) = path {
             notes.push(format!("{label}: {}", code(&path.to_string_lossy())));
@@ -746,13 +968,12 @@ fn escaped(value: &str) -> String {
 }
 
 pub fn extension_profile(records: &[crate::extensions::report::Record]) -> String {
-    let mut text = "\n## Extension timings\n\nProvider | Version | Phase | Result | Duration ms | Reason\n--- | --- | --- | --- | ---: | ---\n".to_string();
+    let mut text = "\n## Extension timings\n\nProvider | Phase | Result | Duration ms | Reason\n--- | --- | --- | ---: | ---\n".to_string();
     for record in records {
         let _ = writeln!(
             text,
-            "{} | {} | {} | {} | {} | {}",
+            "{} | {} | {} | {} | {}",
             escaped(&record.provider),
-            escaped(record.version.as_deref().unwrap_or("unknown")),
             escaped(&record.phase),
             record.result,
             record
@@ -760,6 +981,24 @@ pub fn extension_profile(records: &[crate::extensions::report::Record]) -> Strin
                 .map_or("-".into(), |ms| format!("{ms:.3}")),
             escaped(record.reason.as_deref().unwrap_or("-"))
         );
+    }
+    let reads: Vec<_> = records
+        .iter()
+        .filter_map(|record| record.argv.as_ref().map(|argv| (record, argv)))
+        .collect();
+    if !reads.is_empty() {
+        text.push_str("\n## Argument reads\n\nProvider | Candidates | Reads | Bytes | Duration ms\n--- | ---: | ---: | ---: | ---:\n");
+        for (record, argv) in reads {
+            let _ = writeln!(
+                text,
+                "{} | {} | {} | {} | {:.3}",
+                escaped(&record.provider),
+                argv.candidates,
+                argv.reads,
+                argv.bytes,
+                argv.duration_ms
+            );
+        }
     }
     text
 }
@@ -771,24 +1010,34 @@ pub fn effective_tags_text(report: Option<&crate::extensions::tags::Report>) -> 
     if report.effective.is_empty() {
         return "None".into();
     }
-    report
-        .effective
-        .iter()
-        .map(|entry| {
-            let label = entry
-                .tag
-                .label
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join("-");
-            match entry.tag.dimension.as_str() {
-                "bin" => "#executable".into(),
-                "app" | "project" => format!("#{}:{label}", entry.tag.dimension),
-                _ => format!("#{label}"),
-            }
-        })
+    let mut hashtags = Vec::new();
+    let mut typed = Vec::new();
+    for entry in &report.effective {
+        let tag = &entry.tag;
+        if tag.supplementary_to.is_some() {
+            typed.push(tag.label.clone());
+            continue;
+        }
+        let label = tag.label.split_whitespace().collect::<Vec<_>>().join("-");
+        match tag.dimension.as_str() {
+            "bin" => hashtags.push("#executable".into()),
+            "app" | "project" => hashtags.push(format!("#{}:{label}", tag.dimension)),
+            "name" => typed.push(format!("name {}", tag.label)),
+            "work" => typed.push(format!("work {} ({})", tag.label, tag.basis)),
+            "version" => typed.push(format!(
+                "version {} {}",
+                tag.subject.as_deref().unwrap_or("?"),
+                tag.value.as_deref().unwrap_or("?")
+            )),
+            _ => hashtags.push(format!("#{label}")),
+        }
+    }
+    let hashtags = hashtags.join(" ");
+    std::iter::once(hashtags)
+        .filter(|text| !text.is_empty())
+        .chain(typed)
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" · ")
 }
 
 pub fn tag_report_lines(report: &crate::extensions::tags::Report) -> Vec<String> {
@@ -797,9 +1046,13 @@ pub fn tag_report_lines(report: &crate::extensions::tags::Report) -> Vec<String>
         use crate::extensions::tags::Operation;
         let operation = match &record.proposal.operation {
             Operation::Add { tag } => format!(
-                "add {} {} · {} · basis {}{}",
+                "add {} {}{} · {} · basis {}{}",
                 tag.dimension,
                 tag.label,
+                tag.subject
+                    .as_ref()
+                    .map(|subject| format!(" · subject {subject}"))
+                    .unwrap_or_default(),
                 tag.id,
                 tag.basis,
                 tag.path
@@ -816,9 +1069,19 @@ pub fn tag_report_lines(report: &crate::extensions::tags::Report) -> Vec<String>
             Operation::Withdraw { proposal_id } => format!("withdraw {proposal_id}"),
         };
         lines.push(format!(
-            "{} · source {}/{} · proposal {}",
-            operation, record.source, record.version, record.proposal.id
+            "{} · source {} · proposal {}",
+            operation, record.source, record.proposal.id
         ));
+        if let Operation::Add { tag } = &record.proposal.operation {
+            for evidence in &tag.evidence_chain {
+                lines.push(format!(
+                    "via pid:{} · started {} · executable {}",
+                    evidence.identity.pid,
+                    evidence.identity.started_unix_us,
+                    evidence.executable.display()
+                ));
+            }
+        }
     }
     for decision in &report.decisions {
         lines.push(format!(

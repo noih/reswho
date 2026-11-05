@@ -1,10 +1,11 @@
-use anyhow::{Context, Result, bail};
-use std::{
-    io::{ErrorKind, Read, Write},
-    os::{fd::AsRawFd, unix::process::CommandExt},
-    process::{Child, Command, Stdio},
-    time::{Duration, Instant},
-};
+use crate::model::FailureReason;
+use anyhow::Result;
+use std::time::{Duration, Instant};
+
+mod bounded;
+#[cfg(test)]
+use bounded::{MAX_OUTPUT_BYTES, drain};
+pub(crate) use bounded::{Output, fail, reason_of, run_bounded};
 
 #[cfg(target_os = "macos")]
 pub(super) fn find_program(name: &str) -> Option<std::path::PathBuf> {
@@ -17,15 +18,108 @@ pub(super) fn find_program(name: &str) -> Option<std::path::PathBuf> {
         })
 }
 
-const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) fn probe_endpoint(host: Option<&str>) -> Option<(FailureReason, Option<i32>)> {
+    let path = host?
+        .strip_prefix("unix://")
+        .filter(|path| std::path::Path::new(path).is_absolute())?;
+    let error = match std::os::unix::net::UnixStream::connect(path) {
+        Ok(_) => return None,
+        Err(error) => error,
+    };
+    let reason = match error.raw_os_error() {
+        Some(libc::ENOENT) => FailureReason::EndpointNotFound,
+        Some(libc::EACCES | libc::EPERM) => FailureReason::PermissionDenied,
+        Some(libc::ECONNREFUSED) => FailureReason::ConnectionRefused,
+        Some(libc::ETIMEDOUT) => FailureReason::Timeout,
+        _ => FailureReason::Unknown,
+    };
+    Some((reason, error.raw_os_error()))
+}
 
-pub(crate) struct Output {
-    pub stdout: Vec<u8>,
-    pub issue: Option<String>,
+type Probed = Option<(FailureReason, Option<i32>)>;
+
+pub(crate) struct Probe {
+    limits: Option<(crate::snapshot::Cancellation, Instant)>,
+    seen: Vec<(String, Probed)>,
+    pub probes: usize,
+}
+
+impl Probe {
+    pub(super) fn new(runner: &impl Runner) -> Self {
+        Self {
+            limits: runner.limits(),
+            seen: Vec::new(),
+            probes: 0,
+        }
+    }
+
+    pub fn with_limits(cancel: &crate::snapshot::Cancellation, deadline: Instant) -> Self {
+        Self {
+            limits: Some((cancel.clone(), deadline)),
+            seen: Vec::new(),
+            probes: 0,
+        }
+    }
+
+    pub fn canceled(&self) -> bool {
+        self.limits
+            .as_ref()
+            .is_some_and(|(cancel, _)| cancel.check().is_err())
+    }
+
+    pub fn expired(&self) -> bool {
+        self.limits
+            .as_ref()
+            .is_some_and(|(_, deadline)| Instant::now() >= *deadline)
+    }
+
+    fn endpoint(&mut self, host: Option<&str>) -> Probed {
+        let host = host?;
+        if let Some((_, result)) = self.seen.iter().find(|(seen, _)| seen == host) {
+            return *result;
+        }
+        if self.canceled() || self.expired() {
+            return None;
+        }
+        self.probes += 1;
+        let result = probe_endpoint(Some(host));
+        self.seen.push((host.to_owned(), result));
+        result
+    }
+
+    pub fn refine(&mut self, diagnostic: &mut crate::model::Diagnostic, host: Option<&str>) {
+        if diagnostic.reason == Some(FailureReason::Unknown)
+            && let Some((reason, os_error)) = self.endpoint(host)
+        {
+            diagnostic.refine(reason, os_error);
+        }
+    }
+
+    pub fn diagnose(
+        &mut self,
+        code: &'static str,
+        operation: &str,
+        error: &anyhow::Error,
+        host: Option<&str>,
+    ) -> crate::model::Diagnostic {
+        let reason = if self.canceled() {
+            FailureReason::Canceled
+        } else {
+            reason_of(error)
+        };
+        let mut diagnostic =
+            crate::model::Diagnostic::failure(code, operation, format!("{error:#}"), reason, None);
+        self.refine(&mut diagnostic, host);
+        diagnostic
+    }
 }
 
 pub(super) trait Runner {
     fn run(&mut self, args: &[String]) -> Result<Output>;
+
+    fn limits(&self) -> Option<(crate::snapshot::Cancellation, Instant)> {
+        None
+    }
 
     fn direct_stats(
         &mut self,
@@ -44,84 +138,11 @@ pub(super) struct RuntimeCommand {
     pub api_version: Option<String>,
 }
 
-struct OwnedChild {
-    process: Child,
-    group_cleaned: bool,
-    lifeline: Option<std::os::unix::net::UnixStream>,
-}
-
-impl OwnedChild {
-    fn exited(&self) -> Result<bool> {
-        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
-        let result = unsafe {
-            libc::waitid(
-                libc::P_PID,
-                self.process.id() as libc::id_t,
-                info.as_mut_ptr(),
-                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-            )
-        };
-        if result < 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == ErrorKind::Interrupted {
-                return Ok(false);
-            }
-            return Err(error.into());
-        }
-        let info = unsafe { info.assume_init() };
-        #[cfg(target_os = "linux")]
-        let pid = unsafe { info.si_pid() };
-        #[cfg(not(target_os = "linux"))]
-        let pid = info.si_pid;
-        Ok(pid != 0)
-    }
-    fn clean_group(&mut self) {
-        if !self.group_cleaned {
-            if self.lifeline.is_some() {
-                self.lifeline.take();
-            } else {
-                unsafe { libc::kill(-(self.process.id() as i32), libc::SIGKILL) };
-            }
-            self.group_cleaned = true;
-        }
-    }
-}
-
-impl Drop for OwnedChild {
-    fn drop(&mut self) {
-        self.clean_group();
-        let _ = self.process.wait();
-    }
-}
-
-fn nonblocking(pipe: &impl AsRawFd) -> Result<()> {
-    let fd = pipe.as_raw_fd();
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        bail!("cannot configure container CLI output pipe");
-    }
-    Ok(())
-}
-
-fn drain(pipe: &mut impl Read, buffer: &mut Vec<u8>) -> Result<bool> {
-    let mut chunk = [0; 65536];
-    match pipe.read(&mut chunk) {
-        Ok(0) => Ok(true),
-        Ok(length) => {
-            if buffer.len() + length > MAX_OUTPUT_BYTES {
-                bail!("container CLI output exceeds 8 MiB limit");
-            }
-            buffer.extend_from_slice(&chunk[..length]);
-            Ok(false)
-        }
-        Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
-            Ok(false)
-        }
-        Err(_) => bail!("cannot read container CLI output"),
-    }
-}
-
 impl Runner for RuntimeCommand {
+    fn limits(&self) -> Option<(crate::snapshot::Cancellation, Instant)> {
+        Some((self.cancel.clone(), self.deadline))
+    }
+
     fn direct_stats(&mut self, host: &str, ids: &[String]) -> Result<Option<super::stats::Batch>> {
         let Some(socket) = host
             .strip_prefix("unix://")
@@ -147,129 +168,193 @@ impl Runner for RuntimeCommand {
     }
 }
 
-pub(crate) fn run_bounded(
-    program: &std::path::Path,
-    args: &[String],
-    input: Option<&[u8]>,
-    cancel: &crate::snapshot::Cancellation,
-    deadline: Instant,
-) -> Result<Output> {
-    if input.is_some_and(|input| input.len() > MAX_OUTPUT_BYTES) {
-        bail!("provider request exceeds 8 MiB limit");
-    }
-    cancel.check()?;
-    if Instant::now() >= deadline {
-        bail!("container CLI collection deadline exceeded");
-    }
-    let lifeline = if input.is_some() {
-        Some(std::os::unix::net::UnixStream::pair()?)
-    } else {
-        None
+#[cfg(test)]
+pub(crate) mod failure_fixtures {
+    use std::{
+        os::unix::{fs::PermissionsExt, net::UnixListener},
+        path::{Path, PathBuf},
     };
-    let guard_fd = lifeline.as_ref().map(|(_, reader)| reader.as_raw_fd());
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env("SSH_ASKPASS_REQUIRE", "never")
-        .env("SSH_ASKPASS", "/usr/bin/false");
-    unsafe {
-        command.pre_exec(move || {
-            #[cfg(target_os = "macos")]
-            if let Some(fd) = guard_fd {
-                unsafe extern "C" {
-                    fn reswho_guard(lifeline: libc::c_int) -> libc::c_int;
-                }
-                if reswho_guard(fd) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                return Ok(());
-            }
-            if libc::setsid() < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
+
+    pub(crate) struct Endpoints {
+        pub directory: tempfile::TempDir,
+        _denied: UnixListener,
     }
-    let mut child = OwnedChild {
-        process: command.spawn().map_err(|error| match error.kind() {
-            ErrorKind::NotFound => anyhow::anyhow!("container CLI not found on PATH"),
-            _ => anyhow::anyhow!("cannot start container CLI ({})", error.kind()),
-        })?,
-        group_cleaned: false,
-        lifeline: lifeline.map(|(writer, _)| writer),
-    };
-    let mut stdin = child.process.stdin.take();
-    if let Some(pipe) = &stdin {
-        nonblocking(pipe)?;
+
+    impl Endpoints {
+        pub fn new() -> Self {
+            let directory = tempfile::tempdir().unwrap();
+            let denied = UnixListener::bind(directory.path().join("denied.sock")).unwrap();
+            std::fs::set_permissions(
+                directory.path().join("denied.sock"),
+                std::fs::Permissions::from_mode(0o000),
+            )
+            .unwrap();
+            drop(UnixListener::bind(directory.path().join("refused.sock")).unwrap());
+            Self {
+                directory,
+                _denied: denied,
+            }
+        }
+
+        pub fn host(&self, name: &str) -> String {
+            format!("unix://{}", self.directory.path().join(name).display())
+        }
+
+        pub fn cases(&self) -> [(String, crate::model::FailureReason); 3] {
+            use crate::model::FailureReason::*;
+            [
+                (self.host("missing.sock"), EndpointNotFound),
+                (self.host("denied.sock"), PermissionDenied),
+                (self.host("refused.sock"), ConnectionRefused),
+            ]
+        }
     }
-    let input = input.unwrap_or(&[]);
-    let mut sent = 0;
-    let mut stdout = child
-        .process
-        .stdout
-        .take()
-        .context("container CLI stdout unavailable")?;
-    let mut stderr = child
-        .process
-        .stderr
-        .take()
-        .context("container CLI stderr unavailable")?;
-    nonblocking(&stdout)?;
-    nonblocking(&stderr)?;
-    let mut output = Vec::new();
-    let mut errors = Vec::new();
-    loop {
-        cancel.check()?;
-        if let Some(pipe) = &mut stdin {
-            match pipe.write(&input[sent..input.len().min(sent + 65536)]) {
-                Ok(length) => sent += length,
-                Err(error)
-                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
-                Err(_) => bail!("cannot write provider request"),
-            }
-            if sent == input.len() {
-                stdin.take();
-            }
-        }
-        let out_done = drain(&mut stdout, &mut output)?;
-        let err_done = drain(&mut stderr, &mut errors)?;
-        if out_done && err_done && child.exited()? {
-            child.clean_group();
-            let status = child.process.wait()?;
-            let issue = if !status.success() {
-                Some(format!(
-                    "container CLI command failed ({status}); stderr withheld"
-                ))
-            } else if !errors.is_empty() {
-                Some("container CLI command reported diagnostics; stderr withheld".into())
-            } else {
-                None
-            };
-            return Ok(Output {
-                stdout: output,
-                issue,
-            });
-        }
-        if Instant::now() >= deadline {
-            return Ok(Output {
-                stdout: output,
-                issue: Some("container CLI collection deadline exceeded".into()),
-            });
-        }
-        std::thread::sleep(Duration::from_millis(10));
+
+    pub(crate) fn cli(directory: &Path, name: &str, body: &str) -> PathBuf {
+        let path = directory.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{Command, Stdio};
+
+    #[test]
+    fn endpoint_probe_classifies_socket_state_without_reading_stderr() {
+        let endpoints = failure_fixtures::Endpoints::new();
+        for (host, expected) in endpoints.cases() {
+            let (reason, errno) = probe_endpoint(Some(&host)).unwrap();
+            assert_eq!(reason, expected, "{host}");
+            assert!(errno.is_some());
+        }
+        let live =
+            std::os::unix::net::UnixListener::bind(endpoints.directory.path().join("live.sock"))
+                .unwrap();
+        assert!(probe_endpoint(Some(&endpoints.host("live.sock"))).is_none());
+        drop(live);
+        assert!(probe_endpoint(Some("ssh://user@remote")).is_none());
+        assert!(probe_endpoint(Some("unix://relative.sock")).is_none());
+        assert!(probe_endpoint(None).is_none());
+        let mut probe = Probe {
+            limits: None,
+            seen: Vec::new(),
+            probes: 0,
+        };
+        let failure = probe.diagnose(
+            "collection_failed",
+            "docker",
+            &anyhow::anyhow!("info failed"),
+            Some(&endpoints.host("denied.sock")),
+        );
+        assert_eq!(failure.reason, Some(FailureReason::PermissionDenied));
+        assert!(failure.message.contains("reason permission_denied: "));
+        assert!(failure.message.contains("allow socket access"));
+        assert_eq!(
+            probe
+                .diagnose(
+                    "unavailable",
+                    "x",
+                    &fail(FailureReason::Timeout, "slow"),
+                    None
+                )
+                .reason,
+            Some(FailureReason::Timeout)
+        );
+        endpoints.directory.close().unwrap();
+    }
+
+    #[test]
+    fn probe_runs_once_per_endpoint_and_respects_cancel_and_deadline() {
+        let directory = tempfile::tempdir().unwrap();
+        let host = format!("unix://{}", directory.path().join("missing.sock").display());
+        let unknown = || anyhow::anyhow!("info failed");
+        let cancel = crate::snapshot::Cancellation::default();
+        let mut probe = Probe {
+            limits: Some((cancel.clone(), Instant::now() + Duration::from_secs(5))),
+            seen: Vec::new(),
+            probes: 0,
+        };
+        for _ in 0..3 {
+            let diagnostic =
+                probe.diagnose("command_failed", "docker.stats", &unknown(), Some(&host));
+            assert_eq!(diagnostic.reason, Some(FailureReason::EndpointNotFound));
+            assert_eq!(diagnostic.os_error, Some(libc::ENOENT));
+            assert!(
+                diagnostic
+                    .message
+                    .ends_with(FailureReason::EndpointNotFound.hint())
+            );
+            assert!(!diagnostic.message.contains("reason unknown"));
+        }
+        assert_eq!(probe.probes, 1);
+        let mut expired = Probe {
+            limits: Some((cancel.clone(), Instant::now())),
+            seen: Vec::new(),
+            probes: 0,
+        };
+        let diagnostic = expired.diagnose("collection_failed", "docker", &unknown(), Some(&host));
+        assert_eq!(
+            (diagnostic.reason, expired.probes),
+            (Some(FailureReason::Unknown), 0)
+        );
+        cancel.cancel();
+        let mut canceled = Probe {
+            limits: Some((cancel, Instant::now() + Duration::from_secs(5))),
+            seen: Vec::new(),
+            probes: 0,
+        };
+        let diagnostic = canceled.diagnose("collection_failed", "docker", &unknown(), Some(&host));
+        assert_eq!(
+            (diagnostic.reason, canceled.probes),
+            (Some(FailureReason::Canceled), 0)
+        );
+        assert!(diagnostic.message.contains("reason canceled: "));
+        directory.close().unwrap();
+    }
+
+    #[test]
+    fn runner_reports_missing_cli_and_deadline_as_typed_reasons() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = run_bounded(
+            &directory.path().join("missing-cli"),
+            &[],
+            None,
+            &crate::snapshot::Cancellation::default(),
+            Instant::now() + Duration::from_secs(2),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(reason_of(&error), FailureReason::CliNotFound);
+        let output = run_bounded(
+            &failure_fixtures::cli(directory.path(), "slow", "exec /bin/sleep 5"),
+            &[],
+            None,
+            &crate::snapshot::Cancellation::default(),
+            Instant::now() + Duration::from_millis(150),
+        )
+        .unwrap();
+        assert!(output.timed_out);
+        assert_eq!(reason_of(&output.failure("x")), FailureReason::Timeout);
+        let output = run_bounded(
+            &failure_fixtures::cli(
+                directory.path(),
+                "fails",
+                "echo private-credential >&2; exit 1",
+            ),
+            &[],
+            None,
+            &crate::snapshot::Cancellation::default(),
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap();
+        assert!(!output.timed_out);
+        assert_eq!(reason_of(&output.failure("x")), FailureReason::Unknown);
+        directory.close().unwrap();
+    }
 
     #[test]
     fn guarded_host_fixture() {

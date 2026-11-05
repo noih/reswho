@@ -8,7 +8,7 @@ import unittest
 package = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/package-release"))
 ROOT = Path(__file__).resolve().parents[1]
 notes = runpy.run_path(str(ROOT / "scripts/release-notes"))
-BODY = b"Updated the README with a clearer introduction, quick-start examples, and links to detailed guides.\n\nNo functional changes.\n"
+BODY = b"### Upgrade effort\n\nMicro: no user changes needed.\n\nUpdated the README with a clearer introduction, quick-start examples, and links to detailed guides.\n\nNo functional changes.\n"
 
 
 class ReleasePackageTests(unittest.TestCase):

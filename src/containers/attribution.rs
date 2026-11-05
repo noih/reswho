@@ -1,5 +1,5 @@
 use super::model::{Container, Project, ProjectSource};
-use crate::tree::projects::Discovery;
+use crate::extensions::host::projects::Discovery;
 use std::{
     collections::BTreeSet,
     path::{Component, Path, PathBuf},

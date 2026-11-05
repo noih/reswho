@@ -11,13 +11,32 @@ pub const MAX_PER_PROCESS: usize = 64;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tag {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_resource: Option<Box<crate::model::HostResource>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supplementary_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_chain: Vec<ProcessEvidence>,
     pub dimension: String,
     pub id: String,
     pub label: String,
     pub path: Option<PathBuf>,
     pub basis: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection: Option<Box<super::placement::Projection>>,
     #[serde(skip)]
-    pub(crate) assignment: Option<Box<crate::tree::Assignment>>,
+    pub(crate) assignment: Option<Box<crate::extensions::host::assignment::Assignment>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessEvidence {
+    pub identity: ProcessIdentity,
+    pub executable: PathBuf,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -74,13 +93,32 @@ pub struct Override {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Recorded {
     pub source: String,
-    pub version: String,
+
+    #[serde(serialize_with = "public_proposal")]
     pub proposal: Proposal,
+}
+
+fn public_proposal<S: serde::Serializer>(
+    proposal: &Proposal,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let mut public = proposal.clone();
+    if let Operation::Add { tag } = &mut public.operation {
+        tag.projection = None;
+    }
+    public.serialize(serializer)
+}
+
+fn public_tag<S: serde::Serializer>(tag: &Tag, serializer: S) -> Result<S::Ok, S::Error> {
+    let mut public = tag.clone();
+    public.projection = None;
+    public.serialize(serializer)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Effective {
     pub source: String,
+    #[serde(serialize_with = "public_tag")]
     pub tag: Tag,
 }
 
@@ -121,19 +159,23 @@ fn source_id(value: &str) -> bool {
 
 fn dimension(value: &str, provider: &str) -> bool {
     text(value, 128)
-        && (matches!(value, "project" | "app" | "bin" | "runtime" | "role")
-            || value
-                .strip_prefix(&format!("extensions.{provider}."))
-                .is_some_and(identifier))
+        && (matches!(
+            value,
+            "project" | "app" | "bin" | "runtime" | "role" | "version" | "name" | "work"
+        ) || value
+            .strip_prefix(&format!("extensions.{provider}."))
+            .is_some_and(identifier))
 }
 
 fn override_dimension(value: &str) -> bool {
     text(value, 128)
-        && (matches!(value, "project" | "app" | "bin" | "runtime" | "role")
-            || value.strip_prefix("extensions.").is_some_and(|rest| {
-                rest.split_once('.')
-                    .is_some_and(|(source, name)| source_id(source) && identifier(name))
-            }))
+        && (matches!(
+            value,
+            "project" | "app" | "bin" | "runtime" | "role" | "version" | "name" | "work"
+        ) || value.strip_prefix("extensions.").is_some_and(|rest| {
+            rest.split_once('.')
+                .is_some_and(|(source, name)| source_id(source) && identifier(name))
+        }))
 }
 
 fn tag_id(dimension: &str, value: &str, provider: &str) -> bool {
@@ -165,6 +207,16 @@ pub fn validate(
     processes: &[Process],
     source: &str,
     contract: Option<&Contract>,
+) -> Result<()> {
+    validate_registered(proposals, processes, source, contract, &[])
+}
+
+pub(crate) fn validate_registered(
+    proposals: &[Proposal],
+    processes: &[Process],
+    source: &str,
+    contract: Option<&Contract>,
+    ownership: &[super::placement::Ownership],
 ) -> Result<()> {
     if proposals.len() > 16384 {
         bail!("tag_proposal_limit");
@@ -198,6 +250,48 @@ pub fn validate(
                 {
                     bail!("invalid_tag");
                 }
+                validate_chain(tag, process, processes)?;
+                if let Some(resource) = &tag.host_resource
+                    && (!text(&resource.kind, 64)
+                        || !text(&resource.label, 128)
+                        || !text(&resource.confidence, 64)
+                        || resource.scope.as_ref().is_some_and(|s| !text(s, 1024))
+                        || resource.evidence.len() > 65
+                        || resource.evidence.iter().any(|e| !text(e, 4096))
+                        || resource.diagnostics.len() > 16
+                        || resource.diagnostics.iter().any(|d| {
+                            !matches!(d.code.as_str(), "invalid_data" | "unavailable")
+                                || !text(&d.operation, 128)
+                                || !text(&d.message, 4096)
+                        })
+                        || resource
+                            .configuration
+                            .as_ref()
+                            .is_some_and(|c| !text(&c.scope, 64))
+                        || resource.responsible.as_ref().is_some_and(|e| {
+                            !e.executable.is_absolute()
+                                || !text(&e.executable.to_string_lossy(), 4096)
+                                || !processes.iter().any(|p| {
+                                    ProcessIdentity::observed(p) == Some(e.identity)
+                                        && p.executable.as_ref() == Some(&e.executable)
+                                        && p.uid.is_some()
+                                        && p.uid == process.uid
+                                        && p.started_unix_us <= process.started_unix_us
+                                })
+                        }))
+                {
+                    bail!("invalid_host_resource");
+                }
+                let versioned = tag.dimension == "version";
+                if versioned
+                    != (tag.subject.as_deref().is_some_and(|s| text(s, 128))
+                        && tag.value.as_deref().is_some_and(|v| text(v, 128)))
+                    || !versioned && (tag.subject.is_some() || tag.value.is_some())
+                    || matches!(tag.dimension.as_str(), "version" | "name" | "work")
+                        && tag.path.is_some()
+                {
+                    bail!("invalid_typed_tag");
+                }
                 if let Some(contract) = contract {
                     if !matches!(tag.basis.as_str(), "cwd" | "executable" | "observed") {
                         bail!("invalid_tag_basis");
@@ -208,7 +302,10 @@ pub fn validate(
                     if !contract.produces.contains(&tag.dimension) {
                         bail!("undeclared_tag_dimension");
                     }
-                    if matches!(tag.dimension.as_str(), "project" | "app") {
+                    if matches!(tag.dimension.as_str(), "project" | "app")
+                        || tag.path.is_some()
+                            && ownership.iter().any(|o| o.dimension == tag.dimension)
+                    {
                         let root = tag
                             .path
                             .as_ref()
@@ -225,7 +322,9 @@ pub fn validate(
                         let observed = observed
                             .canonicalize()
                             .map_err(|_| anyhow::anyhow!("ownership_evidence_unavailable"))?;
-                        if !root.is_dir()
+                        if (!root.is_dir()
+                            && (matches!(tag.dimension.as_str(), "project" | "app")
+                                || root != observed))
                             || root.parent().is_none()
                             || !observed.starts_with(&root)
                             || observed
@@ -238,11 +337,14 @@ pub fn validate(
                         }
                         if tag.dimension == "app"
                             && (tag.basis != "executable"
-                                || super::app_bundle(&observed).as_ref() != Some(&root))
+                                || crate::extensions::host::bundles::app_bundle(&observed).as_ref()
+                                    != Some(&root))
                         {
                             bail!("app_bundle_lineage_required");
                         }
-                    } else if let Some(path) = &tag.path {
+                    } else if let Some(path) = &tag.path
+                        && tag.evidence_chain.is_empty()
+                    {
                         let observed = match tag.basis.as_str() {
                             "cwd" => process.cwd.as_ref(),
                             "executable" => process.executable.as_ref(),
@@ -293,11 +395,72 @@ pub fn validate(
     Ok(())
 }
 
+fn validate_chain(tag: &Tag, process: &Process, processes: &[Process]) -> Result<()> {
+    if tag.supplementary_to.is_none() && tag.evidence_chain.is_empty() {
+        return Ok(());
+    }
+    if !tag
+        .supplementary_to
+        .as_deref()
+        .is_some_and(override_dimension)
+        || tag.projection.is_some()
+        || tag.assignment.is_some()
+        || tag.evidence_chain.len() < 2
+        || tag.evidence_chain.len() > processes.len()
+        || tag.evidence_chain.first().map(|e| e.identity) != ProcessIdentity::observed(process)
+    {
+        bail!("invalid_supplementary_tag");
+    }
+    let mut seen = BTreeSet::new();
+    let mut child: Option<&Process> = None;
+    for evidence in &tag.evidence_chain {
+        let observed = processes
+            .iter()
+            .find(|p| p.pid == evidence.identity.pid)
+            .ok_or_else(|| anyhow::anyhow!("invalid_evidence_chain"))?;
+        if !seen.insert(observed.pid)
+            || ProcessIdentity::observed(observed) != Some(evidence.identity)
+            || observed.executable.as_ref() != Some(&evidence.executable)
+            || !evidence.executable.is_absolute()
+            || evidence.executable.as_os_str().len() > 4096
+            || evidence
+                .executable
+                .to_string_lossy()
+                .chars()
+                .any(char::is_control)
+            || child.is_some_and(|child| {
+                child.ppid != Some(observed.pid)
+                    || observed.pid <= 1
+                    || observed.uid.is_none()
+                    || child.uid != observed.uid
+                    || observed.started_unix_us > child.started_unix_us
+            })
+        {
+            bail!("invalid_evidence_chain");
+        }
+        child = Some(observed);
+    }
+    if tag.path.as_ref().is_none_or(|path| {
+        !tag.evidence_chain
+            .last()
+            .is_some_and(|e| e.executable.starts_with(path))
+    }) {
+        bail!("invalid_evidence_root");
+    }
+    Ok(())
+}
+
 pub fn path_id(dimension: &str, path: &std::path::Path) -> String {
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    canonical_id(
+        dimension,
+        &path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+    )
+}
+
+pub(crate) fn canonical_id(dimension: &str, canonical: &std::path::Path) -> String {
     format!(
         "{dimension}:{}",
-        crate::tree::stable_ref(dimension, &canonical.to_string_lossy())
+        crate::extensions::host::stable_ref(dimension, &canonical.to_string_lossy())
             .trim_start_matches("group:")
     )
 }
@@ -313,11 +476,14 @@ pub(crate) fn ownership_ref(dimension: &str, id: &str, path: &std::path::Path) -
         "project" => "projects",
         _ => "executable",
     };
-    crate::tree::stable_ref(category, &ownership_key(dimension, id, path))
+    crate::extensions::host::stable_ref(category, &ownership_key(dimension, id, path))
 }
 
 fn exclusive(dimension: &str) -> bool {
-    matches!(dimension, "app" | "project" | "bin")
+    matches!(
+        dimension,
+        "app" | "project" | "bin" | "version" | "name" | "work"
+    )
 }
 
 fn withdrawn(records: &[Recorded], index: usize) -> bool {
@@ -327,7 +493,7 @@ fn withdrawn(records: &[Recorded], index: usize) -> bool {
     })
 }
 
-fn contradictory(records: &[Recorded]) -> bool {
+fn contradictory(records: &[Recorded], ownership: &[String]) -> bool {
     let active: Vec<_> = records
         .iter()
         .enumerate()
@@ -343,9 +509,14 @@ fn contradictory(records: &[Recorded]) -> bool {
                 match &right.proposal.operation {
                     Operation::Add { tag: other }
                         if tag.dimension == other.dimension
-                            && (exclusive(&tag.dimension) && tag.id != other.id
+                            && ((exclusive(&tag.dimension)
+                                || ownership.contains(&tag.dimension))
+                                && tag.id != other.id
                                 || tag.id == other.id
-                                    && (tag.label != other.label || tag.path != other.path)) =>
+                                    && (tag.label != other.label
+                                        || tag.path != other.path
+                                        || tag.subject != other.subject
+                                        || tag.value != other.value)) =>
                     {
                         return true;
                     }
@@ -360,7 +531,13 @@ fn contradictory(records: &[Recorded]) -> bool {
     false
 }
 
-pub fn resolve(mut records: Vec<Recorded>, priority: &[String]) -> Report {
+pub fn resolve(records: Vec<Recorded>, priority: &[String]) -> Report {
+    resolve_owned(records, priority, &[])
+}
+
+fn resolve_owned(mut records: Vec<Recorded>, priority: &[String], ownership: &[String]) -> Report {
+    let exclusive =
+        |dimension: &str| exclusive(dimension) || ownership.iter().any(|d| d == dimension);
     let rank = |source: &str| {
         priority
             .iter()
@@ -416,19 +593,96 @@ pub fn resolve(mut records: Vec<Recorded>, priority: &[String]) -> Report {
     report
 }
 
+fn resolve_process(
+    process: &Process,
+    records: Vec<Recorded>,
+    priority: &[String],
+    ownership: &[String],
+) -> Report {
+    if !records.iter().any(|record| {
+        matches!(&record.proposal.operation, Operation::Add { tag } if tag.dimension == "version")
+    }) {
+        return resolve_owned(records, priority, ownership);
+    }
+    let report = resolve_owned(records.clone(), priority, ownership);
+    let name = report
+        .effective
+        .iter()
+        .find(|e| e.tag.dimension == "name")
+        .map(|e| e.tag.label.to_lowercase());
+    let executable = process
+        .executable
+        .as_deref()
+        .and_then(|path| path.file_name())
+        .map(|file| file.to_string_lossy().to_lowercase());
+    let runtimes: Vec<_> = report
+        .effective
+        .iter()
+        .filter(|e| e.tag.dimension == "runtime")
+        .filter_map(|e| e.tag.id.strip_prefix("runtime:"))
+        .map(str::to_lowercase)
+        .collect();
+    let consistent = |subject: &str| {
+        let subject = subject.to_lowercase();
+        [
+            Some(process.name.to_lowercase()),
+            executable.clone(),
+            name.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(runtimes.iter().cloned())
+        .any(|candidate| candidate == subject)
+    };
+    let mismatched: Vec<_> = (0..records.len())
+        .filter(|index| {
+            !withdrawn(&records, *index)
+                && matches!(&records[*index].proposal.operation, Operation::Add { tag }
+                    if tag.dimension == "version" && !consistent(tag.subject.as_deref().unwrap_or_default()))
+        })
+        .collect();
+    if mismatched.is_empty() {
+        return report;
+    }
+    let (rejected, kept): (Vec<_>, Vec<_>) = records
+        .into_iter()
+        .enumerate()
+        .partition(|(index, _)| mismatched.contains(index));
+    let mut report = resolve_owned(
+        kept.into_iter().map(|(_, r)| r).collect(),
+        priority,
+        ownership,
+    );
+    for (_, record) in rejected {
+        report.decisions.push(Decision {
+            source: record.source.clone(),
+            proposal_id: record.proposal.id.clone(),
+            status: "rejected".into(),
+            by_source: None,
+            reason: "version_subject_mismatch".into(),
+        });
+        report.proposals.push(record);
+    }
+    report
+}
+
 pub(crate) fn classify(
     providers: &[&dyn Extension],
     context: &Context<'_>,
-    processes: &[Process],
+    facts: &crate::extensions::host::Facts<'_>,
 ) -> (BTreeMap<u32, Report>, Vec<Diagnostic>) {
+    let registry = super::placement::Registry::new(providers, context);
+    let ownership: Vec<_> = registry.ownership.keys().cloned().collect();
+    let processes = facts.processes;
     let mut batches: BTreeMap<u32, Vec<Recorded>> = BTreeMap::new();
     let mut diagnostics = Vec::new();
     let mut rejected: BTreeMap<u32, Vec<Recorded>> = BTreeMap::new();
-    let mut results = super::dispatch_many(providers, context, Request::Classify(processes));
+    let mut results = super::dispatch_many(providers, context, Request::Classify(facts));
     let priority = context.settings.source_order(
-        super::BUILTINS
+        crate::core::classifiers()
             .iter()
             .map(|p| p.descriptor().id)
+            .chain(super::BUILTINS.iter().map(|p| p.descriptor().id))
             .chain(results.iter().filter_map(|(id, _)| id.clone())),
     );
     results.sort_by_key(|(source, _)| {
@@ -452,10 +706,13 @@ pub(crate) fn classify(
                         if inner.identity != proposal.identity {
                             bail!("tag_identity_mismatch");
                         }
-                        let proposal = inner;
+                        let mut proposal = inner;
+                        if let Operation::Add { tag } = &mut proposal.operation {
+                            registry.decorate(providers, context, facts, tag);
+                        }
                         records.push(Recorded {
                             source: source.clone(),
-                            version: response.version.clone(),
+
                             proposal,
                         });
                         continue;
@@ -468,14 +725,14 @@ pub(crate) fn classify(
                         if process
                             .executable
                             .as_deref()
-                            .and_then(super::app_bundle)
+                            .and_then(crate::extensions::host::bundles::app_bundle)
                             .as_ref()
                             != Some(&path)
                         {
                             bail!("invalid_app_bundle");
                         }
                         Operation::Add {
-                            tag: crate::tree::app_tag(path),
+                            tag: crate::extensions::host::proposals::app_tag(path),
                         }
                     }
                     ClassificationEvidence::Custom {
@@ -490,7 +747,14 @@ pub(crate) fn classify(
                         path,
                         basis,
                     } => {
-                        validate_legacy(&key, &label, &path, &basis, processes, proposal.identity)?;
+                        validate_observed_path(
+                            &key,
+                            &label,
+                            &path,
+                            &basis,
+                            processes,
+                            proposal.identity,
+                        )?;
                         let dimension = if is_role { "role" } else { "project" };
                         Operation::Add {
                             tag: Tag {
@@ -505,6 +769,12 @@ pub(crate) fn classify(
                                 label,
                                 path: Some(path),
                                 basis,
+                                subject: None,
+                                value: None,
+                                projection: None,
+                                supplementary_to: None,
+                                evidence_chain: vec![],
+                                host_resource: None,
                                 assignment: None,
                             },
                         }
@@ -512,7 +782,6 @@ pub(crate) fn classify(
                 };
                 records.push(Recorded {
                     source: source.clone(),
-                    version: response.version.clone(),
                     proposal: Proposal {
                         id: format!("legacy-{index}"),
                         identity: proposal.identity,
@@ -521,32 +790,20 @@ pub(crate) fn classify(
                 });
             }
             let contains_sensitive = |records: &[Recorded]| -> Result<bool> {
-                let serialized = serde_json::to_string(records)?;
-                Ok(context
-                    .settings
-                    .report()
-                    .settings
-                    .iter()
-                    .any(|(key, setting)| {
-                        (setting.definition.sensitive || crate::redaction::sensitive_option(key))
-                            && context
-                                .settings
-                                .get(key)
-                                .and_then(serde_json::Value::as_str)
-                                .is_some_and(|secret| {
-                                    !secret.is_empty()
-                                        && serde_json::to_string(secret).is_ok_and(|encoded| {
-                                            serialized.contains(&encoded[1..encoded.len() - 1])
-                                        })
-                                })
-                    }))
+                let mut serialized = serde_json::to_string(records)?;
+                for record in records {
+                    if let Operation::Add { tag } = &record.proposal.operation {
+                        serialized.push_str(&serde_json::to_string(&tag.projection)?);
+                    }
+                }
+                Ok(context.settings.contains_sensitive(&serialized))
             };
             if contains_sensitive(&records)? {
                 bail!("sensitive_tag_payload");
             }
             for record in &mut records {
                 if let Operation::Add { tag } = &mut record.proposal.operation
-                    && exclusive(&tag.dimension)
+                    && (exclusive(&tag.dimension) || ownership.contains(&tag.dimension))
                     && let Some(path) = &mut tag.path
                     && let Ok(canonical) = path.canonicalize()
                 {
@@ -556,8 +813,19 @@ pub(crate) fn classify(
             if contains_sensitive(&records)? {
                 bail!("sensitive_tag_payload");
             }
+            for record in &mut records {
+                if let Operation::Add { tag } = &mut record.proposal.operation {
+                    registry.decorate(providers, context, facts, tag);
+                }
+            }
             let proposals: Vec<_> = records.iter().map(|r| r.proposal.clone()).collect();
             validate(&proposals, processes, &source, None)?;
+            if proposals.iter().any(|p| {
+                matches!(&p.operation, Operation::Add { tag }
+                if tag.supplementary_to.is_some() && ownership.contains(&tag.dimension))
+            }) {
+                bail!("supplementary_ownership_conflict");
+            }
             let mut by_pid: BTreeMap<u32, Vec<Recorded>> = BTreeMap::new();
             for record in records {
                 by_pid
@@ -565,7 +833,10 @@ pub(crate) fn classify(
                     .or_default()
                     .push(record);
             }
-            if by_pid.values().any(|records| contradictory(records)) {
+            if by_pid
+                .values()
+                .any(|records| contradictory(records, &ownership))
+            {
                 for (pid, records) in by_pid {
                     rejected.entry(pid).or_default().extend(records);
                 }
@@ -596,6 +867,7 @@ pub(crate) fn classify(
                     batches.entry(pid).or_default().extend(records);
                 }
             }
+            Err(_) if context.settings.is_disabled(&source) => {}
             Err(_) => diagnostics.push(super::invalid(&source, "classify")),
         }
     }
@@ -606,6 +878,9 @@ pub(crate) fn classify(
         .iter()
         .filter(|r| r.phase == "classify" && r.result == "skipped")
     {
+        if context.settings.is_disabled(&record.provider) {
+            continue;
+        }
         let issue = super::invalid(&record.provider, "classify");
         if !diagnostics.iter().any(|d| d.operation == issue.operation) {
             diagnostics.push(issue);
@@ -613,7 +888,58 @@ pub(crate) fn classify(
     }
     let mut reports = BTreeMap::new();
     for process in processes {
-        let mut report = resolve(batches.remove(&process.pid).unwrap_or_default(), &priority);
+        let mut report = resolve_process(
+            process,
+            batches.remove(&process.pid).unwrap_or_default(),
+            &priority,
+            &ownership,
+        );
+        let primary = registry.selected(&report, context.settings).map(|entry| {
+            let dimension = entry
+                .tag
+                .assignment
+                .as_ref()
+                .and_then(|a| a.group_key.as_deref())
+                .and_then(|key| key.split_once('\0').map(|(dimension, _)| dimension))
+                .unwrap_or(&entry.tag.dimension);
+            (dimension.to_owned(), entry.tag.path.clone())
+        });
+        let redundant: Vec<_> = report
+            .effective
+            .iter()
+            .filter(|entry| {
+                primary.as_ref().is_some_and(|(dimension, path)| {
+                    entry.tag.supplementary_to.as_ref() == Some(dimension)
+                        && entry
+                            .tag
+                            .path
+                            .as_ref()
+                            .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
+                            == path
+                                .as_ref()
+                                .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
+                })
+            })
+            .map(|entry| (entry.source.clone(), entry.tag.id.clone()))
+            .collect();
+        report
+            .effective
+            .retain(|entry| !redundant.contains(&(entry.source.clone(), entry.tag.id.clone())));
+        let redundant_proposals: Vec<_> = report
+            .proposals
+            .iter()
+            .filter(|record| {
+                matches!(&record.proposal.operation, Operation::Add { tag }
+                if redundant.contains(&(record.source.clone(), tag.id.clone())))
+            })
+            .map(|r| (r.source.clone(), r.proposal.id.clone()))
+            .collect();
+        report
+            .proposals
+            .retain(|r| !redundant_proposals.contains(&(r.source.clone(), r.proposal.id.clone())));
+        report
+            .decisions
+            .retain(|d| !redundant_proposals.contains(&(d.source.clone(), d.proposal_id.clone())));
         for record in rejected.remove(&process.pid).unwrap_or_default() {
             report.decisions.push(Decision {
                 source: record.source.clone(),
@@ -637,7 +963,7 @@ pub(crate) fn classify(
     (reports, diagnostics)
 }
 
-fn validate_legacy(
+fn validate_observed_path(
     key: &str,
     label: &str,
     path: &std::path::Path,
@@ -649,7 +975,7 @@ fn validate_legacy(
         .iter()
         .find(|p| ProcessIdentity::observed(p) == Some(identity))
         .ok_or_else(|| anyhow::anyhow!("invalid_identity"))?;
-    if !super::external::valid_custom(process, key, label, path, basis) {
+    if !super::details::valid_custom(process, key, label, path, basis) {
         bail!("invalid_legacy_tag");
     }
     Ok(())
@@ -679,6 +1005,12 @@ mod tests {
                     label: id.into(),
                     path: None,
                     basis: "observed".into(),
+                    subject: None,
+                    value: None,
+                    projection: None,
+                    supplementary_to: None,
+                    evidence_chain: vec![],
+                    host_resource: None,
                     assignment: None,
                 },
             },
@@ -701,7 +1033,7 @@ mod tests {
     fn record(source: &str, proposal: Proposal) -> Recorded {
         Recorded {
             source: source.into(),
-            version: "1".into(),
+
             proposal,
         }
     }
@@ -830,10 +1162,6 @@ mod tests {
         fn descriptor(&self) -> Descriptor {
             Descriptor {
                 id: self.0.into(),
-                version: "1".into(),
-                protocol_version: 1,
-                source: "builtin",
-                platforms: vec!["macos".into()],
                 capabilities: vec![Capability::Classify],
                 enabled: true,
                 availability: "unknown",
@@ -852,6 +1180,18 @@ mod tests {
                     })
                     .collect(),
             })
+        }
+    }
+    struct Off(Provider);
+    impl Extension for Off {
+        fn descriptor(&self) -> Descriptor {
+            Descriptor {
+                enabled: false,
+                ..self.0.descriptor()
+            }
+        }
+        fn execute(&self, context: &Context<'_>, request: Request<'_>) -> Result<Contribution> {
+            self.0.execute(context, request)
         }
     }
     #[test]
@@ -900,7 +1240,7 @@ mod tests {
         let (reports, diagnostics) = classify(
             &[&bad, &good],
             &Context::new(&settings, &cancel),
-            &[process()],
+            &crate::extensions::host::Facts::new(&[process()]),
         );
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(reports[&42].effective.len(), 1);
@@ -1031,7 +1371,7 @@ mod tests {
         let root = crate::tree::build_with_providers(
             vec![p],
             &Context::new(&settings, &cancel),
-            &[&crate::extensions::Builtin::AppBundle, &exclude_app],
+            &[&crate::core::Core::AppBundle, &exclude_app],
         )
         .unwrap();
         assert!(crate::tree::select(&root, "group:applications").is_err());
@@ -1063,12 +1403,248 @@ mod tests {
         );
         temp.close().unwrap();
     }
+    fn typed(id: &str, dimension: &str, subject: Option<&str>, value: Option<&str>) -> Proposal {
+        let mut proposal = add(id, dimension, &format!("{dimension}:{id}"));
+        if let Operation::Add { tag } = &mut proposal.operation {
+            tag.subject = subject.map(Into::into);
+            tag.value = value.map(Into::into);
+            tag.basis = "executable".into();
+        }
+        proposal
+    }
+
+    #[test]
+    fn version_and_name_tags_require_typed_fields_without_paths() {
+        let contract = Contract {
+            produces: vec![
+                "version".into(),
+                "name".into(),
+                "work".into(),
+                "role".into(),
+            ],
+            overrides: vec![],
+        };
+        let check =
+            |proposal: Proposal| validate(&[proposal], &[process()], "a", Some(&contract)).is_ok();
+        assert!(check(typed("v", "version", Some("tool"), Some("1.2.3"))));
+        assert!(check(typed("n", "name", None, None)));
+        assert!(check(typed("w", "work", None, None)));
+        assert!(!check(typed("w", "work", Some("tool"), None)));
+        assert!(!check(typed("v", "version", None, Some("1.2.3"))));
+        assert!(!check(typed("v", "version", Some("tool"), None)));
+        assert!(!check(typed("v", "version", Some(""), Some("1.2.3"))));
+        assert!(!check(typed("r", "role", Some("tool"), None)));
+        assert!(!check(typed("n", "name", None, Some("1.2.3"))));
+        for dimension in ["version", "name", "work"] {
+            let mut with_path = if dimension == "version" {
+                typed("p", dimension, Some("tool"), Some("1"))
+            } else {
+                typed("p", dimension, None, None)
+            };
+            if let Operation::Add { tag } = &mut with_path.operation {
+                tag.path = Some("/tmp/tool".into());
+            }
+            assert!(!check(with_path), "{dimension}");
+        }
+        let encoded = serde_json::to_value(typed("v", "version", Some("tool"), Some("1"))).unwrap();
+        assert_eq!(encoded["change"]["tag"]["subject"], "tool");
+        let role = serde_json::to_value(add("r", "role", "role:r")).unwrap();
+        assert!(role["change"]["tag"].get("subject").is_none());
+    }
+
+    #[test]
+    fn version_subject_is_checked_before_priority_and_disabled_sources_vanish() {
+        let version =
+            |id: &str, subject: &str, value: &str| typed(id, "version", Some(subject), Some(value));
+        let name = |id: &str, label: &str| {
+            let mut p = typed(id, "name", None, None);
+            if let Operation::Add { tag } = &mut p.operation {
+                tag.label = label.into();
+            }
+            p
+        };
+        let run = |providers: &[&dyn Extension]| {
+            let settings = crate::extensions::settings_registry()
+                .unwrap()
+                .resolve(
+                    &crate::settings::Config {
+                        source_priority: vec!["a".into(), "b".into(), "c".into()],
+                        ..Default::default()
+                    },
+                    &BTreeMap::new(),
+                )
+                .unwrap();
+            let cancel = crate::snapshot::Cancellation::default();
+            let (reports, _) = classify(
+                providers,
+                &Context::new(&settings, &cancel),
+                &crate::extensions::host::Facts::new(&[process()]),
+            );
+            reports[&42].clone()
+        };
+        let a = Provider("a", vec![version("other", "other", "9.9.9")]);
+        let b = Provider("b", vec![version("tool", "TOOL", "1.2.3")]);
+        let c = Provider(
+            "c",
+            vec![
+                name("label", "claude"),
+                version("claude", "Claude", "2.1.316"),
+            ],
+        );
+        let report = run(&[&a, &b]);
+        let effective: Vec<_> = report
+            .effective
+            .iter()
+            .filter(|e| e.tag.dimension == "version")
+            .collect();
+        assert_eq!(effective.len(), 1);
+        assert_eq!(
+            (
+                effective[0].source.as_str(),
+                effective[0].tag.value.as_deref()
+            ),
+            ("b", Some("1.2.3"))
+        );
+        let decision = |report: &Report, id: &str| {
+            report
+                .decisions
+                .iter()
+                .find(|d| d.proposal_id == id)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(decision(&report, "other").status, "rejected");
+        assert_eq!(
+            decision(&report, "other").reason,
+            "version_subject_mismatch"
+        );
+        assert!(report.proposals.iter().any(|r| r.proposal.id == "other"));
+        let report = run(&[&b, &c]);
+        assert_eq!(decision(&report, "tool").status, "effective");
+        assert_eq!(decision(&report, "claude").status, "superseded");
+        assert_eq!(decision(&report, "claude").reason, "exclusive_ownership");
+        assert_eq!(
+            report
+                .effective
+                .iter()
+                .find(|e| e.tag.dimension == "name")
+                .unwrap()
+                .tag
+                .label,
+            "claude"
+        );
+        let report = run(&[&Off(b), &c]);
+        let winner = report
+            .effective
+            .iter()
+            .find(|e| e.tag.dimension == "version")
+            .unwrap();
+        assert_eq!(
+            (winner.source.as_str(), winner.tag.value.as_deref()),
+            ("c", Some("2.1.316"))
+        );
+        assert!(report.proposals.iter().all(|r| r.source != "b"));
+        let b = Provider("b", vec![version("tool", "TOOL", "1.2.3")]);
+        let twice = Provider(
+            "a",
+            vec![version("one", "tool", "1"), version("two", "tool", "2")],
+        );
+        let report = run(&[&twice, &b]);
+        assert_eq!(
+            report
+                .effective
+                .iter()
+                .find(|e| e.tag.dimension == "version")
+                .unwrap()
+                .source,
+            "b"
+        );
+    }
+
+    #[test]
+    fn work_labels_take_display_precedence_over_name_tags() {
+        let named = |id: &str, dimension: &str, label: &str| {
+            let mut p = typed(id, dimension, None, None);
+            if let Operation::Add { tag } = &mut p.operation {
+                tag.label = label.into();
+            }
+            p
+        };
+        let mut os = process();
+        os.name = "node".into();
+        let settings = crate::extensions::default_settings().unwrap();
+        let cancel = crate::snapshot::Cancellation::default();
+        for (proposals, name, reason) in [
+            (
+                vec![
+                    named("n", "name", "tool"),
+                    named("w", "work", "firecrawl-mcp"),
+                ],
+                "firecrawl-mcp",
+                Some(crate::model::NameReason::Work),
+            ),
+            (
+                vec![named("n", "name", "tool")],
+                "tool",
+                Some(crate::model::NameReason::Name),
+            ),
+            (vec![], "node", None),
+        ] {
+            let provider = Provider("a", proposals);
+            let tree = crate::tree::build_with_providers(
+                vec![os.clone()],
+                &Context::new(&settings, &cancel),
+                &[&provider],
+            )
+            .unwrap();
+            let process = crate::tree::select(&tree, "pid:42")
+                .unwrap()
+                .process
+                .unwrap();
+            assert_eq!(process.name, name);
+            assert_eq!(process.name_source.map(|s| s.reason), reason);
+            assert_eq!(process.original_name.as_deref(), reason.map(|_| "node"));
+        }
+    }
+
+    #[test]
+    fn version_subject_may_match_an_effective_runtime_tag() {
+        let runtime = |id: &str| {
+            let mut p = add(id, "runtime", &format!("runtime:{id}"));
+            if let Operation::Add { tag } = &mut p.operation {
+                tag.label = id.into();
+            }
+            p
+        };
+        let version = typed("v", "version", Some("Python"), Some("3.12.1"));
+        let settings = crate::extensions::default_settings().unwrap();
+        let cancel = crate::snapshot::Cancellation::default();
+        for (proposals, accepted) in [
+            (vec![runtime("python"), version.clone()], true),
+            (vec![runtime("node"), version.clone()], false),
+            (vec![version], false),
+        ] {
+            let provider = Provider("a", proposals);
+            let (reports, _) = classify(
+                &[&provider],
+                &Context::new(&settings, &cancel),
+                &crate::extensions::host::Facts::new(&[process()]),
+            );
+            assert_eq!(
+                reports[&42]
+                    .effective
+                    .iter()
+                    .any(|e| e.tag.dimension == "version"),
+                accepted
+            );
+        }
+    }
+
     #[test]
     fn sensitive_settings_cannot_be_echoed_into_tag_trace() {
         let secret = "fixture-\"value";
         let mut definition: crate::settings::Definition = serde_json::from_value(serde_json::json!({"key":"extensions.a.token","type":"string","default":secret,"description":"fixture","sensitive":true})).unwrap();
         definition.provider = "a".into();
-        definition.version = "1".into();
         let mut registry = crate::extensions::settings_registry().unwrap();
         registry
             .register_extension("a", vec![definition], vec![])
@@ -1080,20 +1656,26 @@ mod tests {
         if let Operation::Add { tag } = &mut leaked.operation {
             tag.label = secret.into();
         }
-        let bad = Provider("a", vec![leaked]);
-        let good = Provider("b", vec![add("daemon", "role", "role:daemon")]);
-        let cancel = crate::snapshot::Cancellation::default();
-        let (reports, diagnostics) = classify(
-            &[&bad, &good],
-            &Context::new(&settings, &cancel),
-            &[process()],
-        );
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(reports[&42].proposals.len(), 1);
-        assert_eq!(reports[&42].proposals[0].source, "b");
+        let mut metadata_leak = add("metadata-leak", "role", "role:test");
+        if let Operation::Add { tag } = &mut metadata_leak.operation {
+            tag.projection=Some(serde_json::from_value(serde_json::json!({"grouping":"unknown","parents":[{"reference":"group:extensions.a.parent","name":secret,"grouping":"unknown","evidence":[],"attribution":null,"diagnostics":[],"collapse_single":false,"child_name":null}]})).unwrap());
+        }
+        for leaked in [leaked, metadata_leak] {
+            let bad = Provider("a", vec![leaked]);
+            let good = Provider("b", vec![add("daemon", "role", "role:daemon")]);
+            let cancel = crate::snapshot::Cancellation::default();
+            let (reports, diagnostics) = classify(
+                &[&bad, &good],
+                &Context::new(&settings, &cancel),
+                &crate::extensions::host::Facts::new(&[process()]),
+            );
+            assert_eq!(diagnostics.len(), 1);
+            assert_eq!(reports[&42].proposals.len(), 1);
+            assert_eq!(reports[&42].proposals[0].source, "b");
+        }
     }
     #[test]
-    fn review_common_ownership_identity_coalesces_builtin_and_external_winners() {
+    fn review_common_ownership_identity_coalesces_builtin_and_module_winners() {
         let temp = tempfile::tempdir().unwrap();
         for dimension in ["project", "app", "bin"] {
             let root = temp.path().join(if dimension == "app" {
@@ -1141,7 +1723,7 @@ mod tests {
             let tree = crate::tree::build_with_providers(
                 vec![first.clone(), second.clone()],
                 &Context::new(&settings, &cancel),
-                &[&crate::extensions::Builtin::AppBundle, &provider],
+                &[&crate::core::Core::AppBundle, &provider],
             )
             .unwrap();
             let reference = ownership_ref(dimension, &path_id(dimension, &root), &root);
@@ -1162,7 +1744,7 @@ mod tests {
             let tree = crate::tree::build_with_providers(
                 vec![first, second],
                 &Context::new(&settings, &cancel),
-                &[&crate::extensions::Builtin::AppBundle, &other],
+                &[&crate::core::Core::AppBundle, &other],
             )
             .unwrap();
             let a = crate::tree::select(&tree, "pid:42")
@@ -1372,7 +1954,7 @@ mod tests {
         temp.close().unwrap();
     }
     #[test]
-    fn review_external_oversized_labels_still_reject_the_entire_source() {
+    fn review_module_oversized_labels_still_reject_the_entire_source() {
         let mut invalid = add("bad", "role", "role:test");
         if let Operation::Add { tag } = &mut invalid.operation {
             tag.label = "界".repeat(60);
@@ -1387,7 +1969,7 @@ mod tests {
         let (reports, diagnostics) = classify(
             &[&bad, &good],
             &Context::new(&settings, &cancel),
-            &[process()],
+            &crate::extensions::host::Facts::new(&[process()]),
         );
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(reports[&42].effective.len(), 1);

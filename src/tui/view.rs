@@ -4,8 +4,9 @@ use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Line,
-    widgets::{Block, Borders, Cell, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{
+        Block, Borders, Cell, HighlightSpacing, Padding, Paragraph, Row, Table, TableState, Wrap,
+    },
 };
 
 pub(super) fn safe(value: &str) -> String {
@@ -14,6 +15,27 @@ pub(super) fn safe(value: &str) -> String {
             format!("\\u{{{:x}}}", ch as u32).chars().collect::<Vec<_>>()
         } else { vec![ch] }
     }).collect()
+}
+
+pub(super) fn hint_lines(groups: &[&str], width: u16) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::text::Line;
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for group in groups.iter().filter(|group| !group.is_empty()) {
+        if !line.is_empty()
+            && Line::raw(&line).width() + 3 + Line::raw(*group).width() > usize::from(width)
+        {
+            lines.push(Line::raw(std::mem::take(&mut line)));
+        }
+        if !line.is_empty() {
+            line.push_str(" · ");
+        }
+        line.push_str(group);
+    }
+    if !line.is_empty() {
+        lines.push(Line::raw(line));
+    }
+    lines
 }
 
 fn metrics(node: &Node) -> [String; 3] {
@@ -38,6 +60,9 @@ fn metrics(node: &Node) -> [String; 3] {
         ];
     }
     if let Some(totals) = &node.container_totals {
+        if node.totals.processes > 0 {
+            return ["-".into(), "-".into(), "-".into()];
+        }
         return output::containers::summary_metrics(totals);
     }
     [
@@ -61,7 +86,15 @@ fn state_label(node: &Node) -> String {
             .join(" · ");
     }
     if let Some(container) = &node.container {
-        return container.state.clone().unwrap_or("?".into());
+        return format!(
+            "{}{}",
+            if container.metrics_scope.as_deref() == Some("in_vm") {
+                "in-VM "
+            } else {
+                ""
+            },
+            container.state.as_deref().unwrap_or("?")
+        );
     }
     if let Some(process) = &node.process {
         let ports = output::ports(process.network.as_ref());
@@ -97,7 +130,16 @@ fn state_label(node: &Node) -> String {
         } else {
             format!(">={}", totals.containers)
         };
-        return format!("{active} / {count} ctr");
+        let scope = if output::metrics_scope(node) == Some("in_vm") {
+            "in-VM "
+        } else {
+            ""
+        };
+        return if node.totals.processes > 0 {
+            format!("{} proc {scope}{active}/{count} ctr", node.totals.processes)
+        } else {
+            format!("{scope}{active} / {count} ctr")
+        };
     }
     format!("{} proc", node.totals.processes)
 }
@@ -136,9 +178,8 @@ pub(super) fn selected_paths(app: &App) -> String {
         }
     } else if let Some(resource) = &node.resource {
         paths.push(format!(
-            "{}/{} · {} · {}",
+            "{} · {} · {}",
             resource.provider,
-            resource.version,
             resource.id,
             resource
                 .metrics
@@ -280,12 +321,41 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
         );
         return;
     }
+    let refresh = app.refresh_hint();
+    let groups =
+        if app.help || app.extensions_page || app.settings.as_ref().is_some_and(|popup| popup.open)
+        {
+            vec![]
+        } else if app.editing {
+            vec!["Enter Accept", "Esc Clear"]
+        } else {
+            vec![
+                "→ Open",
+                if area.width < 80 {
+                    "/ Find"
+                } else {
+                    "/ Search"
+                },
+                "s Settings",
+                if area.width < 80 {
+                    "e Exts"
+                } else {
+                    "e Extensions"
+                },
+                "? Help",
+                "q Quit",
+                refresh,
+            ]
+        };
+    let keys = hint_lines(&groups, area.width);
+    let keys_height = keys.len() as u16;
+    let keys = Paragraph::new(keys);
     let [header, toolbar, tree_area, path_area, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(3),
         Constraint::Length(1),
-        Constraint::Length(2),
+        Constraint::Length(1 + keys_height),
     ])
     .areas(area);
     let status = if app.error.is_some() {
@@ -340,7 +410,11 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
         Paragraph::new(format!("{search}{status}")).style(Style::default().fg(Color::Yellow)),
         toolbar,
     );
-    let wide = tree_area.width >= 85;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::horizontal(1));
+    let tree_inner = block.inner(tree_area);
+    let wide = tree_inner.width >= 85;
     let rows = app.rows.iter().enumerate().map(|(index, row)| {
         let indent = "  ".repeat(row.depth.min(12));
         let arrow = if row.has_children {
@@ -360,7 +434,7 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
         } else {
             String::new()
         };
-        let name = format!("{indent}{arrow} {}{suffix}", safe(&node.name));
+        let name = format!("{indent}{arrow} {}{suffix}", safe(&node.display_name()));
         let [cpu, ram, age] = metrics(node);
         let mut cells = vec![
             Cell::from(name),
@@ -395,7 +469,7 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
         Sort::Memory => vec!["Resource", "CPU/core", "Memory ↓", "Age"],
         Sort::Uptime => vec!["Resource", "CPU/core", "Memory", "Age ↓"],
     };
-    if tree_area.width < 47 {
+    if tree_inner.width < 47 {
         let active = match app.sort {
             Sort::Name => 0,
             Sort::Cpu => 1,
@@ -408,20 +482,14 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
         widths.push(Constraint::Length(14));
         headings.push("State / Ports");
     }
-    let title = if !app.query.is_empty() {
-        " Resources (totals include hidden rows) "
-    } else {
-        " Resources (host / containers separate) "
-    };
     let widget = Table::new(rows, widths)
         .header(Row::new(headings).style(Style::default().fg(Color::Cyan)))
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(block)
         .row_highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("» ")
         .highlight_spacing(HighlightSpacing::Always);
     table.select((!app.rows.is_empty()).then_some(app.selected));
     frame.render_stateful_widget(widget, tree_area, table);
@@ -429,10 +497,10 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
         frame.render_widget(
             Paragraph::new("No matches"),
             Rect::new(
-                tree_area.x + 1,
-                tree_area.y + 2,
-                tree_area.width.saturating_sub(2),
-                tree_area.height.saturating_sub(3),
+                tree_inner.x,
+                tree_inner.y + 1,
+                tree_inner.width,
+                tree_inner.height.saturating_sub(1),
             ),
         );
     }
@@ -452,9 +520,9 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(Color::Cyan)),
             Rect::new(
-                tree_area.x + 1,
-                tree_area.y + 2 + tree_area.height.saturating_sub(4) / 2,
-                tree_area.width.saturating_sub(2),
+                tree_inner.x,
+                tree_inner.y + 1 + tree_inner.height.saturating_sub(2) / 2,
+                tree_inner.width,
                 1,
             ),
         );
@@ -511,27 +579,13 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
     } else {
         diagnostic
     };
-    let refresh = if app.refresh_hint().is_empty() {
-        String::new()
-    } else {
-        format!("{}  ", app.refresh_hint())
-    };
-    let keys =
-        if app.help || app.extensions_page || app.settings.as_ref().is_some_and(|popup| popup.open)
-        {
-            String::new()
-        } else if area.width < 80 {
-            format!("? Help  q Quit  {refresh}")
-        } else {
-            format!("→ Open / Search s Settings e Extensions ? Help q Quit  {refresh}")
-        };
+    let [diagnostic_area, keys_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(keys_height)]).areas(footer);
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(diagnostic, Style::default().fg(Color::Yellow)),
-            Line::raw(keys),
-        ]),
-        footer,
+        Paragraph::new(diagnostic).style(Style::default().fg(Color::Yellow)),
+        diagnostic_area,
     );
+    frame.render_widget(keys, keys_area);
 }
 
 fn help(frame: &mut Frame, area: Rect, app: &App) {

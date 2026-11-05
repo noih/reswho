@@ -43,7 +43,7 @@ pub(crate) fn collect_with_cancel(
     )?;
     collect_with_context(
         &crate::extensions::Context::new(&settings, cancel),
-        command_pid,
+        command_pid.as_slice(),
     )
 }
 
@@ -64,6 +64,120 @@ pub(crate) fn extension_command(
         let _ = (process, pointer_width);
         crate::model::ProcessCommand::default()
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct ArgvCost {
+    pub candidates: u64,
+    pub reads: u64,
+    pub bytes: u64,
+    pub duration_ms: f64,
+}
+
+pub(crate) struct ArgvPrefix {
+    buffer: Option<Option<Vec<u8>>>,
+    pub(crate) verify: fn(&Process) -> bool,
+    pub(crate) argmax: fn() -> Option<usize>,
+    pub(crate) fill: fn(i32, &mut [u8]) -> Option<usize>,
+    pub(crate) pointer_width: fn(i32) -> Option<usize>,
+    pub(crate) costs: std::collections::BTreeMap<String, ArgvCost>,
+}
+
+impl Default for ArgvPrefix {
+    fn default() -> Self {
+        #[cfg(test)]
+        {
+            Self::with(|_| false, || None, |_, _| None, |_| None)
+        }
+        #[cfg(all(not(test), target_os = "macos"))]
+        {
+            Self::with(
+                verify_identity,
+                || command::argmax().ok(),
+                |pid, buffer| command::fill(pid, buffer).ok(),
+                macos::pointer_width,
+            )
+        }
+        #[cfg(all(not(test), not(target_os = "macos")))]
+        {
+            Self::with(|_| false, || None, |_, _| None, |_| None)
+        }
+    }
+}
+
+impl ArgvPrefix {
+    pub(crate) fn with(
+        verify: fn(&Process) -> bool,
+        argmax: fn() -> Option<usize>,
+        fill: fn(i32, &mut [u8]) -> Option<usize>,
+        pointer_width: fn(i32) -> Option<usize>,
+    ) -> Self {
+        Self {
+            buffer: None,
+            verify,
+            argmax,
+            fill,
+            pointer_width,
+            costs: Default::default(),
+        }
+    }
+
+    pub(crate) fn read(
+        &mut self,
+        provider: &str,
+        process: &Process,
+        limit: usize,
+    ) -> Option<Vec<String>> {
+        let started = std::time::Instant::now();
+        let cost = self.costs.entry(provider.to_owned()).or_default();
+        cost.candidates += 1;
+        let result = 'read: {
+            if !(self.verify)(process) {
+                break 'read None;
+            }
+            let Some(pointer_width) = (self.pointer_width)(process.pid as i32) else {
+                break 'read None;
+            };
+            let argmax = self.argmax;
+            let Some(buffer) = self
+                .buffer
+                .get_or_insert_with(|| {
+                    argmax().map(|argmax| vec![0u8; argmax + std::mem::size_of::<i32>()])
+                })
+                .as_mut()
+            else {
+                break 'read None;
+            };
+            cost.reads += 1;
+            let Some(size) = (self.fill)(process.pid as i32, buffer) else {
+                break 'read None;
+            };
+            cost.bytes += size as u64;
+            let args = parse_prefix(&buffer[..size], pointer_width, limit)?;
+            (self.verify)(process).then_some(args)
+        };
+        cost.duration_ms += started.elapsed().as_secs_f64() * 1000.0;
+        result
+    }
+}
+
+fn parse_prefix(buffer: &[u8], pointer_width: usize, limit: usize) -> Option<Vec<String>> {
+    #[cfg(target_os = "macos")]
+    {
+        command::parse_prefix(buffer, pointer_width, limit).ok()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (buffer, pointer_width, limit);
+        None
+    }
+}
+
+pub(crate) fn sanitize_command(
+    argv: Vec<String>,
+    executable: Option<&std::path::Path>,
+) -> crate::model::ProcessCommand {
+    command::sanitize(argv, executable)
 }
 
 pub(crate) fn verify_identity(process: &Process) -> bool {
@@ -115,17 +229,17 @@ pub(crate) fn validate_extension_command(
 #[cfg(target_os = "macos")]
 pub(crate) fn collect_with_context(
     context: &crate::extensions::Context<'_>,
-    command_pid: Option<u32>,
+    command_pids: &[u32],
 ) -> Result<Collection> {
     use std::time::Instant;
     let cancel = context.cancel;
     let interval = context.settings.interval("sampling.interval_ms");
     let initial_cpu = macos::host_cpu_ticks();
-    let first = macos::scan(false, context, None)?;
+    let first = macos::scan(false, context, &[])?;
     let start = Instant::now();
     cancel.wait(interval)?;
     let final_cpu = macos::host_cpu_ticks();
-    let mut second = macos::scan(true, context, command_pid)?;
+    let mut second = macos::scan(true, context, command_pids)?;
     let sample_ms = start.elapsed().as_millis() as u64;
     for (pid, observation) in &mut second {
         observation.process.cpu_percent = first.get(pid).and_then(|old| {
@@ -209,7 +323,7 @@ fn host_cpu_percent(before: [u32; 4], after: [u32; 4]) -> Option<f64> {
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn collect_with_context(
     _context: &crate::extensions::Context<'_>,
-    _command_pid: Option<u32>,
+    _command_pids: &[u32],
 ) -> Result<Collection> {
     bail!("resource collection currently supports macOS only")
 }
@@ -307,6 +421,16 @@ mod macos {
         Ok(PathBuf::from(text(buffer)))
     }
 
+    #[cfg_attr(test, allow(dead_code))]
+    pub(super) fn pointer_width(pid: i32) -> Option<usize> {
+        const PROC_FLAG_LP64: u32 = 0x10;
+        Some(if bsd_info(pid).ok()?.pbi_flags & PROC_FLAG_LP64 != 0 {
+            8
+        } else {
+            4
+        })
+    }
+
     pub(super) fn verify_identity(process: &Process) -> bool {
         bsd_info(process.pid as i32).is_ok_and(|identity| {
             Some(started(&identity)) == process.started_unix_us
@@ -318,7 +442,7 @@ mod macos {
     pub(super) fn scan(
         details: bool,
         context: &crate::extensions::Context<'_>,
-        command_pid: Option<u32>,
+        command_pids: &[u32],
     ) -> Result<HashMap<u32, Observation>> {
         let cancel = context.cancel;
         let now = SystemTime::now()
@@ -390,7 +514,8 @@ mod macos {
                     Err(error) => process.unavailable.push(Diagnostic::io("cwd", &error)),
                 }
             }
-            if command_pid == Some(pid as u32) {
+            let command_requested = command_pids.contains(&(pid as u32));
+            if command_requested {
                 process.command = Some(if let Ok(identity) = &initial {
                     const PROC_FLAG_LP64: u32 = 0x10;
                     let pointer_width = if identity.pbi_flags & PROC_FLAG_LP64 != 0 {
@@ -399,7 +524,7 @@ mod macos {
                         4
                     };
                     crate::extensions::details(
-                        &crate::extensions::Builtin::Command,
+                        &crate::core::Core::Command,
                         context,
                         &process,
                         pointer_width,
@@ -425,7 +550,7 @@ mod macos {
                 .ok()
                 .zip(final_identity.as_ref().ok())
                 .is_some_and(|(before, after)| started(before) == started(after));
-            let command_consistent = command_pid != Some(pid as u32)
+            let command_consistent = !command_requested
                 || (consistent
                     && initial
                         .as_ref()
@@ -451,7 +576,7 @@ mod macos {
                 };
                 cpu_ticks = None;
             }
-            command::discard_if_changed(&mut process, command_pid, command_consistent);
+            command::discard_if_changed(&mut process, command_requested, command_consistent);
             observations.insert(
                 pid as u32,
                 Observation {
@@ -552,6 +677,57 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        static VERIFIED: std::cell::RefCell<std::collections::VecDeque<bool>> = Default::default();
+        static FILLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    fn verify(_: &Process) -> bool {
+        VERIFIED.with(|queue| queue.borrow_mut().pop_front().unwrap_or(false))
+    }
+
+    fn fill(_: i32, buffer: &mut [u8]) -> Option<usize> {
+        FILLS.with(|count| count.set(count.get() + 1));
+        let mut bytes = 3i32.to_ne_bytes().to_vec();
+        bytes.extend_from_slice(b"/opt/node\0");
+        while !(bytes.len() - 4).is_multiple_of(8) {
+            bytes.push(0);
+        }
+        bytes.extend_from_slice(b"node\0app.js\0--secret\0");
+        buffer[..bytes.len()].copy_from_slice(&bytes);
+        Some(bytes.len())
+    }
+
+    #[test]
+    fn argv_prefix_rechecks_identity_around_a_single_shared_read() {
+        let process = Process {
+            pid: 42,
+            ..Process::default()
+        };
+        let mut reader = ArgvPrefix::with(verify, || Some(4096), fill, |_| Some(8));
+        for (sequence, expected, fills) in [
+            (vec![false], None, 0),
+            (vec![true, false], None, 1),
+            (
+                vec![true, true],
+                Some(vec!["node".to_owned(), "app.js".to_owned()]),
+                1,
+            ),
+        ] {
+            VERIFIED.with(|queue| *queue.borrow_mut() = sequence.into());
+            FILLS.with(|count| count.set(0));
+            assert_eq!(reader.read("node", &process, 2), expected);
+            assert_eq!(FILLS.with(std::cell::Cell::get), fills);
+        }
+        let cost = &reader.costs["node"];
+        assert_eq!((cost.candidates, cost.reads), (3, 2));
+        assert!(cost.bytes > 0 && cost.duration_ms >= 0.0);
+        let closed = &mut ArgvPrefix::default();
+        FILLS.with(|count| count.set(0));
+        assert_eq!(closed.read("node", &process, 2), None);
+        assert_eq!(closed.costs["node"].reads, 0);
+    }
 
     #[test]
     fn host_cpu_accounts_for_idle_and_counter_wraparound() {

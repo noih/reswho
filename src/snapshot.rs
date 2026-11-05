@@ -1,45 +1,18 @@
 use crate::{collect, containers, model::Snapshot, tree};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    sync::Arc,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-#[derive(Clone, Default)]
-pub struct Cancellation(Arc<AtomicBool>);
-
-impl Cancellation {
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
-    pub fn check(&self) -> Result<()> {
-        if self.0.load(Ordering::Relaxed) {
-            bail!("collection canceled");
-        }
-        Ok(())
-    }
-    pub fn wait(&self, duration: Duration) -> Result<()> {
-        let start = Instant::now();
-        loop {
-            self.check()?;
-            let remaining = duration.saturating_sub(start.elapsed());
-            if remaining.is_zero() {
-                return Ok(());
-            }
-            std::thread::sleep(remaining.min(Duration::from_millis(20)));
-        }
-    }
-}
+mod cancellation;
+pub use cancellation::Cancellation;
 
 #[derive(Clone)]
 pub struct Options {
     pub settings: Arc<crate::settings::Resolved>,
-    pub extensions: Arc<crate::extensions::state::State>,
     pub containers: bool,
-    pub command_pid: Option<u32>,
+    pub command_pids: Vec<u32>,
 }
 
 pub fn capture(options: &Options, cancel: &Cancellation) -> Result<Snapshot> {
@@ -52,80 +25,39 @@ pub fn capture_reported(
     report: Arc<std::sync::Mutex<Vec<crate::extensions::report::Record>>>,
 ) -> Result<Snapshot> {
     let start = Instant::now();
-    *report.lock().expect("report lock") = options
-        .extensions
-        .initial_report(&options.settings, options.containers);
+    *report.lock().expect("report lock") =
+        crate::extensions::inventory::initial_report(&options.settings, options.containers);
     cancel.check()?;
     let mut context = crate::extensions::Context::new(&options.settings, cancel);
     context.report = Arc::clone(&report);
-    let mut collection = collect::collect_with_context(&context, options.command_pid)?;
+    let mut collection = collect::collect_with_context(&context, &options.command_pids)?;
     cancel.check()?;
     let mut context = crate::extensions::Context::new(&options.settings, cancel);
     context.report = Arc::clone(&report);
-    let external = crate::extensions::external::installed(&options.extensions, &options.settings);
-    let classifiers: Vec<&dyn crate::extensions::Extension> = std::iter::once(
-        &crate::extensions::Builtin::AppBundle as &dyn crate::extensions::Extension,
-    )
-    .chain(
-        external
-            .iter()
-            .filter(|provider| {
-                provider
-                    .manifest
-                    .known_capabilities()
-                    .contains(&crate::extensions::Capability::Classify)
-            })
-            .map(|provider| provider as &dyn crate::extensions::Extension),
-    )
-    .collect();
+    let classifiers = [&crate::core::Core::AppBundle as &dyn crate::extensions::Extension];
     let mut root =
         tree::build_with_providers(collection.processes.clone(), &context, &classifiers)?;
-    if let Some(pid) = options.command_pid
-        && let Some(process) = collection
-            .processes
-            .iter_mut()
-            .find(|process| process.pid == pid && process.started_unix_us.is_some())
+    let providers: Vec<&dyn crate::extensions::Extension> = crate::extensions::BUILTINS
+        .iter()
+        .filter(|provider| {
+            use crate::extensions::Extension;
+            provider
+                .descriptor()
+                .capabilities
+                .contains(&crate::extensions::Capability::Details)
+        })
+        .map(|provider| provider as &dyn crate::extensions::Extension)
+        .collect();
+    selected_details(
+        &mut root,
+        &mut collection.processes,
+        &options.command_pids,
+        &providers,
+        &context,
+        crate::collect::verify_identity,
+    );
     {
-        let providers: Vec<&dyn crate::extensions::Extension> = external
-            .iter()
-            .filter(|provider| {
-                provider
-                    .manifest
-                    .known_capabilities()
-                    .contains(&crate::extensions::Capability::Details)
-            })
-            .map(|provider| provider as &dyn crate::extensions::Extension)
-            .collect();
-        let diagnostics =
-            crate::extensions::external::attach_details(&providers, &context, process);
-        if !providers.is_empty() {
-            validate_external_details(&context, process, crate::collect::verify_identity);
-        }
-        fn attach(node: &mut crate::model::Node, process: &crate::model::Process) {
-            if node
-                .process
-                .as_ref()
-                .is_some_and(|old| old.pid == process.pid)
-            {
-                let mut updated = process.clone();
-                updated.tag_report = node.process.as_ref().and_then(|old| old.tag_report.clone());
-                updated.roles = node
-                    .process
-                    .as_ref()
-                    .expect("selected process")
-                    .roles
-                    .clone();
-                node.process = Some(updated);
-            }
-            for child in &mut node.children {
-                attach(child, process);
-            }
-        }
-        attach(&mut root, process);
-        root.diagnostics.extend(diagnostics);
-    }
-    {
-        let mut providers: Vec<&dyn crate::extensions::Extension> = crate::extensions::BUILTINS
+        let providers: Vec<&dyn crate::extensions::Extension> = crate::extensions::BUILTINS
             .iter()
             .filter(|provider| {
                 use crate::extensions::{Builtin, Extension};
@@ -139,30 +71,19 @@ pub fn capture_reported(
             })
             .map(|provider| provider as &dyn crate::extensions::Extension)
             .collect();
-        providers.extend(
-            external
-                .iter()
-                .filter(|provider| {
-                    provider
-                        .manifest
-                        .known_capabilities()
-                        .contains(&crate::extensions::Capability::Collect)
-                        && (options.containers
-                            || provider
-                                .manifest
-                                .collect_scopes
-                                .iter()
-                                .any(|scope| scope == "resources"))
-                })
-                .map(|provider| provider as &dyn crate::extensions::Extension),
-        );
         match crate::extensions::collect_scoped(&providers, &context, options.containers) {
             Ok((containers, resources)) => {
-                if options.containers {
-                    root.children.push(containers);
-                }
-                if !resources.children.is_empty() {
-                    root.children.push(resources);
+                for (category, include) in [(containers, options.containers), (resources, true)] {
+                    if include
+                        && !category.children.is_empty()
+                        && tree::compose_category(&mut root, category).is_err()
+                    {
+                        collection.warnings.push(crate::model::Diagnostic::new(
+                            "collection_failed",
+                            "categories",
+                            "Category contribution rejected: incompatible or colliding content",
+                        ));
+                    }
                 }
             }
             Err(error) => collection.warnings.push(crate::model::Diagnostic::new(
@@ -188,11 +109,55 @@ pub fn capture_reported(
         warnings: collection.warnings,
         root,
     };
-    snapshot.project(options.command_pid);
+    tree::link_host_resources(&mut snapshot.root);
+    snapshot.project(&options.command_pids);
     Ok(snapshot)
 }
 
-fn validate_external_details(
+fn selected_details(
+    root: &mut crate::model::Node,
+    processes: &mut [crate::model::Process],
+    pids: &[u32],
+    providers: &[&dyn crate::extensions::Extension],
+    context: &crate::extensions::Context<'_>,
+    verify: impl Fn(&crate::model::Process) -> bool,
+) {
+    for process in processes
+        .iter_mut()
+        .filter(|process| pids.contains(&process.pid) && process.started_unix_us.is_some())
+    {
+        let diagnostics = crate::extensions::details::attach_details(providers, context, process);
+        if !providers.is_empty() {
+            validate_details_identity(context, process, &verify);
+        }
+        attach_details(root, process, &diagnostics);
+    }
+}
+
+fn attach_details(
+    node: &mut crate::model::Node,
+    process: &crate::model::Process,
+    diagnostics: &[crate::model::Diagnostic],
+) {
+    if let Some(old) = node.process.as_mut().filter(|old| old.pid == process.pid) {
+        let mut updated = process.clone();
+        updated.tag_report = old.tag_report.take();
+        updated.roles = std::mem::take(&mut old.roles);
+        updated.name = std::mem::take(&mut old.name);
+        updated.original_name = old.original_name.take();
+        updated.name_source = old.name_source.take();
+        updated.version = old.version.take();
+        updated.host_resource = old.host_resource.take();
+        updated.supplementary_labels = std::mem::take(&mut old.supplementary_labels);
+        node.process = Some(Box::new(updated));
+        node.diagnostics.extend_from_slice(diagnostics);
+    }
+    for child in &mut node.children {
+        attach_details(child, process, diagnostics);
+    }
+}
+
+fn validate_details_identity(
     context: &crate::extensions::Context<'_>,
     process: &mut crate::model::Process,
     verify: impl FnOnce(&crate::model::Process) -> bool,
@@ -204,7 +169,7 @@ fn validate_external_details(
         process.unavailable.push(crate::model::Diagnostic::new(
             "identity_changed",
             "extensions.details",
-            "Process identity changed during external details",
+            "Process identity changed during extension details",
         ));
     }
 }

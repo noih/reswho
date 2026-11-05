@@ -1,5 +1,4 @@
 import fcntl
-import hashlib
 import os
 import pty
 import json
@@ -9,7 +8,6 @@ import select
 import signal
 import struct
 import sys
-import shutil
 import subprocess
 import termios
 import time
@@ -31,7 +29,7 @@ def full_frame(slave, process, transcript, drain):
     return re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b" ", transcript[start:])
 
 
-def verify(arguments, exit_key, marker, details=False, external=False, resource=False):
+def verify(arguments, exit_key, marker, details=False):
     master, slave = pty.openpty()
     process = None
     transcript = bytearray()
@@ -74,13 +72,6 @@ def verify(arguments, exit_key, marker, details=False, external=False, resource=
             animation = transcript[previous:]
             assert any(glyph in animation for glyph in [b"/", b"-", b"\\"]), "spinner did not advance"
             assert b"sample" not in transcript, "long sample should still be pending"
-        if resource:
-            os.write(master, b"p\x1b[C")
-            drain(0.4)
-            assert b"Resource details" in transcript and b"Capacity" in transcript and b"bytes" in transcript, "resource typed details missing"
-            assert b"Temperature" in transcript and b"celsius" in transcript, "unknown resource metric missing"
-            os.write(master, b"\x1b")
-            drain(0.2)
         if marker == b"sample" and details:
             os.write(master, b"p\x1b[C")
             opened = len(transcript)
@@ -93,41 +84,6 @@ def verify(arguments, exit_key, marker, details=False, external=False, resource=
             assert b"Loading command" in rendered, "details loading was not shown"
             assert b"[filtered]" in rendered and b"--token" in rendered, "filtered command missing"
             assert b"fixture-private-value" not in transcript, "command exposed sensitive value"
-            if external:
-                assert b"Shared" in transcript and b"Example" in transcript, "external parsed details missing"
-                assert b"fixture-secret-value" not in transcript, "external details exposed sensitive field"
-                counter = Path(arguments[arguments.index("--config") + 1]).parent / "calls"
-                calls_before = counter.read_text()
-                opened_status = len(transcript)
-                os.write(master, b"\x1b")
-                drain(0.2)
-                os.write(master, b"e")
-                drain(0.3)
-                assert b"Extensions" in transcript[opened_status:] and b"Collect" in transcript[opened_status:], "extension inventory missing"
-                assert counter.read_text() == calls_before, "opening status executed provider"
-                os.write(master, b"sqe")
-                drain(0.2)
-                assert process.poll() is None, "inventory q quit"
-                os.write(master, b"j\x1b[C")
-                drain(0.3)
-                frame = full_frame(slave, process, transcript, drain)
-                assert re.search(rb"Extension\s+details", frame) and b"Availability:" in frame, "provider details missing"
-                os.write(master, b"sqe")
-                drain(0.2)
-                assert process.poll() is None, "extension details q quit"
-                os.write(master, b"\x1b")
-                drain(0.2)
-                os.write(master, b"\x1b")
-                drain(0.3)
-                assert counter.read_text() == calls_before, "returning from status executed provider"
-                os.write(master, b"d")
-                deadline = time.monotonic() + 5
-                while True:
-                    before_manual = full_frame(slave, process, transcript, drain)
-                    assert re.search(rb"Process\s+details", before_manual), "reopen did not route to process details"
-                    if not re.search(rb"Loading\s+command", before_manual):
-                        break
-                    assert time.monotonic() < deadline, "details query did not reach ready state"
             os.write(master, b"r")
             deadline = time.monotonic() + 2
             while True:
@@ -135,10 +91,6 @@ def verify(arguments, exit_key, marker, details=False, external=False, resource=
                 if b"refreshing" in manual_frame:
                     break
                 assert time.monotonic() < deadline, f"manual refresh frame: {manual_frame!r}"
-            if external:
-                for stage, frame in [("before-r", before_manual), ("after-r", manual_frame)]:
-                    assert b"fixture-private-value" not in frame and b"fixture-secret-value" not in frame
-                    print(f"FRAME {stage}: " + re.sub(rb"\s+", b" ", frame)[-240:].decode(errors="replace"), flush=True)
             drain(1.2)
             for key in [b"j", b"\x1b[6~", b"\x1b[5~", b"k"]:
                 os.write(master, key)
@@ -209,46 +161,73 @@ def verify_priority(config):
         assert b"sample" in transcript
         send(b"pe")
         frame = full_frame(slave, process, transcript, drain)
-        assert re.search(rb"Priority\s+.*highest\s+first", frame)
-        for label in [rb"Ancestor\s+ownership", rb"Executable\s+fallback", rb"Ctrl-S\s+Save"]:
+        assert b"Type" not in frame and b"Version" not in frame and b"Author" not in frame, frame
+        assert b"app_bundle" in frame and b"Fixed" in frame and b"Required" not in frame, frame
+        send(b"jjj ")
+        send(b"\x1b")
+        assert config.read_bytes() == original, "inventory cancel wrote config"
+        send(b"e\x1b[Hjjj ")
+        send(b"\x13")
+        assert json.loads(config.read_text())["disabled_builtins"] == ["project"]
+        frame = full_frame(slave, process, transcript, drain)
+        assert b"Space Enable" in frame and b"* project" not in frame and b"Sources" in frame, frame
+        send(b"\x1b")
+        send(b"e ")
+        frame = full_frame(slave, process, transcript, drain)
+        assert re.search(rb"Sources.*Ownership", frame), frame
+        for label in [rb"ancestor", rb"bin", rb"Ctrl-S\s+Save"]:
             assert re.search(label, frame), f"priority inventory frame: {frame!r}"
-        send(b"jj")
+        send(b"j")
         send(b"\x1b[1;2A")
         send(b"\x13")
         saved = json.loads(config.read_text())
-        assert "source_priority" in saved, full_frame(slave, process, transcript, drain).decode(errors="replace")
-        assert saved["source_priority"][:3] == ["app_bundle", "ancestor", "project"], saved
+        assert saved["disabled_builtins"] == [], saved
+        assert saved["source_priority"][:5] == ["app_bundle", "bin", "command", "ancestor", "project"], saved
+        frame = full_frame(slave, process, transcript, drain)
+        assert b"Shift" in frame and b"Sources" in frame and b"* ancestor" not in frame and b"* project" not in frame, frame
+        send(b"\x1b")
+        send(b"e\t")
+        frame = full_frame(slave, process, transcript, drain)
+        assert b"Ownership" in frame, frame
+        send(b"jjjj\x1b[1;2A\x13")
+        saved = json.loads(config.read_text())
+        assert saved["ownership_priority"] == ["extensions.vm.app", "extensions.vm.helper", "extensions.vm.system", "project", "app", "work", "bin"], saved
+        frame = full_frame(slave, process, transcript, drain)
+        assert b"Rank / Name" in frame and b"Ownership" in frame, frame
+        send(b"\x1b")
         offline = subprocess.run([str(ROOT / "target/debug/reswho"), "--config", str(config), "settings", "--json"], check=True, capture_output=True)
         assert json.loads(offline.stdout)["source_priority"] == saved["source_priority"]
         send(b"e")
         frame = full_frame(slave, process, transcript, drain)
-        assert re.search(rb"Priority\s+.*highest\s+first", frame), f"priority reopen frame: {frame!r}"
+        assert b"Sources" in frame and b"Ownership" in frame, f"priority reopen frame: {frame!r}"
         send(b"\r")
         frame = full_frame(slave, process, transcript, drain)
-        assert not re.search(rb"Extension\s+details", frame), frame
+        assert not re.search(rb"Source\s+details", frame), frame
         send(b"\x1b[C")
         frame = full_frame(slave, process, transcript, drain)
-        assert re.search(rb"Extension\s+details", frame), f"priority details frame: {frame!r}"
+        assert re.search(rb"Source\s+details", frame), f"priority details frame: {frame!r}"
+        assert b"ID: project" in frame and b"Capabilities: classify" in frame, frame
+        assert all(field not in frame for field in (b"Author:", b"Version:", b"Provenance:", b"Origin:")), frame
         send(b"\x1b[D")
         frame = full_frame(slave, process, transcript, drain)
-        assert b"Priority" in frame, f"priority details back frame: {frame!r}"
+        assert b"Sources" in frame, f"priority details back frame: {frame!r}"
         send(b"\x1b[1;2B")
         config.write_text("malformed")
         send(b"\x13")
         frame = full_frame(slave, process, transcript, drain)
-        assert b"malformed" in frame, frame.decode(errors="replace")
+        assert b"Config changed on disk; reopen Settings or Sources before saving" in frame, frame.decode(errors="replace")
         assert config.read_text() == "malformed", "failed save replaced config"
         send(b"sqe")
         assert process.poll() is None, "priority inventory q quit"
         frame = full_frame(slave, process, transcript, drain)
-        assert b"Priority" in frame, f"priority local keys frame: {frame!r}"
+        assert b"Sources" in frame, f"priority local keys frame: {frame!r}"
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 10, 36, 0, 0))
         send(b"\x1b[1;2A")
         frame = full_frame(slave, process, transcript, drain)
         assert re.search(rb"Ctrl-S\s+Save", frame), f"compact priority frame: {frame!r}"
         send(b"\x1b")
         frame = full_frame(slave, process, transcript, drain)
-        assert b"Priority" not in frame, f"priority discard frame: {frame!r}"
+        assert b"Sources" not in frame, f"priority discard frame: {frame!r}"
         config.write_text(json.dumps(saved))
         send(b"q", 0.4)
         process.wait(timeout=4)
@@ -384,7 +363,7 @@ def verify_settings():
         send(b"ps")
         assert b"Settings" in transcript
         initial = config.read_bytes()
-        send(b"\x1b[H\r")
+        send(b"\x1b[H\x1b[B\r")
         locked = frame_text()
         assert b"45000" in locked and b"locked" in locked and re.search(rb"CLI\s+override\s+is\s+locked", locked), locked
         send(b"\x12")
@@ -392,12 +371,14 @@ def verify_settings():
         assert config.read_bytes() == initial
         send(b"\x1b[B\r\x15" + b"0\r")
         assert re.search(rb"Invalid\s+value", frame_text())
-        send(b"\x1b[Z\r")
-        assert re.search(rb"Invalid\s+value", frame_text())
+        send(b"\x1b[Z\t\x13")
+        invalid = frame_text()
+        assert re.search(rb"Invalid\s+value", invalid) and b"[0_]" in invalid, invalid
+        assert b"[Cancel]" not in invalid and b"[Save]" not in invalid and b"Tab Controls" not in invalid
         assert config.read_bytes() == initial
-        send(b"\t\t\r")
+        send(b"\x1b\x1b")
         assert config.read_bytes() == initial
-        send(b"s\x1b[H")
+        send(b"s\x1b[H\x1b[B")
         send(b"\x1b[B\r\x15" + b"0\r")
         send(b"\x1b")
         browse = frame_text()
@@ -413,7 +394,7 @@ def verify_settings():
         saved = json.loads(config.read_text())
         assert saved["settings"]["sampling.interval_ms"] == 400, saved
         assert saved["settings"]["refresh.interval_ms"] == 60000, saved
-        send(b"s\x1b[H")
+        send(b"s\x1b[H\x1b[B")
         retained = frame_text()
         assert b"45000" in retained and b"locked" in retained, retained
         send(b"\x1b[B\x1b")
@@ -442,7 +423,7 @@ def verify_settings():
         send(b"s\r\x15" + b"600\r")
         config.write_text("malformed")
         send(b"\x13")
-        assert b"malformed" in frame_text()
+        assert re.search(rb"changed\s+on\s+disk", frame_text())
         assert config.read_text() == "malformed"
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 10, 36, 0, 0))
         os.kill(process.pid, signal.SIGWINCH)
@@ -461,32 +442,44 @@ def verify_settings():
         compact = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b" ", transcript[compact_start:])
         for label in [rb"Ctrl-S\s+Save", rb"Ctrl-R\s+Reset", rb"Esc\s+discard", rb"Time\s+between"]:
             assert re.search(label, compact), compact[-3000:]
-        pages = bytearray()
         send(b"\x1b[6~")
+        assert b"Key:" not in frame_text(), "list PageDown must not open details"
+        send(b"\x1b[C")
+        pages = bytearray()
+        views = []
         for _ in range(8):
-            pages.extend(frame_text())
+            views.append(frame_text())
+            pages.extend(views[-1])
             send(b"\x1b[6~")
-        for label in [b"Key:", b"Default:", b"Constraints:", b"max=5000", b"Value:", b"Ctrl-S", b"Save", b"Ctrl-R", b"Reset", b"Esc", b"discard"]:
+        assert views[0] != views[1], "details PageDown must move the visible content"
+        for label in [b"Key:", b"Default:", b"Constraints:", b"max=5000", b"Value:", b"Back", b"Scroll", b"private backup"]:
             assert label in pages, pages
-        for _ in range(8):
-            send(b"\x1b[5~")
-        assert re.search(rb"Time\s+between", frame_text())
         send(b"\x1b")
+        assert re.search(rb"Time\s+between", frame_text())
+        assert b"Ctrl-S" in frame_text(), "first Esc must return to Settings list"
+        send(b"\x1b[C")
+        send(b"\x1b[D")
+        assert re.search(rb"Time\s+between", frame_text())
+        send(b"\x13")
+        assert json.loads(config.read_text())["version"] == 1
+        backups = list(config.parent.glob(".config.json.recovery-*.bak"))
+        assert len(backups) == 1 and backups[0].read_bytes() == b"malformed"
+        assert backups[0].stat().st_mode & 0o777 == 0o600
         send(b"e")
-        assert b"Extensions" in frame_text()
+        assert b"Sources" in frame_text()
         send(b"sqe")
         inventory = frame_text()
-        assert b"Extensions" in inventory and b"Settings" not in inventory, inventory
+        assert b"Sources" in inventory and b"Settings" not in inventory, inventory
         send(b"\r")
-        assert not re.search(rb"Extension\s+details", frame_text())
+        assert not re.search(rb"Source\s+details", frame_text())
         send(b"d")
-        assert re.search(rb"Extension\s+details", frame_text())
+        assert re.search(rb"Source\s+details", frame_text())
         send(b"sqe")
-        assert re.search(rb"Extension\s+details", frame_text())
+        assert re.search(rb"Source\s+details", frame_text())
         send(b"\x1b")
-        assert b"Extensions" in frame_text()
+        assert b"Sources" in frame_text()
         send(b"\x1b")
-        assert b"Extensions" not in frame_text()
+        assert b"Sources" not in frame_text()
         os.write(master, b"q")
         process.wait(timeout=5)
         assert process.returncode == 0
@@ -524,7 +517,7 @@ def verify_help():
 
     def main_frame():
         frame = frame_text()
-        assert "Sort" in frame and re.search(r"q\s+Quit", frame), frame
+        assert re.search(r"→\s+Open", frame) and re.search(r"q\s+Quit", frame), frame
         assert not re.search(r"\[\s*(Controls|Panels|Metrics)\s*\]", frame), frame
 
     try:
@@ -603,9 +596,18 @@ if "--settings-only" in sys.argv:
     sys.exit(0)
 
 
+if "--schedule-only" in sys.argv:
+    try:
+        for mode in ["auto", "wait", "pause"]:
+            verify_schedule(mode)
+    finally:
+        config_owner.cleanup()
+        assert not config_root.exists()
+        print("PASS scheduling PTYs/children closed and config temp removed")
+    sys.exit(0)
 
 try:
-    if "--extensions-only" not in sys.argv and "--priority-only" not in sys.argv:
+    if not any(flag in sys.argv for flag in ["--extensions-only", "--priority-only"]):
         verify(["--sort", "name"], b"q", b"sample")
         verify(["--tui", "--set", "sampling.interval_ms=5000"], b"\x03", b"Loading resources...")
         verify(["--tui", "--from", "pid:4294967295"], b"q", b"Unable to load resources")
@@ -620,56 +622,13 @@ try:
             fixture.terminate()
             fixture.wait()
             fixture.stdin.close()
-    example_root = config_root / "example"
-    example_root.mkdir()
-    (example_root / ".reswho-example").write_text("")
-    config = example_root / "config.json"
+    owned_root = config_root / "bundled"
+    owned_root.mkdir()
+    config = owned_root / "config.json"
     config.write_text(json.dumps({"version":1,"settings":{"sampling.interval_ms":400}}))
-    package = example_root / "extensions" / "example"
-    package.mkdir(parents=True)
-    payload = package / "example-native"
-    shutil.copy2(ROOT / "target/debug/examples/extension_example", payload)
-    counter = example_root / "calls"
-    source = example_root / "entry.c"
-    source.write_text('#include <stdio.h>\n#include <unistd.h>\nint main(void){FILE *f=fopen(' + json.dumps(str(counter)) + ',"a");fputs("called\\n",f);fclose(f);execl(' + json.dumps(str(payload)) + ',"example-native",(char*)0);return 127;}')
-    subprocess.run(["cc", str(source), "-o", str(package / "provider")], check=True, timeout=10)
-    manifest = json.loads((ROOT / "examples/extensions/example.json").read_text())
-    manifest["executable"] = "provider"
-    (package / "manifest.json").write_text(json.dumps(manifest))
-    broken = example_root / "extensions" / "broken"
-    broken.mkdir()
-    (broken / "manifest.json").write_text("{bad fixture")
-    subprocess.run([str(ROOT / "target/debug/reswho"), "--config", str(config), "extensions", "--json"], check=True, capture_output=True)
-    assert not counter.exists(), "offline discovery executed native provider"
-    if "--priority-only" in sys.argv:
-        verify_priority(config)
-        sys.exit(0)
-    external_fixture = subprocess.Popen(["/bin/sh", "-c", "read -r owned_external_input", "fixture", "--token", "fixture-private-value"], cwd=example_root, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        result = subprocess.run([str(ROOT / "target/debug/reswho"), "--config", str(config), "--no-containers", "--json", "--from", f"pid:{external_fixture.pid}"], check=True, capture_output=True, timeout=10)
-        snapshot = json.loads(result.stdout)
-        assert snapshot["schema"] == "reswho/12"
-        assert snapshot["root"]["attribution"]["extension"]["provider"] == "example"
-        assert any(entry["tag"]["label"] == "Workspace worker" for entry in snapshot["root"]["process"]["tag_report"]["effective"])
-        assert "roles" not in snapshot["root"]["process"]
-        assert snapshot["root"]["process"]["extension_details"][0]["fields"][0]["value"] == 400
-        assert b"fixture-secret-value" not in result.stdout
-        calls = [record for record in snapshot["extensions"] if record["provider"] == "example" and record["phase"] in ["classify", "details"]]
-        assert len(calls) == 2 and all(record["result"] == "success" and record["duration_ms"] is not None for record in calls)
-        assert len(counter.read_text().splitlines()) == 3, "JSON profiling executed extra providers"
-        markdown = subprocess.run([str(ROOT / "target/debug/reswho"), "--config", str(config), "--no-containers", "--md", "--profile", "--from", f"pid:{external_fixture.pid}"], check=True, capture_output=True, timeout=10)
-        assert b"Extension timings" in markdown.stdout and b"Duration ms" in markdown.stdout
-        assert b"Extension broken / read" in markdown.stdout
-        assert len(counter.read_text().splitlines()) == 6, "Markdown profiling executed extra providers"
-        verify(["--tui", "--config", str(config), "--from", f"pid:{external_fixture.pid}", "--set", "sampling.interval_ms=1000"], b"q", b"sample", details=True, external=True)
-        verify_priority(config)
-        resource_ref = "group:" + hashlib.sha256(b"resource\0example\0example-volume").hexdigest()[:16]
-        verify(["--tui", "--config", str(config), "--from", resource_ref, "--set", "sampling.interval_ms=200"], b"q", b"sample", resource=True)
-    finally:
-        external_fixture.terminate()
-        external_fixture.wait()
-        external_fixture.stdin.close()
-    if "--extensions-only" not in sys.argv and "--priority-only" not in sys.argv:
+    verify_priority(config)
+    if not any(flag in sys.argv for flag in ["--extensions-only", "--priority-only"]):
+        verify_settings()
         for mode in ["auto", "wait", "pause"]:
             verify_schedule(mode)
 finally:

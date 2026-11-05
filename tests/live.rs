@@ -43,10 +43,13 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
         .validate(&snapshot)
         .unwrap();
     assert_eq!(snapshot["schema"], reswho::model::JSON_SCHEMA_VERSION);
-    assert_eq!(snapshot["root"]["attribution"]["source"], "git_root");
-    assert_eq!(snapshot["scope"], reference);
-    assert_eq!(snapshot["root"]["reference"], reference);
-    let process = &snapshot["root"]["process"];
+    assert_eq!(
+        snapshot["selections"][0]["root"]["attribution"]["source"],
+        "git_root"
+    );
+    assert_eq!(snapshot["selections"][0]["selector"], reference);
+    assert_eq!(snapshot["selections"][0]["root"]["reference"], reference);
+    let process = &snapshot["selections"][0]["root"]["process"];
     assert_eq!(process["pid"], child.0.id());
     assert_eq!(process["ppid"], std::process::id());
     assert_eq!(
@@ -68,8 +71,13 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
     );
     assert_eq!(process["network"]["complete"], true);
     assert!(process["network"]["sockets"].as_array().unwrap().is_empty());
-    assert_eq!(snapshot["root"]["totals"]["processes"], 1);
-    assert!(snapshot["root"]["children"].as_array().unwrap().is_empty());
+    assert_eq!(snapshot["selections"][0]["root"]["totals"]["processes"], 1);
+    assert!(
+        snapshot["selections"][0]["root"]["children"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert!(snapshot["sample_ms"].as_u64().unwrap() >= 200);
     let tree = Command::new(env!("CARGO_BIN_EXE_reswho"))
         .arg("--no-containers")
@@ -78,7 +86,9 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
         .unwrap();
     assert!(tree.status.success());
     let tree: serde_json::Value = serde_json::from_slice(&tree.stdout).unwrap();
-    let groups = tree["root"]["children"].as_array().unwrap();
+    let groups = tree["selections"][0]["root"]["children"]
+        .as_array()
+        .unwrap();
     let group = groups
         .iter()
         .find(|group| {
@@ -132,7 +142,7 @@ fn live_process_identity_cwd_and_project_can_be_queried() {
         String::from_utf8_lossy(&nongit.stderr)
     );
     let nongit: serde_json::Value = serde_json::from_slice(&nongit.stdout).unwrap();
-    let group = nongit["root"]["children"]
+    let group = nongit["selections"][0]["root"]["children"]
         .as_array()
         .unwrap()
         .iter()
@@ -217,7 +227,7 @@ fn live_command_redacts_arguments_and_never_outputs_environment() {
         }
         if mode == "--json" {
             let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-            let command = &value["root"]["process"]["command"];
+            let command = &value["selections"][0]["root"]["process"]["command"];
             assert_eq!(
                 command["argv"],
                 serde_json::json!([
@@ -277,7 +287,7 @@ fn live_script_entrypoint_preserves_literal_path() {
         .unwrap();
     assert!(output.status.success());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let command = &value["root"]["process"]["command"];
+    let command = &value["selections"][0]["root"]["process"]["command"];
     assert_eq!(command["entrypoint"], script.to_str().unwrap());
     assert_eq!(command["argv"][1], script.to_str().unwrap());
     assert!(command["redacted_indices"].as_array().unwrap().is_empty());
@@ -311,7 +321,7 @@ fn live_tcp_udp_ipv4_ipv6_endpoints_and_duplicate_descriptors() {
         String::from_utf8_lossy(&output.stderr)
     );
     let snapshot: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let network = &snapshot["root"]["process"]["network"];
+    let network = &snapshot["selections"][0]["root"]["process"]["network"];
     assert_eq!(network["complete"], true, "{network}");
     let sockets = network["sockets"].as_array().unwrap();
     assert_eq!(sockets.iter().filter(|socket| socket["local"] == local.to_string() && socket["tcp_state"] == "Listen").count(), 1);
@@ -337,4 +347,215 @@ fn live_tcp_udp_ipv4_ipv6_endpoints_and_duplicate_descriptors() {
             && socket["tcp_state"].as_str() == state));
     }
     drop((duplicate, server, client, listener, ipv6, udp, udp6));
+}
+
+#[test]
+#[ignore = "macOS live process inspection; launches and reaps one owned versioned binary"]
+fn live_versioned_install_binary_takes_tool_name_and_version() {
+    let directory = tempfile::tempdir().unwrap();
+    let versions = directory.path().join("tool/versions");
+    std::fs::create_dir_all(&versions).unwrap();
+    std::fs::create_dir(directory.path().join("bin")).unwrap();
+    let source = directory.path().join("tool.c");
+    std::fs::write(
+        &source,
+        "#include <unistd.h>\nint main(void) { pause(); return 0; }\n",
+    )
+    .unwrap();
+    assert!(
+        Command::new("cc")
+            .arg(&source)
+            .arg("-o")
+            .arg(versions.join("1.2.3"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    let link = directory.path().join("bin/tool");
+    std::os::unix::fs::symlink(versions.join("1.2.3"), &link).unwrap();
+    let child = OwnedProcess(
+        Command::new(&link)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let reference = format!("pid:{}", child.0.id());
+    let run = |format: &str| {
+        let result = Command::new(env!("CARGO_BIN_EXE_reswho"))
+            .arg("--no-containers")
+            .args([format, "--from", &reference, "--depth", "0"])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        String::from_utf8(result.stdout).unwrap()
+    };
+    let snapshot: serde_json::Value = serde_json::from_str(&run("--json")).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(reswho::output::JSON_SCHEMA).unwrap();
+    jsonschema::validator_for(&schema)
+        .unwrap()
+        .validate(&snapshot)
+        .unwrap();
+    let process = &snapshot["selections"][0]["root"]["process"];
+    assert_eq!(process["name"], "tool", "{process}");
+    assert_eq!(process["original_name"], "1.2.3");
+    assert_eq!(
+        process["version"],
+        serde_json::json!({"subject": "tool", "value": "1.2.3", "basis": "executable", "source": "versioned_install"})
+    );
+    let md = run("--md");
+    assert!(md.contains(&format!("tool 1.2.3 {reference} · ")), "{md}");
+    assert!(
+        md.contains("> version 1.2.3 · subject tool · from versioned\\_install (executable)"),
+        "{md}"
+    );
+    assert!(
+        md.contains("reported name 1.2.3 · display name from versioned\\_install (executable)"),
+        "{md}"
+    );
+    drop(child);
+    directory.close().unwrap();
+}
+
+#[test]
+#[ignore = "macOS live process inspection; launches and reaps one owned node-named binary"]
+fn live_node_entry_names_work_without_exposing_arguments() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    std::fs::create_dir(root.join("bin")).unwrap();
+    let source = root.join("node.c");
+    std::fs::write(
+        &source,
+        "#include <unistd.h>\nint main(void) { pause(); return 0; }\n",
+    )
+    .unwrap();
+    let node = root.join("bin/node");
+    assert!(
+        Command::new("cc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&node)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(root.join("sync-mail.js"), "").unwrap();
+    let child = OwnedProcess(
+        Command::new(&node)
+            .args(["sync-mail.js", "--token", "hunter2-fixture"])
+            .current_dir(&root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let pid = u64::from(child.0.id());
+    let run = |extra: &[&str]| {
+        let result = Command::new(env!("CARGO_BIN_EXE_reswho"))
+            .arg("--no-containers")
+            .args(extra)
+            .args(["--json", "--depth", "all"])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let text = String::from_utf8(result.stdout).unwrap();
+        for leaked in ["hunter2-fixture", "--token", "sync-mail.js"] {
+            assert!(!text.contains(leaked), "{leaked}");
+        }
+        let snapshot: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let mut pending = vec![snapshot["selections"][0]["root"].clone()];
+        while let Some(node) = pending.pop() {
+            if node["process"]["pid"] == pid {
+                return node;
+            }
+            pending.extend(node["children"].as_array().unwrap().iter().cloned());
+        }
+        panic!("owned node fixture not found");
+    };
+    let named = run(&[]);
+    assert_eq!(named["process"]["name"], "sync-mail", "{named}");
+    assert_eq!(named["process"]["original_name"], "node");
+    assert_eq!(named["process"]["name_source"]["reason"], "work");
+    let plain = run(&["--set", "extensions.node.entry_argv=false"]);
+    assert_eq!(plain["process"]["name"], "node", "{plain}");
+    assert!(plain["process"]["name_source"].is_null());
+    drop(child);
+    directory.close().unwrap();
+}
+
+#[test]
+#[ignore = "macOS live process inspection; launches and reaps one owned python-named binary"]
+fn live_python_entry_names_work_and_reads_patchlevel_version() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    std::fs::create_dir_all(root.join("include/python3.12")).unwrap();
+    std::fs::write(
+        root.join("include/python3.12/patchlevel.h"),
+        "#define PY_VERSION \"3.12.4\"\n",
+    )
+    .unwrap();
+    let source = root.join("python.c");
+    std::fs::write(
+        &source,
+        "#include <unistd.h>\nint main(void) { pause(); return 0; }\n",
+    )
+    .unwrap();
+    let python = root.join("bin/python3.12");
+    assert!(
+        Command::new("cc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&python)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(root.join("sync_mail.py"), "").unwrap();
+    let child = OwnedProcess(
+        Command::new(&python)
+            .args(["-u", "sync_mail.py", "--password", "hunter2-fixture"])
+            .current_dir(&root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let pid = u64::from(child.0.id());
+    let result = Command::new(env!("CARGO_BIN_EXE_reswho"))
+        .args(["--no-containers", "--json", "--depth", "all"])
+        .output()
+        .unwrap();
+    assert!(result.status.success());
+    let text = String::from_utf8(result.stdout).unwrap();
+    for leaked in ["hunter2-fixture", "--password", "sync_mail.py"] {
+        assert!(!text.contains(leaked), "{leaked}");
+    }
+    let snapshot: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let mut pending = vec![snapshot["selections"][0]["root"].clone()];
+    let mut found = None;
+    while let Some(node) = pending.pop() {
+        if node["process"]["pid"] == pid {
+            found = Some(node);
+            break;
+        }
+        pending.extend(node["children"].as_array().unwrap().iter().cloned());
+    }
+    let node = found.expect("owned python fixture not found");
+    assert_eq!(node["process"]["name"], "sync_mail", "{node}");
+    assert_eq!(node["process"]["version"]["subject"], "python");
+    assert_eq!(node["process"]["version"]["value"], "3.12.4");
+    drop(child);
+    directory.close().unwrap();
 }

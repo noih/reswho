@@ -54,7 +54,7 @@ fn report_categories_quotes_and_process_lists_have_distinct_structure() {
     let snapshot = fixture_snapshot();
     let md = markdown(&snapshot);
     assert!(md.starts_with("# reswho\n\n"));
-    assert!(md.contains("reswho-md/19 · help: reswho --help-md"));
+    assert!(md.contains("reswho-md/20 · help: reswho --help-md"));
     assert!(!md.contains("Collection prototype:"));
     assert_eq!(md.matches("> ! Host swap:").count(), 1);
     assert!(!md.contains("Resources group:all"));
@@ -133,9 +133,12 @@ fn markdown_flattens_system_before_depth_without_changing_json_or_refs() {
     let after = serde_json::to_value(&snapshot).unwrap();
     assert_eq!(before, after);
     assert_eq!(after["system"]["cpu_percent"], 30.0);
-    assert_eq!(after["root"]["totals"]["known_cpu_percent"], 240.0);
     assert_eq!(
-        after["root"]["children"][0]["children"][0]["reference"],
+        after["selections"][0]["root"]["totals"]["known_cpu_percent"],
+        240.0
+    );
+    assert_eq!(
+        after["selections"][0]["root"]["children"][0]["children"][0]["reference"],
         wrapper
     );
     snapshot.root = tree::select(&snapshot.root, &wrapper).unwrap();
@@ -160,7 +163,7 @@ fn adjacent_groups_keep_notes_and_children_together() {
     second.pid = 20;
     second.name = "Second".into();
     second.executable = Some("/Applications/Second.app/Contents/MacOS/Second".into());
-    snapshot.root = tree::build(vec![parent, helper, second]).unwrap();
+    snapshot.root = tree::build(vec![*parent, *helper, *second]).unwrap();
     let md = markdown(&snapshot);
     assert!(md.contains("Σ2\n    > app `/Applications/Example.app`\n    - Example pid:10"));
     assert!(md.contains("1h  -\n        - helper pid:11"));
@@ -320,7 +323,7 @@ fn diagnostic_markers_do_not_guess_permission_or_mark_idle_processes() {
         .unwrap()
         .process
         .unwrap();
-    unreadable_snapshot.root = tree::build(vec![process]).unwrap();
+    unreadable_snapshot.root = tree::build(vec![*process]).unwrap();
     unreadable_snapshot.warnings.clear();
     let md = markdown(&unreadable_snapshot);
     assert!(md.contains("?  ?  ⏱︎ ?  Σ1"));

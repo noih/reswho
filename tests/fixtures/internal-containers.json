@@ -1,0 +1,37 @@
+{
+  "capability": "collect",
+  "runtime": {
+    "name": "docker",
+    "context": null,
+    "endpoint_ref": "group:aaaaaaaaaaaaaaaa",
+    "daemon_id": null,
+    "status": "available",
+    "inventory_complete": true,
+    "collection_ms": 1,
+    "unavailable": []
+  },
+  "containers": [
+    {
+      "runtime": "docker",
+      "endpoint_ref": "group:aaaaaaaaaaaaaaaa",
+      "id": "1111111111111111111111111111111111111111111111111111111111111111",
+      "name": "database-1",
+      "state": "running",
+      "started_at": "2023-11-14T22:03:20Z",
+      "uptime_seconds": 600,
+      "cpu_percent": 12.5,
+      "memory_bytes": 4096,
+      "memory_basis": "docker_cli_linux_cache_adjusted_rounded",
+      "ports": [],
+      "mounts": [],
+      "project": {
+        "name": "example",
+        "path": "/example/project",
+        "source": "compose"
+      },
+      "candidates": [],
+      "service": null,
+      "unavailable": []
+    }
+  ]
+}

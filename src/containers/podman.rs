@@ -1,18 +1,18 @@
 use super::{
     Container, Runtime,
-    command::{self, Runner},
+    command::{self, Runner, fail},
     docker::{self, Inspect},
 };
 use crate::{
-    model::Diagnostic,
+    extensions::host::projects::Discovery,
+    extensions::host::stable_ref,
+    model::{Diagnostic, FailureReason},
     snapshot::Cancellation,
-    tree::{projects::Discovery, stable_ref},
 };
 use anyhow::{Result, bail};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
     time::{Duration, Instant},
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -61,7 +61,7 @@ fn strings(args: &[&str]) -> Vec<String> {
 fn required(runner: &mut impl Runner, args: &[String]) -> Result<Vec<u8>> {
     let output = runner.run(args)?;
     if output.issue.is_some() {
-        bail!("Podman CLI unavailable; diagnostics withheld");
+        return Err(output.failure("Podman CLI unavailable; diagnostics withheld"));
     }
     Ok(output.stdout)
 }
@@ -199,7 +199,7 @@ fn counters(
         });
         match batch {
             Ok(items) => result.extend(items.into_iter().map(|item| (item.id.clone(), item))),
-            Err(_) => diagnostics.push(issue("stats", "unsupported_or_unavailable")),
+            Err(_) => diagnostics.push(issue("stats", "unavailable")),
         }
     }
     result
@@ -227,6 +227,9 @@ fn stable(before: &Inspect, after: &Inspect, now: OffsetDateTime) -> bool {
 }
 fn empty_runtime() -> Runtime {
     Runtime {
+        metrics_scope: None,
+        host_scope: None,
+        configuration: None,
         name: "podman".into(),
         context: Some("unresolved".into()),
         endpoint_ref: Some(stable_ref("endpoint", "podman\0unresolved")),
@@ -247,15 +250,24 @@ fn collect(
 ) -> (Runtime, Vec<Container>) {
     let started = Instant::now();
     let mut runtime = empty_runtime();
+    let mut probe_host = selection
+        .1
+        .filter(|_| selection.0.is_none())
+        .map(str::to_owned);
     let result = (|| -> Result<Vec<Container>> {
         let info: Info = serde_json::from_slice(&required(
             runner,
             &strings(&["info", "--format", INFO_FORMAT]),
-        )?)?;
+        )?)
+        .map_err(|_| fail(FailureReason::DaemonError, "invalid Podman server metadata"))?;
         if info.hostname.is_empty() || info.graphroot.is_empty() {
-            bail!("Podman server identity unavailable");
+            return Err(fail(
+                FailureReason::DaemonError,
+                "Podman server identity unavailable",
+            ));
         }
         let (prefix, endpoint) = source(runner, &info, selection.0, selection.1)?;
+        probe_host = Some(endpoint.clone());
         runtime.context = Some(if info.remote { "remote" } else { "local" }.into());
         runtime.endpoint_ref = Some(stable_ref(
             "endpoint",
@@ -374,31 +386,38 @@ fn collect(
             })
             .collect())
     })();
-    let containers = result.unwrap_or_else(|_| {
-        runtime.unavailable.push(issue(
-            "collect",
-            if cancel.check().is_err() {
-                "canceled"
-            } else if Instant::now() >= deadline {
-                "timeout"
-            } else {
-                "unavailable"
-            },
-        ));
+    let containers = result.unwrap_or_else(|error| {
+        let reason = match command::reason_of(&error) {
+            FailureReason::Unknown if cancel.check().is_ok() && Instant::now() >= deadline => {
+                FailureReason::Timeout
+            }
+            reason => reason,
+        };
+        runtime
+            .unavailable
+            .push(command::Probe::with_limits(cancel, deadline).diagnose(
+                "collection_failed",
+                "podman.collect",
+                &fail(
+                    reason,
+                    "Podman collect unavailable or invalid; raw diagnostics withheld",
+                ),
+                probe_host.as_deref(),
+            ));
         vec![]
     });
     runtime.collection_ms = started.elapsed().as_millis() as u64;
     (runtime, containers)
 }
 
-struct PodmanCommand<'a> {
-    program: PathBuf,
-    cancel: &'a Cancellation,
-    deadline: Instant,
+mod native_command {
+    include!("podman/command.rs");
 }
+use native_command::PodmanCommand;
+
 impl Runner for PodmanCommand<'_> {
     fn run(&mut self, args: &[String]) -> Result<command::Output> {
-        command::run_bounded(&self.program, args, Some(b""), self.cancel, self.deadline)
+        PodmanCommand::run(self, args)
     }
 }
 
@@ -409,7 +428,13 @@ pub(super) fn native(
 ) -> (Runtime, Vec<Container>) {
     let Some(program) = command::find_program("podman") else {
         let mut runtime = empty_runtime();
-        runtime.unavailable.push(issue("cli", "not_found"));
+        runtime.unavailable.push(Diagnostic::failure(
+            "not_found",
+            "podman.cli",
+            "Podman CLI not found",
+            FailureReason::CliNotFound,
+            None,
+        ));
         return (runtime, vec![]);
     };
     let mut runner = PodmanCommand {

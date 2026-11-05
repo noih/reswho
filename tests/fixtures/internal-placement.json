@@ -1,0 +1,46 @@
+{
+  "capability": "classify",
+  "proposals": [
+    {
+      "identity": {
+        "pid": 42,
+        "started_unix_us": 123
+      },
+      "evidence": {
+        "kind": "tags",
+        "proposal": {
+          "id": "owner",
+          "identity": {
+            "pid": 42,
+            "started_unix_us": 123
+          },
+          "change": {
+            "operation": "add",
+            "tag": {
+              "dimension": "extensions.fixture.owner",
+              "id": "extensions.fixture.work",
+              "label": "Fixture job",
+              "path": null,
+              "basis": "observed",
+              "projection": {
+                "grouping": "unknown",
+                "parents": [
+                  {
+                    "reference": "group:extensions.fixture.parent",
+                    "name": "Fixture parent",
+                    "grouping": "unknown",
+                    "evidence": [],
+                    "attribution": null,
+                    "diagnostics": [],
+                    "collapse_single": false,
+                    "child_name": null
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

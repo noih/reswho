@@ -4,7 +4,7 @@ mod help;
 mod settings;
 mod state;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod view;
 mod worker;
 
@@ -71,17 +71,13 @@ pub fn run(
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("TUI requires terminal stdin and stdout; use --md or --json");
     }
-    let inventory = options
-        .extensions
-        .list(&options.settings, options.containers);
-    let registry = options.extensions.clone();
+    let inventory = crate::extensions::inventory::list(&options.settings, options.containers);
     let containers = options.containers;
     let worker = Worker::start(options);
     let mut restore = TerminalRestore(true);
     let mut app = App::new(scope, depth);
     app.extensions = worker.report.lock().expect("report lock").clone();
     app.inventory = inventory;
-    app.extension_registry = Some(registry);
     app.containers = containers;
     app.sort = sort;
     app.settings = Some(settings::Popup::new(settings));
@@ -155,14 +151,9 @@ fn event_loop(
                     if handle_key(&mut app, key) {
                         return Ok(());
                     }
-                    if let Some(settings) =
-                        app.settings.as_mut().and_then(|popup| popup.applied.take())
-                    {
-                        refresh_interval = settings.interval("refresh.interval_ms");
-                        if let Some(registry) = &app.extension_registry {
-                            app.inventory = registry.list(&settings, app.containers);
-                        }
-                        worker.set_settings(settings);
+                    if let Some(inputs) = take_applied_inputs(&mut app) {
+                        refresh_interval = inputs.settings.interval("refresh.interval_ms");
+                        worker.set_inputs(inputs);
                         next_refresh = Instant::now()
                             .checked_add(refresh_interval)
                             .context("refresh interval cannot be safely scheduled")?;
@@ -176,6 +167,14 @@ fn event_loop(
             }
         }
     }
+}
+
+fn take_applied_inputs(app: &mut App) -> Option<worker::Inputs> {
+    let settings = app.settings.as_mut().and_then(|popup| popup.applied.take());
+    settings.map(|settings| {
+        app.inventory = crate::extensions::inventory::list(&settings, app.containers);
+        worker::Inputs { settings }
+    })
 }
 
 fn should_collect(app: &App, next_refresh: Instant, now: Instant) -> bool {
@@ -218,8 +217,8 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             }
             KeyCode::Down | KeyCode::Char('j') => details.scroll(1),
             KeyCode::Up | KeyCode::Char('k') => details.scroll(-1),
-            KeyCode::PageDown => details.scroll(10),
-            KeyCode::PageUp => details.scroll(-10),
+            KeyCode::PageDown => details.scroll(details.page_height()),
+            KeyCode::PageUp => details.scroll(-details.page_height()),
             KeyCode::Home => details.scroll(isize::MIN),
             KeyCode::End => details.scroll(isize::MAX),
             KeyCode::Char('r') => app.request_refresh(),
@@ -269,7 +268,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 popup.show();
             }
         }
-        KeyCode::Char('e') => app.extensions_page = true,
+        KeyCode::Char('e') => extensions::open(app),
         KeyCode::Char('d') => app.open_details(),
         KeyCode::Char('r') => app.request_refresh(),
         KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),

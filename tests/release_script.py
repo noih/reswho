@@ -108,7 +108,7 @@ class ReleaseScriptTests(unittest.TestCase):
         owned = Path(temporary.name).resolve()
         root = owned / "reswho"
         root.mkdir()
-        for name in ("Cargo.toml", "Cargo.lock", "examples/extensions/example.json", "packaging/reswho.rb.template", "scripts/release", "scripts/release-notes"):
+        for name in ("Cargo.toml", "Cargo.lock", "packaging/reswho.rb.template", "scripts/release", "scripts/release-notes"):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
@@ -125,7 +125,7 @@ class ReleaseScriptTests(unittest.TestCase):
             wrapper = root / "bin" / tool
             wrapper.write_text('#!/bin/sh\nexec ' + sys.executable + ' "' + str(root / "fake.py") + '" "$0" "$@"\n')
             wrapper.chmod(0o755)
-        original = {p:(root / p).read_text() for p in ("Cargo.toml", "Cargo.lock", "examples/extensions/example.json")}
+        original = {p:(root / p).read_text() for p in ("Cargo.toml", "Cargo.lock")}
         (root / "state").write_text(json.dumps({"original": original}))
         env = dict(os.environ, PATH=str(root / "bin") + ":/usr/bin:/bin", HOME=str(root), TMPDIR=str(root / "tmp"), RELEASE_TEST_ROOT=str(root), RELEASE_TEST_FAILURE=failure, RELEASE_TEST_TAP_ORIGIN=tap_origin, CARGO_REGISTRY_TOKEN="NEVER_LOG_THIS_TOKEN")
         result = subprocess.run(["/bin/bash", str(root / "scripts/release"), version], cwd=root, env=env, text=True, capture_output=True, timeout=30)
@@ -165,7 +165,8 @@ class ReleaseScriptTests(unittest.TestCase):
     def test_same_version_runs_without_empty_bump_commit(self):
         result, calls, root, original = self.run_release()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((root / "Cargo.toml").read_text(), original["Cargo.toml"])
+        for name, content in original.items():
+            self.assertEqual((root / name).read_text(), content)
         self.assertNotIn(["git", "commit", "-m", "chore(release): prepare " + VERSION], calls)
         gate = calls.index(["cargo", "test", "--locked", "--", "--test-threads=1"])
         tag = calls.index(["git", "tag", "-a", "v" + VERSION, "-m", "reswho " + VERSION])
@@ -187,7 +188,6 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('version = "' + NEXT_VERSION + '"', (root / "Cargo.toml").read_text())
         self.assertIn('name = "reswho"\nversion = "' + NEXT_VERSION + '"', (root / "Cargo.lock").read_text())
-        self.assertEqual(json.loads((root / "examples/extensions/example.json").read_text())["engines"]["reswho"], ">=" + NEXT_VERSION + " <" + str(int(NEXT_VERSION.split(".")[0]) + 1) + ".0.0")
         self.assertIn(["git", "commit", "-m", "chore(release): prepare " + NEXT_VERSION], calls)
 
     def test_invalid_notes_stop_before_version_changes_or_public_actions(self):
@@ -209,7 +209,7 @@ class ReleaseScriptTests(unittest.TestCase):
             (root / "gh").write_text('#!' + sys.executable + '\nimport pathlib, sys\nroot = pathlib.Path(__file__).parent\nwith (root / "calls").open("a") as log: log.write(repr(sys.argv[1:]) + "\\n")\nif sys.argv[1] == "api":\n print("HTTP 404", file=sys.stderr)\n sys.exit(1)\nassert sys.argv[1:8] == ["release", "create", "v1.0.1", "--verify-tag", "--draft", "--title", "v1.0.1"]\n(root / "body").write_bytes(pathlib.Path(sys.argv[sys.argv.index("--notes-file") + 1]).read_bytes())\n')
             (root / "gh").chmod(0o755)
             env = dict(os.environ, PATH=temporary + ":" + os.environ["PATH"], TAG="v1.0.1", GH_REPO="noih/reswho", RUNNER_TEMP=temporary)
-            body = b"Updated the README with a clearer introduction, quick-start examples, and links to detailed guides.\n\nNo functional changes.\n"
+            body = b"### Upgrade effort\n\nMicro: no user changes needed.\n\nUpdated the README with a clearer introduction, quick-start examples, and links to detailed guides.\n\nNo functional changes.\n"
             (root / "CHANGELOG.md").write_bytes((ROOT / "CHANGELOG.md").read_bytes())
             result = subprocess.run(["/bin/bash", "-euo", "pipefail", "-c", draft], cwd=root, env=env, capture_output=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)

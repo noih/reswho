@@ -19,7 +19,6 @@ pub(super) struct Popup {
     max_scroll: Cell<u16>,
     page_height: Cell<u16>,
     info_open: bool,
-    focus: u8,
     input: Option<String>,
     error: Option<String>,
     pub applied: Option<Arc<Resolved>>,
@@ -36,7 +35,6 @@ impl Popup {
             max_scroll: Cell::new(0),
             page_height: Cell::new(1),
             info_open: false,
-            focus: 0,
             input: None,
             error: None,
             applied: None,
@@ -45,14 +43,14 @@ impl Popup {
 
     pub fn show(&mut self) {
         self.changes.clear();
-        self.focus = 0;
         self.info_open = false;
         self.input = None;
         self.error = self
             .context
             .reload()
             .err()
-            .map(|_| "Cannot read config safely; repair the file before saving".into());
+            .map(|_| "Cannot read config safely; repair the file before saving".into())
+            .or_else(|| self.context.baseline.recovery.as_ref().map(|_| "Config recovery: using defaults; Save preserves original in a private backup".into()));
         self.open = true;
     }
 
@@ -92,6 +90,7 @@ impl Popup {
             .baseline
             .settings
             .get(&definition.key)
+            .filter(|value| definition.validate_value(value).is_ok())
             .map_or((&definition.default, "default"), |value| (value, "user"))
     }
 
@@ -106,8 +105,9 @@ impl Popup {
 
     pub fn key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Esc {
-            if self.input.take().is_some() {
-                self.focus = 0;
+            if self.info_open {
+                self.info_open = false;
+            } else if self.input.take().is_some() {
                 self.error = None;
             } else {
                 self.open = false;
@@ -150,36 +150,24 @@ impl Popup {
             }
             return;
         }
-        if matches!(key.code, KeyCode::PageDown | KeyCode::PageUp) && self.page_height.get() == 0 {
-            self.info_open = true;
-            self.scroll = 0;
-            return;
-        }
-        if key.code == KeyCode::PageDown && !self.info_open {
-            self.info_open = true;
-            self.scroll = 0;
-            return;
-        }
-        if key.code == KeyCode::PageUp && self.scroll == 0 {
-            self.info_open = false;
-        }
-        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
-            self.focus = if key.code == KeyCode::BackTab {
-                (self.focus + 2) % 3
-            } else {
-                (self.focus + 1) % 3
-            };
-            return;
-        }
-        if self.focus != 0 {
-            if key.code == KeyCode::Enter || key.code == KeyCode::Char(' ') {
-                if self.focus == 1 {
-                    self.open = false;
-                    self.changes.clear();
-                    self.input = None;
-                } else {
-                    self.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        if self.info_open {
+            self.scroll = self.scroll.min(self.max_scroll.get());
+            match key.code {
+                KeyCode::Left => self.info_open = false,
+                KeyCode::Down => {
+                    self.scroll = self.scroll.saturating_add(1).min(self.max_scroll.get())
                 }
+                KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
+                KeyCode::PageDown => {
+                    self.scroll = self
+                        .scroll
+                        .saturating_add(self.page_height.get().max(1))
+                        .min(self.max_scroll.get())
+                }
+                KeyCode::PageUp => {
+                    self.scroll = self.scroll.saturating_sub(self.page_height.get().max(1))
+                }
+                _ => {}
             }
             return;
         }
@@ -188,13 +176,6 @@ impl Popup {
                 KeyCode::Enter => {
                     self.accept_input();
                 }
-                KeyCode::PageDown => {
-                    self.scroll = self
-                        .scroll
-                        .saturating_add(self.page_height.get())
-                        .min(self.max_scroll.get())
-                }
-                KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(self.page_height.get()),
                 KeyCode::Backspace => {
                     input.pop();
                 }
@@ -221,13 +202,10 @@ impl Popup {
                 self.scroll = 0;
                 self.info_open = false;
             }
-            KeyCode::PageDown => {
-                self.scroll = self
-                    .scroll
-                    .saturating_add(self.page_height.get())
-                    .min(self.max_scroll.get())
+            KeyCode::Right => {
+                self.info_open = true;
+                self.scroll = 0;
             }
-            KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(self.page_height.get()),
             KeyCode::Home => {
                 self.selected = 0;
                 self.scroll = 0;
@@ -238,7 +216,7 @@ impl Popup {
                 self.scroll = 0;
                 self.info_open = false;
             }
-            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right | KeyCode::Left => {
+            KeyCode::Enter | KeyCode::Char(' ') => {
                 let Some(definition) = self.definition().cloned() else {
                     return;
                 };
@@ -250,14 +228,7 @@ impl Popup {
                 let (value, _) = self.value(&definition);
                 if let Some(options) = &definition.contract.limits.allowed {
                     let current = options.iter().position(|option| option == value);
-                    let index = if key.code == KeyCode::Left {
-                        current
-                            .unwrap_or(0)
-                            .checked_sub(1)
-                            .unwrap_or(options.len() - 1)
-                    } else {
-                        current.map_or(0, |index| (index + 1) % options.len())
-                    };
+                    let index = current.map_or(0, |index| (index + 1) % options.len());
                     self.set(definition.key.clone(), Some(options[index].clone()));
                 } else if definition.contract.value_type == ValueType::Boolean {
                     self.set(
@@ -315,6 +286,7 @@ impl Popup {
         let width = frame.area().width.min(88);
         let mut lines = Vec::new();
         let mut cursor_column = None;
+        let mut selected_line = 0;
         let mut group = String::new();
         for (index, definition) in definitions.iter().enumerate() {
             if compact && index != self.selected {
@@ -335,6 +307,9 @@ impl Popup {
                 group = next_group.into();
             }
             let selected = index == self.selected;
+            if selected {
+                selected_line = lines.len();
+            }
             let (value, source) = self.value(definition);
             let label = label(definition);
             let editing = selected && self.input.is_some();
@@ -348,28 +323,35 @@ impl Popup {
                 super::view::safe(&preview(definition, value))
             };
             let unit = super::view::safe(definition.contract.unit.as_deref().unwrap_or(""));
-            let marker = if source == "cli locked" {
+            let marker = if source != "cli locked" && self.changes.contains_key(&definition.key) {
+                "* "
+            } else {
+                "  "
+            };
+            let locked = if source == "cli locked" {
                 " locked"
-            } else if self.changes.contains_key(&definition.key) {
-                " *"
             } else {
                 ""
             };
             let inner_width = usize::from(width.saturating_sub(4));
             let minimum_value_width = 8;
-            let marker_width = Line::raw(marker).width();
+            let marker_width = Line::raw(locked).width();
             let label_width = inner_width
                 .saturating_sub(16)
                 .clamp(1, 32)
-                .min(inner_width.saturating_sub(3 + minimum_value_width + marker_width));
-            let label = clipped(&super::view::safe(&label), label_width, false);
-            let remaining_width = inner_width.saturating_sub(label_width + 3);
+                .min(inner_width.saturating_sub(1 + minimum_value_width + marker_width));
+            let label = clipped(
+                &super::view::safe(&label),
+                label_width.saturating_sub(2),
+                false,
+            );
+            let remaining_width = inner_width.saturating_sub(label_width + 1);
             let unit = clipped(
                 &format!(" {unit}"),
                 remaining_width.saturating_sub(minimum_value_width + marker_width),
                 false,
             );
-            let suffix = format!("{unit}{marker}");
+            let suffix = format!("{unit}{locked}");
             let value_width = remaining_width.saturating_sub(Line::raw(&suffix).width());
             let value = if editing {
                 format!(
@@ -389,9 +371,9 @@ impl Popup {
                     clipped(&value, value_width.saturating_sub(2), false)
                 )
             };
-            let padding = " ".repeat(label_width.saturating_sub(Line::raw(&label).width()));
-            let prefix = format!("{} {label}{padding} ", if selected { ">" } else { " " });
-            if editing && self.focus == 0 {
+            let padding = " ".repeat(label_width.saturating_sub(2 + Line::raw(&label).width()));
+            let prefix = format!("{marker}{label}{padding} ");
+            if editing {
                 cursor_column = Some(
                     Line::raw(format!("{prefix}{value}"))
                         .width()
@@ -400,7 +382,7 @@ impl Popup {
             }
             lines.push(Line::styled(
                 format!("{prefix}{value}{suffix}"),
-                if selected && self.focus == 0 {
+                if selected {
                     Style::default().fg(Color::White).bg(Color::DarkGray)
                 } else {
                     Style::default()
@@ -437,13 +419,14 @@ impl Popup {
                     )
                 };
                 format!(
-                    "Key: {}\nDefault: {} {}\n{}\nValue: {}\n{}{}",
+                    "Label: {}\nKey: {}\nDefault: {} {}\n{}\nValue: {}\n{}{}",
+                    label(definition),
                     definition.key,
                     preview(definition, &definition.default),
                     definition.contract.unit.as_deref().unwrap_or(""),
                     constraints,
                     preview(definition, self.value(definition).0),
-                    description(definition),
+                    definition.description,
                     self.error
                         .as_ref()
                         .map_or(String::new(), |error| format!("\nError: {error}")),
@@ -456,11 +439,6 @@ impl Popup {
                 .collect::<Vec<_>>(),
         )
         .wrap(Wrap { trim: false });
-        let info_height = if self.info_open {
-            if compact { 1 } else { 4 }
-        } else {
-            0
-        };
         let status_height = 1;
         let description_height = if compact { 1 } else { 2 };
         let description = Paragraph::new(self.definition().map_or(String::new(), |definition| {
@@ -468,34 +446,41 @@ impl Popup {
         }))
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(Color::Gray));
-        let controls = if self.focus != 0 {
-            "Enter Choose  Tab/Shift-Tab Focus  Ctrl-S Save  Esc Back"
+        let controls: &[&str] = if self.info_open {
+            &["↑↓ Scroll", "←/Esc Back"]
         } else if self.input.is_some() {
-            if width < 60 {
-                "Enter Accept  Esc Undo field\nTab Controls  Ctrl-U Clear\nCtrl-S Save"
-            } else {
-                "Enter Accept  Esc Undo field  Ctrl-U Clear  Tab Controls  Ctrl-S Save  Ctrl-R Reset"
-            }
-        } else if width < 60 {
-            "Enter Edit\nCtrl-S Save  Ctrl-R Reset\nEsc discard  Tab Controls"
+            &[
+                "Enter Accept",
+                "Esc Undo field",
+                "Ctrl-U Clear",
+                "Ctrl-S Save",
+                "Ctrl-R Reset",
+            ]
         } else {
-            "Enter Edit  Tab Controls  Ctrl-S Save  Ctrl-R Reset  Esc discard"
+            &[
+                "Enter Edit",
+                "→ Details",
+                "Ctrl-S Save",
+                "Ctrl-R Reset",
+                "Esc discard",
+            ]
         };
-        let footer = Paragraph::new(controls)
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(Color::Gray));
+        let footer = super::view::hint_lines(controls, width.saturating_sub(4));
         let footer_height = footer
-            .line_count(width.saturating_sub(4))
-            .min(usize::from(u16::MAX)) as u16;
-        let desired = lines.len() as u16
-            + info_height
-            + status_height
-            + description_height
-            + footer_height
-            + 3;
+            .len()
+            .min(usize::from(frame.area().height.saturating_sub(5)))
+            as u16;
+        let footer = Paragraph::new(footer).style(Style::default().fg(Color::Gray));
+        let desired = if self.info_open {
+            frame.area().height.min(24)
+        } else {
+            lines.len() as u16 + status_height + description_height + footer_height + 2
+        };
         let popup = super::view::panel(frame.area(), width, desired);
         frame.render_widget(Clear, popup);
-        let title = if self.changes.is_empty() {
+        let title = if self.info_open {
+            " Settings details ".into()
+        } else if self.changes.is_empty() {
             " Settings ".into()
         } else {
             format!(" Settings ({} changes) ", self.changes.len())
@@ -505,31 +490,32 @@ impl Popup {
             .padding(Padding::horizontal(1));
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
-        let [list, detail, status, buttons, explanation, footer_area] = Layout::vertical([
+        if self.info_open {
+            let [detail, footer_area] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(footer_height)])
+                    .areas(inner);
+            let max_scroll = info_paragraph
+                .line_count(detail.width)
+                .saturating_sub(usize::from(detail.height))
+                .min(usize::from(u16::MAX)) as u16;
+            self.max_scroll.set(max_scroll);
+            self.page_height.set(detail.height);
+            frame.render_widget(
+                info_paragraph.scroll((self.scroll.min(max_scroll), 0)),
+                detail,
+            );
+            frame.render_widget(footer, footer_area);
+            return;
+        }
+        let [list, status, explanation, footer_area] = Layout::vertical([
             Constraint::Min(1),
-            Constraint::Length(info_height),
             Constraint::Length(status_height),
-            Constraint::Length(1),
             Constraint::Length(description_height),
             Constraint::Length(footer_height),
         ])
         .areas(inner);
-        let selected_line = lines
-            .iter()
-            .position(|line| line.to_string().starts_with('>'))
-            .unwrap_or(0);
         let offset = selected_line.saturating_sub(usize::from(list.height).saturating_sub(1));
         frame.render_widget(Paragraph::new(lines).scroll((offset as u16, 0)), list);
-        let max_scroll = info_paragraph
-            .line_count(detail.width)
-            .saturating_sub(usize::from(detail.height))
-            .min(usize::from(u16::MAX)) as u16;
-        self.max_scroll.set(max_scroll);
-        self.page_height.set(detail.height);
-        frame.render_widget(
-            info_paragraph.scroll((self.scroll.min(max_scroll), 0)),
-            detail,
-        );
         if let Some(column) = cursor_column {
             let row = selected_line.saturating_sub(offset) as u16;
             if row < list.height && column < usize::from(list.width) {
@@ -557,25 +543,6 @@ impl Popup {
                 .wrap(Wrap { trim: false })
                 .style(Style::default().fg(Color::Yellow)),
             status,
-        );
-        let button = |label: &'static str, focus| {
-            Span::styled(
-                label,
-                if self.focus == focus {
-                    Style::default().fg(Color::Black).bg(Color::Cyan)
-                } else {
-                    Style::default().fg(Color::White)
-                },
-            )
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                button("[Cancel]", 1),
-                Span::raw("  "),
-                button("[Save]", 2),
-            ]))
-            .alignment(ratatui::layout::Alignment::Right),
-            buttons,
         );
         let height = description
             .line_count(explanation.width)
@@ -633,6 +600,12 @@ fn description(definition: &Definition) -> &str {
     match definition.key.as_str() {
         "refresh.interval_ms" => "Wait between completed collections.",
         "sampling.interval_ms" => "Time between resource samples.",
+        "extensions.node.entry_argv" => {
+            "Identify entry work from your processes' launch arguments."
+        }
+        "extensions.python.entry_argv" => {
+            "Identify scripts and modules from your processes' launch arguments."
+        }
         _ => &definition.description,
     }
 }
@@ -663,4 +636,51 @@ fn clipped(value: &str, width: usize, tail: bool) -> String {
         }
     }
     chars.into_iter().collect()
+}
+
+#[cfg(test)]
+mod paging_tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn settings_detail_page_step_tracks_resize_and_visible_end() {
+        let mut registry = crate::settings::Registry::core();
+        registry
+            .register_extension(
+                "zzz",
+                vec![serde_json::from_value(serde_json::json!({
+            "key":"extensions.zzz.text", "type":"string", "default":"value",
+            "description":"long description ".repeat(200), "provider":"zzz", "sensitive":false
+        })).unwrap()],
+                vec![],
+            )
+            .unwrap();
+        let mut popup = Popup::new(Settings::new(
+            registry,
+            Default::default(),
+            Default::default(),
+            None,
+        ));
+        popup.show();
+        popup.key(KeyCode::End.into());
+        popup.key(KeyCode::Right.into());
+        for (width, height) in [(36, 10), (100, 30), (80, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| popup.draw(frame)).unwrap();
+            let visible = popup.scroll.min(popup.max_scroll.get());
+            popup.key(KeyCode::PageUp.into());
+            assert_eq!(
+                popup.scroll,
+                visible.saturating_sub(popup.page_height.get())
+            );
+            popup.scroll = 0;
+            popup.key(KeyCode::PageDown.into());
+            let page = popup.scroll;
+            assert_eq!(page, popup.page_height.get().min(popup.max_scroll.get()));
+            popup.scroll = popup.max_scroll.get();
+            popup.key(KeyCode::Down.into());
+            assert_eq!(popup.scroll, popup.max_scroll.get());
+        }
+    }
 }

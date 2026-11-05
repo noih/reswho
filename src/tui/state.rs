@@ -22,14 +22,20 @@ pub(super) struct App {
     pub settings: Option<super::settings::Popup>,
     pub snapshot: Option<Snapshot>,
     pub extensions: Vec<crate::extensions::report::Record>,
-    pub inventory: Vec<crate::extensions::state::Listing>,
-    pub extension_registry: Option<std::sync::Arc<crate::extensions::state::State>>,
+    pub inventory: Vec<crate::extensions::inventory::Listing>,
     pub containers: bool,
     pub extension_selected: Option<String>,
+    pub extension_selections: [Option<String>; 2],
+    pub extension_tables: std::cell::RefCell<[ratatui::widgets::TableState; 2]>,
     pub extension_details: bool,
     pub extensions_page: bool,
     pub extensions_scroll: u16,
-    pub extension_details_scroll: u16,
+    pub extension_details_scroll: std::cell::Cell<u16>,
+    pub extension_details_height: std::cell::Cell<u16>,
+    pub extension_details_max: std::cell::Cell<u16>,
+    pub priority_mode: u8,
+    pub ownership_draft: Option<Vec<String>>,
+    pub builtin_draft: std::collections::BTreeMap<String, bool>,
     pub priority_draft: Option<Vec<String>>,
     pub priority_error: Option<String>,
     pub rows: Vec<Row>,
@@ -64,9 +70,18 @@ fn identity(node: &Node, generation: u64) -> String {
 }
 
 fn searchable(node: &Node) -> String {
-    let mut values = vec![node.name.clone(), node.reference.clone()];
+    let mut values = vec![node.display_name(), node.reference.clone()];
     values.extend(node.evidence.clone());
+    values.extend(node.version.iter().map(|version| version.value.clone()));
     if let Some(process) = &node.process {
+        values.extend(process.original_name.clone());
+        values.extend(process.supplementary_labels.clone());
+        values.extend(
+            process
+                .version
+                .iter()
+                .flat_map(|version| [version.value.clone(), version.subject.clone()]),
+        );
         for path in [&process.cwd, &process.executable].into_iter().flatten() {
             values.push(path.to_string_lossy().into_owned());
         }
@@ -101,13 +116,19 @@ impl App {
             snapshot: None,
             extensions: vec![],
             inventory: vec![],
-            extension_registry: None,
             containers: false,
             extension_selected: None,
+            extension_selections: Default::default(),
+            extension_tables: Default::default(),
             extension_details: false,
             extensions_page: false,
             extensions_scroll: 0,
-            extension_details_scroll: 0,
+            extension_details_scroll: Default::default(),
+            extension_details_height: std::cell::Cell::new(1),
+            extension_details_max: std::cell::Cell::new(u16::MAX),
+            priority_mode: 0,
+            ownership_draft: None,
+            builtin_draft: Default::default(),
             priority_draft: None,
             priority_error: None,
             rows: Vec::new(),
@@ -145,14 +166,25 @@ impl App {
         let Some(node) = self.node(self.selected) else {
             return;
         };
-        if node.process.is_none() && node.resource.is_none() {
+        if node.process.is_none()
+            && node.resource.is_none()
+            && node.host_resources.is_empty()
+            && node
+                .runtime
+                .as_ref()
+                .is_none_or(|r| r.configuration.is_none())
+            && node
+                .container
+                .as_ref()
+                .is_none_or(|c| c.metrics_scope.is_none() && c.configuration.is_none())
+        {
             return;
         }
         if let Some(snapshot) = &self.snapshot
             && let Ok(node) = tree::select(&snapshot.root, &node.reference)
         {
             let mut node = node;
-            crate::model::project_node(&mut node, None);
+            crate::model::project_node(&mut node, &[]);
             self.details = Some(super::details::Details::new(node));
         }
     }
@@ -262,7 +294,7 @@ impl App {
         let chain = self.selection_chain();
         self.pinned_scope = Some(key);
         snapshot.root = root;
-        snapshot.project(None);
+        snapshot.project(&[]);
         snapshot.scope = self.scope.clone();
         self.snapshot = Some(snapshot);
         self.generation = next_generation;
