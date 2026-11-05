@@ -15,6 +15,9 @@ cargo test --locked -- --test-threads=1
 Run general tests serially, as local release gates and macOS CI do. Subprocess
 startup can contend in parallel; serial success does not prove the parallel
 suite passes. Keep existing deadlines and PID-readiness assertions.
+The host-death fixture runs a copy of its test executable from its temporary
+directory: macOS curl initialization scans the executable directory, so a large
+shared Cargo cache can otherwise consume the readiness deadline before main.
 
 Ordinary tests use synthetic data, in-process module seams, owned short-lived
 processes and temporary Unix sockets. They must not contact real runtimes,

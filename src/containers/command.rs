@@ -221,7 +221,7 @@ pub(crate) mod failure_fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Command, Stdio};
+    use std::process::Command;
 
     #[test]
     fn endpoint_probe_classifies_socket_state_without_reading_stderr() {
@@ -361,6 +361,7 @@ mod tests {
         let Ok(root) = std::env::var("RESWHO_GUARD_TEST_ROOT") else {
             return;
         };
+        std::fs::write(std::path::Path::new(&root).join("entered"), "host entered").unwrap();
         let mode = std::env::var("RESWHO_GUARD_TEST_MODE").unwrap();
         std::thread::scope(|scope| {
             for index in 0..4 {
@@ -512,6 +513,8 @@ int main(int argc, char **argv) {
                 .unwrap()
                 .success()
         );
+        let host_program = dir.path().join("host");
+        std::fs::copy(std::env::current_exe().unwrap(), &host_program).unwrap();
         for (mode, signal) in [
             ("launch", libc::SIGKILL),
             ("running", libc::SIGINT),
@@ -522,8 +525,9 @@ int main(int argc, char **argv) {
             ("unready", libc::SIGKILL),
         ] {
             let stderr_path = dir.path().join("host.stderr");
+            let stdout_path = dir.path().join("host.stdout");
             let mut host = FixtureHost(
-                Command::new(std::env::current_exe().unwrap())
+                Command::new(&host_program)
                     .args([
                         "--exact",
                         "containers::command::tests::guarded_host_fixture",
@@ -531,7 +535,7 @@ int main(int argc, char **argv) {
                     ])
                     .env("RESWHO_GUARD_TEST_ROOT", dir.path())
                     .env("RESWHO_GUARD_TEST_MODE", mode)
-                    .stdout(Stdio::null())
+                    .stdout(std::fs::File::create(&stdout_path).unwrap())
                     .stderr(std::fs::File::create(&stderr_path).unwrap())
                     .spawn()
                     .unwrap(),
@@ -597,6 +601,11 @@ int main(int argc, char **argv) {
                     }
                 }
             }
+            diagnostic.push_str(&format!(
+                "\nhost entered={}\nstdout: {}",
+                dir.path().join("entered").exists(),
+                std::fs::read_to_string(&stdout_path).unwrap()
+            ));
             diagnostic.push_str(&format!(
                 "\nstderr: {}",
                 std::fs::read_to_string(&stderr_path).unwrap()
@@ -672,6 +681,7 @@ int main(int argc, char **argv) {
                 "host did not complete provider return"
             );
             let _ = std::fs::remove_file(dir.path().join("returned"));
+            let _ = std::fs::remove_file(dir.path().join("entered"));
         }
         dir.close().unwrap();
     }
