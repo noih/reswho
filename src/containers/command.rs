@@ -367,13 +367,51 @@ mod tests {
                 let root = &root;
                 let mode = &mode;
                 scope.spawn(move || {
-                    let result = run_bounded(
+                    std::fs::write(
+                        std::path::Path::new(root).join(format!("{index}.worker")),
+                        "starting",
+                    )
+                    .unwrap();
+                    let result = bounded::run_observed(
                         &std::path::Path::new(root).join("provider"),
                         &[root.clone(), index.to_string(), mode.clone()],
                         Some(b"{}"),
                         &crate::snapshot::Cancellation::default(),
                         Instant::now() + Duration::from_secs(5),
+                        |pid| {
+                            let identity =
+                                libproc::proc_pid::pidinfo::<libproc::bsd_info::BSDInfo>(
+                                    pid as i32, 0,
+                                )
+                                .map_err(|error| anyhow::anyhow!("guard identity: {error}"))?;
+                            let temporary =
+                                std::path::Path::new(root).join(format!("{index}.guard.tmp"));
+                            std::fs::write(
+                                &temporary,
+                                format!(
+                                    "{pid} {} {}",
+                                    identity.pbi_start_tvsec, identity.pbi_start_tvusec
+                                ),
+                            )?;
+                            std::fs::rename(
+                                temporary,
+                                std::path::Path::new(root).join(format!("{index}.guard")),
+                            )?;
+                            Ok(())
+                        },
                     );
+                    let diagnostic = match &result {
+                        Ok(output) => format!(
+                            "completed timed_out={} exit_code={:?} issue={:?}",
+                            output.timed_out, output.exit_code, output.issue
+                        ),
+                        Err(error) => format!("failed {error:#}"),
+                    };
+                    std::fs::write(
+                        std::path::Path::new(root).join(format!("{index}.worker")),
+                        diagnostic,
+                    )
+                    .unwrap();
                     if mode == "return" {
                         assert!(result.unwrap().issue.is_none());
                     }
@@ -382,6 +420,33 @@ mod tests {
         });
         std::fs::write(std::path::Path::new(&root).join("returned"), "").unwrap();
         std::thread::sleep(Duration::from_secs(10));
+    }
+
+    struct FixtureHost(std::process::Child);
+
+    impl Drop for FixtureHost {
+        fn drop(&mut self) {
+            if self.0.try_wait().ok().flatten().is_none() {
+                let _ = self.0.kill();
+            }
+            let _ = self.0.wait();
+        }
+    }
+
+    fn fixture_identity_alive(identity: (i32, u64, u64)) -> bool {
+        match libproc::proc_pid::pidinfo::<libproc::bsd_info::BSDInfo>(identity.0, 0) {
+            Ok(info) => (info.pbi_start_tvsec, info.pbi_start_tvusec) == (identity.1, identity.2),
+            Err(error) => {
+                let exists = unsafe { libc::kill(identity.0, 0) };
+                let os_error = std::io::Error::last_os_error().raw_os_error();
+                assert!(
+                    exists == -1 && os_error == Some(libc::ESRCH),
+                    "owned identity unavailable for {}: {error}, probe={exists}/{os_error:?}",
+                    identity.0
+                );
+                false
+            }
+        }
     }
 
     #[test]
@@ -394,19 +459,43 @@ mod tests {
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <libproc.h>
+#include <sys/proc_info.h>
+int publish(const char *root, const char *index, const char *suffix, int *pids, int count) {
+    char path[4096], temporary[4096];
+    snprintf(path, sizeof(path), "%s/%s.%s", root, index, suffix);
+    snprintf(temporary, sizeof(temporary), "%s/%s.%s.tmp", root, index, suffix);
+    FILE *f = fopen(temporary, "w");
+    if (!f) return -1;
+    for (int i = 0; i < count; ++i) {
+        struct proc_bsdinfo info;
+        if (proc_pidinfo(pids[i], PROC_PIDTBSDINFO, 0, &info, sizeof(info)) != sizeof(info)) { fclose(f); return -1; }
+        fprintf(f, "%d %llu %llu\n", pids[i], (unsigned long long)info.pbi_start_tvsec, (unsigned long long)info.pbi_start_tvusec);
+    }
+    if (fclose(f) != 0) return -1;
+    return rename(temporary, path);
+}
 int main(int argc, char **argv) {
     if (argc != 4) return 2;
-    int monitor = getppid();
+    int pids[3] = {getpid(), getppid(), 0};
+    if (publish(argv[1], argv[2], "started", pids, 2) != 0) return 3;
+    int gate[2];
+    if (pipe(gate) != 0) return 4;
     int descendant = fork();
-    if (descendant == 0) { close(0); close(1); close(2); sleep(30); return 0; }
-    char path[4096];
-    snprintf(path, sizeof(path), "%s/%s.pid", argv[1], argv[2]);
-    char temporary[4096];
-    snprintf(temporary, sizeof(temporary), "%s/%s.tmp", argv[1], argv[2]);
-    FILE *f = fopen(temporary, "w");
-    fprintf(f, "%d %d %d", getpid(), descendant, monitor);
-    fclose(f);
-    rename(temporary, path);
+    if (descendant < 0) return 5;
+    if (descendant == 0) {
+        close(gate[1]);
+        char ready;
+        if (read(gate[0], &ready, 1) != 1) return 6;
+        close(gate[0]); close(0); close(1); close(2); sleep(30); return 0;
+    }
+    close(gate[0]);
+    pids[2] = pids[1]; pids[1] = descendant;
+    if (publish(argv[1], argv[2], "owned", pids, 3) != 0) { close(gate[1]); return 9; }
+    if (strcmp(argv[3], "unready") == 0) { sleep(30); close(gate[1]); return 0; }
+    if (publish(argv[1], argv[2], "pid", pids, 3) != 0) { close(gate[1]); return 7; }
+    if (write(gate[1], "r", 1) != 1) { close(gate[1]); return 8; }
+    close(gate[1]);
     if (strcmp(argv[3], "return") == 0) return 0;
     sleep(30);
     return 0;
@@ -430,19 +519,23 @@ int main(int argc, char **argv) {
             ("running", libc::SIGABRT),
             ("running", libc::SIGKILL),
             ("return", libc::SIGKILL),
+            ("unready", libc::SIGKILL),
         ] {
-            let mut host = Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "containers::command::tests::guarded_host_fixture",
-                    "--nocapture",
-                ])
-                .env("RESWHO_GUARD_TEST_ROOT", dir.path())
-                .env("RESWHO_GUARD_TEST_MODE", mode)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap();
+            let stderr_path = dir.path().join("host.stderr");
+            let mut host = FixtureHost(
+                Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "containers::command::tests::guarded_host_fixture",
+                        "--nocapture",
+                    ])
+                    .env("RESWHO_GUARD_TEST_ROOT", dir.path())
+                    .env("RESWHO_GUARD_TEST_MODE", mode)
+                    .stdout(Stdio::null())
+                    .stderr(std::fs::File::create(&stderr_path).unwrap())
+                    .spawn()
+                    .unwrap(),
+            );
             let start = Instant::now();
             let required = if mode == "launch" { 1 } else { 4 };
             while (0..required).any(|index| !dir.path().join(format!("{index}.pid")).exists())
@@ -460,36 +553,120 @@ int main(int argc, char **argv) {
             let returned = dir.path().join("returned").exists();
             let launched =
                 (0..required).all(|index| dir.path().join(format!("{index}.pid")).exists());
-            unsafe {
-                libc::kill(host.id() as i32, signal);
+            let early_status = host.0.try_wait().unwrap();
+            if early_status.is_none() {
+                assert_eq!(unsafe { libc::kill(host.0.id() as i32, signal) }, 0);
             }
-            host.wait().unwrap();
+            let status = host.0.wait().unwrap();
+            let mut diagnostic = format!(
+                "mode={mode} signal={signal} host={} early_status={early_status:?} status={status} launched={launched} returned={returned}",
+                host.0.id()
+            );
+            let mut identities = std::collections::BTreeSet::new();
+            let mut owned_providers = 0;
+            for index in 0..4 {
+                for suffix in [
+                    "worker",
+                    "guard",
+                    "guard.tmp",
+                    "started",
+                    "started.tmp",
+                    "pid.tmp",
+                    "owned",
+                    "owned.tmp",
+                ] {
+                    let path = dir.path().join(format!("{index}.{suffix}"));
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        diagnostic.push_str(&format!("\nindex={index} {suffix}: {text}"));
+                        if suffix == "owned" {
+                            owned_providers += 1;
+                        }
+                        if suffix != "worker" {
+                            for line in text.lines() {
+                                let fields: Vec<_> = line.split_whitespace().collect();
+                                if fields.len() == 3 {
+                                    identities.insert((
+                                        fields[0].parse::<i32>().unwrap(),
+                                        fields[1].parse::<u64>().unwrap(),
+                                        fields[2].parse::<u64>().unwrap(),
+                                    ));
+                                }
+                            }
+                        }
+                        std::fs::remove_file(path).unwrap();
+                    }
+                }
+            }
+            diagnostic.push_str(&format!(
+                "\nstderr: {}",
+                std::fs::read_to_string(&stderr_path).unwrap()
+            ));
+            println!("{diagnostic}");
             let mut pids = Vec::new();
             for index in 0..4 {
                 let path = dir.path().join(format!("{index}.pid"));
                 if let Ok(text) = std::fs::read_to_string(&path) {
-                    pids.extend(
-                        text.split_whitespace()
-                            .map(|value| value.parse::<i32>().unwrap()),
-                    );
+                    for line in text.lines() {
+                        let fields: Vec<_> = line.split_whitespace().collect();
+                        pids.push((
+                            fields[0].parse::<i32>().unwrap(),
+                            fields[1].parse::<u64>().unwrap(),
+                            fields[2].parse::<u64>().unwrap(),
+                        ));
+                    }
                     std::fs::remove_file(path).unwrap();
                 }
             }
-            assert!(!pids.is_empty(), "fixture did not launch");
+            identities.extend(pids.iter().copied());
             let start = Instant::now();
-            while pids.iter().any(|pid| unsafe { libc::kill(*pid, 0) } == 0)
+            while identities.iter().copied().any(fixture_identity_alive)
                 && start.elapsed() < Duration::from_secs(3)
             {
                 std::thread::sleep(Duration::from_millis(5));
             }
-            for pid in pids {
+            let survivors: Vec<_> = identities
+                .iter()
+                .copied()
+                .filter(|identity| fixture_identity_alive(*identity))
+                .collect();
+            for identity in &survivors {
+                if fixture_identity_alive(*identity) {
+                    unsafe {
+                        libc::kill(identity.0, libc::SIGKILL);
+                    }
+                }
+            }
+            if !survivors.is_empty() {
+                let cleanup = Instant::now();
+                while survivors.iter().copied().any(fixture_identity_alive)
+                    && cleanup.elapsed() < Duration::from_secs(3)
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            if mode == "unready" {
+                assert!(
+                    pids.is_empty() && !launched,
+                    "negative readiness fixture published a marker: {diagnostic}"
+                );
                 assert_eq!(
-                    unsafe { libc::kill(pid, 0) },
-                    -1,
-                    "owned PID {pid} survived {mode}/{signal}"
+                    owned_providers, 4,
+                    "negative readiness fixture did not retain all owned identities: {diagnostic}"
+                );
+            } else {
+                assert!(
+                    !pids.is_empty(),
+                    "fixture did not launch: {diagnostic}; tracked guards/providers={identities:?}"
                 );
             }
-            assert!(launched, "required providers did not launch");
+            assert!(
+                survivors.is_empty(),
+                "owned identities survived {mode}/{signal}: {survivors:?}; {diagnostic}"
+            );
+            assert!(
+                mode == "unready" || launched,
+                "required providers did not launch: {diagnostic}"
+            );
             assert!(
                 mode != "return" || returned,
                 "host did not complete provider return"

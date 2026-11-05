@@ -143,6 +143,17 @@ pub fn run_bounded(
     cancel: &crate::snapshot::Cancellation,
     deadline: Instant,
 ) -> Result<Output> {
+    run_observed(program, args, input, cancel, deadline, |_| Ok(()))
+}
+
+pub(super) fn run_observed(
+    program: &std::path::Path,
+    args: &[String],
+    input: Option<&[u8]>,
+    cancel: &crate::snapshot::Cancellation,
+    deadline: Instant,
+    started: impl FnOnce(u32) -> Result<()>,
+) -> Result<Output> {
     if input.is_some_and(|input| input.len() > MAX_OUTPUT_BYTES) {
         bail!("provider request exceeds 8 MiB limit");
     }
@@ -206,6 +217,7 @@ pub fn run_bounded(
         group_cleaned: false,
         lifeline: lifeline.map(|(writer, _)| writer),
     };
+    started(child.process.id())?;
     let mut stdin = child.process.stdin.take();
     if let Some(pipe) = &stdin {
         nonblocking(pipe)?;
