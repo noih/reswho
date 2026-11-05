@@ -169,6 +169,7 @@ impl App {
         if node.process.is_none()
             && node.resource.is_none()
             && node.host_resources.is_empty()
+            && node.hints.is_empty()
             && node
                 .runtime
                 .as_ref()
@@ -351,9 +352,14 @@ impl App {
         depth: usize,
     ) -> Vec<Row> {
         let transparent = self.transparent(node, &path);
-        let matches = self.query.is_empty()
+        let direct_match = self.query.is_empty()
             || inherited_match
             || (!transparent && searchable(node).contains(&self.query.to_lowercase()));
+        let matches = direct_match
+            || (!transparent
+                && crate::output::hint_lines(node)
+                    .iter()
+                    .any(|hint| hint.to_lowercase().contains(&self.query.to_lowercase())));
         let child_depth = depth + usize::from(!transparent);
         let mut indices: Vec<_> = (0..node.children.len()).collect();
         indices.sort_by(|a, b| self.sort.compare(&node.children[*a], &node.children[*b]));
@@ -375,11 +381,11 @@ impl App {
             children.extend(self.project(
                 &node.children[index],
                 child_path,
-                matches && !self.query.is_empty(),
+                direct_match && !self.query.is_empty(),
                 child_depth,
             ));
         }
-        if unreadable > 0 && (matches || "unreadable".contains(&self.query.to_lowercase())) {
+        if unreadable > 0 && (direct_match || "unreadable".contains(&self.query.to_lowercase())) {
             children.push(Row {
                 key: format!("{}:unreadable", identity(node, self.generation)),
                 path: path.clone(),

@@ -7,6 +7,7 @@ use crate::extensions::{
 pub(crate) const ID: &str = "bin";
 
 pub(crate) static MODULE: Module = Module {
+    summary: None,
     registration: crate::extensions::host::no_registration,
     decorate: None,
     id: ID,

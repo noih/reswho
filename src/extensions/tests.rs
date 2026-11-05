@@ -18,7 +18,10 @@ fn builtin_list_is_deterministic_and_does_not_probe_sources() {
             "docker",
             "podman",
             "apple",
-            "vm"
+            "vm",
+            "codex",
+            "claude",
+            "playwright"
         ]
     );
     assert!(list.iter().all(|entry| entry.availability == "unknown"));

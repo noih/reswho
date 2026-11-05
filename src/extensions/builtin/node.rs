@@ -16,6 +16,7 @@ use std::{
 pub(crate) const ID: &str = "node";
 
 pub(crate) static MODULE: Module = Module {
+    summary: None,
     registration,
     decorate: None,
     id: ID,
@@ -910,7 +911,12 @@ pub(crate) mod tests {
                 "{value}"
             );
             assert!(record.argv.as_ref().is_none_or(|a| a.reads == 0));
-            let profile = crate::output::extension_profile(&records);
+            let node_records: Vec<_> = records
+                .iter()
+                .filter(|record| record.provider == "node")
+                .cloned()
+                .collect();
+            let profile = crate::output::extension_profile(&node_records);
             assert_eq!(profile.contains("## Argument reads"), value, "{profile}");
             let json = serde_json::to_value(&records).unwrap();
             let schema: serde_json::Value =

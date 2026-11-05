@@ -6,6 +6,10 @@ use std::{collections::HashMap, time::Duration};
 mod command;
 #[cfg(target_os = "macos")]
 mod network;
+#[cfg(target_os = "macos")]
+mod open_files;
+#[cfg(target_os = "macos")]
+pub(crate) use open_files::{still_open, writable_files};
 
 pub struct Collection {
     pub processes: Vec<Process>,
@@ -74,8 +78,11 @@ pub struct ArgvCost {
     pub duration_ms: f64,
 }
 
+type ArgvIdentity = (u32, u64, Option<u32>, Option<std::path::PathBuf>, usize);
+
 pub(crate) struct ArgvPrefix {
     buffer: Option<Option<Vec<u8>>>,
+    prefixes: HashMap<ArgvIdentity, Vec<String>>,
     pub(crate) verify: fn(&Process) -> bool,
     pub(crate) argmax: fn() -> Option<usize>,
     pub(crate) fill: fn(i32, &mut [u8]) -> Option<usize>,
@@ -114,6 +121,7 @@ impl ArgvPrefix {
     ) -> Self {
         Self {
             buffer: None,
+            prefixes: HashMap::new(),
             verify,
             argmax,
             fill,
@@ -134,6 +142,17 @@ impl ArgvPrefix {
         let result = 'read: {
             if !(self.verify)(process) {
                 break 'read None;
+            }
+            if let Some(started) = process.started_unix_us
+                && let Some(args) = self.prefixes.get(&(
+                    process.pid,
+                    started,
+                    process.uid,
+                    process.executable.clone(),
+                    limit,
+                ))
+            {
+                break 'read (self.verify)(process).then(|| args.clone());
             }
             let Some(pointer_width) = (self.pointer_width)(process.pid as i32) else {
                 break 'read None;
@@ -157,6 +176,18 @@ impl ArgvPrefix {
             (self.verify)(process).then_some(args)
         };
         cost.duration_ms += started.elapsed().as_secs_f64() * 1000.0;
+        if let (Some(args), Some(started)) = (&result, process.started_unix_us) {
+            self.prefixes.insert(
+                (
+                    process.pid,
+                    started,
+                    process.uid,
+                    process.executable.clone(),
+                    limit,
+                ),
+                args.clone(),
+            );
+        }
         result
     }
 }
@@ -687,7 +718,7 @@ mod tests {
         VERIFIED.with(|queue| queue.borrow_mut().pop_front().unwrap_or(false))
     }
 
-    fn fill(_: i32, buffer: &mut [u8]) -> Option<usize> {
+    pub(super) fn fill(_: i32, buffer: &mut [u8]) -> Option<usize> {
         FILLS.with(|count| count.set(count.get() + 1));
         let mut bytes = 3i32.to_ne_bytes().to_vec();
         bytes.extend_from_slice(b"/opt/node\0");
@@ -746,5 +777,33 @@ mod tests {
         assert_eq!(cpu_percent(10, 210, 100), Some(200.0));
         assert_eq!(cpu_percent(10, 9, 100), None);
         assert_eq!(cpu_percent(10, 20, 0), None);
+    }
+}
+
+#[cfg(test)]
+mod shared_argv_tests {
+    use super::*;
+
+    #[test]
+    fn successful_prefix_is_shared_between_extensions_but_identity_is_rechecked() {
+        let process = Process {
+            pid: 42,
+            started_unix_us: Some(100),
+            uid: Some(501),
+            executable: Some("/opt/node".into()),
+            ..Default::default()
+        };
+        let mut reader = ArgvPrefix::with(|_| true, || Some(4096), super::tests::fill, |_| Some(8));
+        let first = reader.read("node", &process, 2).unwrap();
+        assert_eq!(reader.read("playwright", &process, 2), Some(first));
+        assert_eq!(reader.costs["node"].reads, 1);
+        assert_eq!(reader.costs["playwright"].reads, 0);
+        reader.verify = |_| false;
+        assert!(reader.read("claude", &process, 2).is_none());
+        let mut reused = process.clone();
+        reused.started_unix_us = Some(101);
+        reader.verify = |_| true;
+        assert!(reader.read("claude", &reused, 2).is_some());
+        assert_eq!(reader.costs["claude"].reads, 1);
     }
 }

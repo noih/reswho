@@ -16,6 +16,7 @@ use std::{
 pub(crate) const ID: &str = "python";
 
 pub(crate) static MODULE: Module = Module {
+    summary: None,
     registration,
     decorate: None,
     id: ID,

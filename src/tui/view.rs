@@ -38,6 +38,23 @@ pub(super) fn hint_lines(groups: &[&str], width: u16) -> Vec<ratatui::text::Line
     lines
 }
 
+fn clipped_summary(value: &str, width: usize) -> String {
+    use ratatui::text::Span;
+    if Span::raw(value).width() <= width {
+        return value.to_owned();
+    }
+    let mut clipped = String::new();
+    let mut used = 0;
+    for grapheme in Span::raw(value).styled_graphemes(Style::default()) {
+        used += Span::raw(grapheme.symbol).width();
+        if used >= width {
+            break;
+        }
+        clipped.push_str(grapheme.symbol);
+    }
+    format!("{clipped}…")
+}
+
 fn metrics(node: &Node) -> [String; 3] {
     if matches!(node.grouping, Some(crate::model::Grouping::Resource)) || node.resource.is_some() {
         return ["-".into(), "-".into(), "-".into()];
@@ -415,7 +432,9 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
         .padding(Padding::horizontal(1));
     let tree_inner = block.inner(tree_area);
     let wide = tree_inner.width >= 85;
+    let mut shown: Vec<(&[usize], &crate::extensions::Summary)> = Vec::new();
     let rows = app.rows.iter().enumerate().map(|(index, row)| {
+        shown.retain(|(path, _)| row.path.starts_with(path) && row.path.len() > path.len());
         let indent = "  ".repeat(row.depth.min(12));
         let arrow = if row.has_children {
             if app.is_open(row) { "v" } else { ">" }
@@ -435,9 +454,40 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
             String::new()
         };
         let name = format!("{indent}{arrow} {}{suffix}", safe(&node.display_name()));
+        let name_width = usize::from(tree_inner.width).saturating_sub(if wide { 46 } else { 31 });
+        let mut lines = vec![ratatui::text::Line::raw(name)];
+        if let Some(summary) = &node.summary {
+            let redundant =
+                summary.inherited
+                    && shown.iter().any(|(_, ancestor)| {
+                        summary.evidence.len() == ancestor.evidence.len()
+                            && summary.evidence.iter().zip(&ancestor.evidence).all(
+                                |(hint, parent)| {
+                                    hint.source == parent.source
+                                        && hint.kind == parent.kind
+                                        && hint.value == parent.value
+                                        && hint.title == parent.title
+                                        && hint.path == parent.path
+                                },
+                            )
+                    });
+            let available = name_width.saturating_sub(indent.len() + 2);
+            let label_width = ratatui::text::Line::raw(&summary.label).width();
+            if !redundant && available > label_width + 3 {
+                shown.push((&row.path, summary));
+                let text = safe(&format!("{}: {}", summary.label, summary.value));
+                lines.push(ratatui::text::Line::styled(
+                    format!("{indent}  {}", clipped_summary(&text, available)),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                ));
+            }
+        }
+        let height = lines.len() as u16;
         let [cpu, ram, age] = metrics(node);
         let mut cells = vec![
-            Cell::from(name),
+            Cell::from(ratatui::text::Text::from(lines)),
             Cell::from(cpu.split(" (").next().unwrap_or(&cpu).to_owned()),
             Cell::from(ram.split(" (").next().unwrap_or(&ram).to_owned()),
             Cell::from(age),
@@ -445,7 +495,7 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
         if wide {
             cells.push(Cell::from(safe(&state_label(node))));
         }
-        Row::new(cells).style(
+        Row::new(cells).height(height).style(
             if node
                 .container
                 .as_ref()
@@ -487,7 +537,9 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
         .block(block)
         .row_highlight_style(
             Style::default()
+                .fg(Color::White)
                 .bg(Color::DarkGray)
+                .remove_modifier(Modifier::DIM)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_spacing(HighlightSpacing::Always);

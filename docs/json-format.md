@@ -94,6 +94,34 @@ Apple's `container_limit` describes the container, not total VM RAM. Adding Appl
 `cpus` and `cpu_overhead` gives configured VM CPUs, but guest memory overhead is
 unknown. Do not subtract container usage from VM usage to infer exact overhead.
 
+## Summary hints
+
+Optional node `hints` survive summary projection. Each has `source`, `basis`,
+`kind`, `value`, `processes`, and optional `path`/`title`. Process rows describe
+that process only. Group `processes` is the number of distinct descendant PIDs
+with that hint; compare with the group's host `totals.processes`. Multiple
+candidates coexist. Hints never add usage, resources, refs or tree depth.
+
+Project hints describe discovered cwd candidates, including when app grouping
+wins. Playwright CLI 1.64.x session names come from a verified daemon argument chain;
+`ancestor_cwd` project hints additionally require project discovery and disappear
+when `project` is disabled. Session names alone are not project evidence.
+
+Codex 0.166.0 `session_log` with `open_session_log` basis identifies an observed writable
+append handle to a matching session metadata record. `value` is the full stable
+thread ID; `title`, when present, is the exact thread's last recorded index name.
+This does not establish the foreground/current conversation, active use, or
+session-specific CPU/RSS. Several handles may coexist in one daemon. Titles are
+omitted when the exact ID is outside the last 64 KiB of the index, or that tail is
+absent, unsafe or changing; prompts and
+SQLite title fallbacks are not used. Unknown/reverted/compressed record layouts
+are omitted. Current-session mapping is unsupported for Codex and Claude Code;
+launch `resume` arguments, cwd, recency and Claude's potentially stale PID
+registry do not prove it. Detail tag hints distinguish this unsupported guarantee
+from inaccessible descriptors, conflicting/unsupported/changing log metadata,
+missing safe titles and absence of a supported writable log. Ordinary summaries
+omit these unavailable-reason hints.
+
 ## Attribution, privacy and diagnostics
 
 Attribution records evidence, not proof of ownership or permission to stop a

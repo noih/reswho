@@ -11,6 +11,7 @@ pub(crate) const ID: &str = "launched_by";
 const DIMENSION: &str = "extensions.launched_by.app";
 
 pub(crate) static MODULE: Module = Module {
+    summary: None,
     registration: no_registration,
     decorate: None,
     id: ID,
@@ -39,6 +40,7 @@ fn proposal(facts: &Facts<'_>, process: &Process) -> Option<ClassificationPropos
             let name = path.file_name()?.to_string_lossy();
             let name = name.trim_end_matches(".bundle").trim_end_matches(".app");
             let tag = Tag {
+                hint: None,
                 dimension: DIMENSION.into(),
                 id: path_id(DIMENSION, &path),
                 label: label(&format!("Launched by {name}")),

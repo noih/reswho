@@ -379,6 +379,8 @@ pub fn build_with_providers(
         }
         pending.extend(node.children.iter_mut());
     }
+    crate::extensions::host::hints::summarize(&mut root);
+    crate::extensions::summaries::attach(&mut root, &all_providers, context);
     validate_references(&root)?;
     sort_children(&mut root);
     Ok(root)
@@ -483,6 +485,8 @@ fn process_leaf(pid: u32, process: Process, evidence: &mut HashMap<u32, Vec<Stri
     let mut totals = Totals::default();
     totals.add_process(&process);
     Node {
+        summary: None,
+        hints: vec![],
         host_resources: vec![],
         category_order: None,
         reference: format!("pid:{pid}"),

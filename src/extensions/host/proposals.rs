@@ -30,6 +30,7 @@ pub(crate) fn app_tag(path: PathBuf) -> Tag {
         .trim_end_matches(".app")
         .to_owned();
     Tag {
+        hint: None,
         dimension: "app".into(),
         id: crate::extensions::tags::path_id("app", &path),
         label: label(&name),
@@ -55,6 +56,7 @@ pub(crate) fn identity_proposal(
 ) -> ClassificationProposal {
     let key = format!("{}\0{label}", subject.unwrap_or_default());
     let tag = Tag {
+        hint: None,
         dimension: dimension.into(),
         id: format!(
             "{dimension}:{}",
@@ -101,6 +103,7 @@ pub(crate) fn ownership(
     assigned: Assignment,
 ) -> ClassificationProposal {
     let tag = Tag {
+        hint: None,
         dimension: dimension.into(),
         id,
         label: label(name),

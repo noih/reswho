@@ -3354,8 +3354,9 @@ fn priority_reset_discards_saves_defaults_and_moves_module_sources() {
     restarted.extension_selected = Some("a_module".into());
     handle_key(&mut restarted, KeyCode::Char('r').into());
     let order = extensions::order(&restarted, false);
+    let builtin_count = order.len() - 2;
     assert_eq!(
-        &order[..13],
+        &order[..builtin_count],
         [
             "app_bundle",
             "bin",
@@ -3370,9 +3371,12 @@ fn priority_reset_discards_saves_defaults_and_moves_module_sources() {
             "podman",
             "apple",
             "vm",
+            "codex",
+            "claude",
+            "playwright",
         ]
     );
-    assert_eq!(&order[13..], ["z_module", "a_module"]);
+    assert_eq!(&order[builtin_count..], ["z_module", "a_module"]);
     handle_key(
         &mut restarted,
         KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
@@ -3382,8 +3386,8 @@ fn priority_reset_discards_saves_defaults_and_moves_module_sources() {
         KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT),
     );
     let order = restarted.priority_draft.as_ref().unwrap();
-    assert_eq!(&order[13..], ["a_module", "z_module"]);
-    for _ in 0..13 {
+    assert_eq!(&order[builtin_count..], ["a_module", "z_module"]);
+    for _ in 0..builtin_count {
         handle_key(
             &mut restarted,
             KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT),
@@ -5379,4 +5383,1050 @@ fn sources_save_all_disabled_restarts_with_core_categories_and_totals() {
     let owned = owner.path().to_path_buf();
     owner.close().unwrap();
     assert!(!owned.exists());
+}
+
+#[test]
+fn qualified_hints_survive_projection_search_and_long_narrow_rendering() {
+    let mut snapshot = snapshot();
+    fn attach(node: &mut Node) {
+        if node.reference == "pid:10" {
+            node.hints = vec![crate::model::SummaryHint {
+                source: "codex".into(),
+                basis: "open_session_log".into(),
+                kind: "session_log".into(),
+                value: "019aa1bb-2222-7333-8444-555566667777".into(),
+                title: Some(format!("UniqueSessionTitle {}", "長標題".repeat(80))),
+                path: None,
+                processes: 1,
+            }];
+        }
+        for child in &mut node.children {
+            attach(child);
+        }
+    }
+    attach(&mut snapshot.root);
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(snapshot));
+    app.query = "uniquesessiontitle".into();
+    app.rebuild();
+    assert!((0..app.rows.len()).any(|index| {
+        app.node(index)
+            .is_some_and(|node| node.reference == "pid:10")
+    }));
+    for width in [36, 60, 100, 180] {
+        let text = screen(&app, width);
+        assert!(text.contains("pid:10") || width == 36, "{width}: {text}");
+        assert!(!text.contains('\u{1b}'));
+    }
+    let value = serde_json::to_string(&app.snapshot.as_ref().unwrap().root).unwrap();
+    assert!(value.contains("UniqueSessionTitle"));
+    assert!(value.contains("019aa1bb-2222-7333-8444-555566667777"));
+    assert!(!value.contains("tag_report"));
+}
+
+fn aggregated_hint_snapshot() -> (tempfile::TempDir, Snapshot) {
+    use crate::extensions::{
+        ClassificationEvidence, ProcessIdentity,
+        host::hints,
+        tags::{Effective, Operation, ProcessEvidence},
+    };
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join(format!("UniqueProjectHint{}", "long-path-".repeat(10)));
+    std::fs::create_dir(&cwd).unwrap();
+    std::fs::write(
+        cwd.join("Cargo.toml"),
+        "[package]\nname=\"fixture\"\nversion=\"0.0.0\"\n",
+    )
+    .unwrap();
+    let processes: Vec<_> = [(10, "First", cwd.clone()), (20, "Other", "/".into())]
+        .into_iter()
+        .map(|(pid, app, cwd)| Process {
+            pid,
+            ppid: Some(1),
+            uid: Some(unsafe { libc::geteuid() }),
+            started_unix_us: Some(u64::from(pid)),
+            name: "worker".into(),
+            executable: Some(format!("/Applications/{app}.app/Contents/MacOS/main").into()),
+            cwd: Some(cwd),
+            resident_bytes: Some(100),
+            cpu_percent: Some(1.0),
+            ..Default::default()
+        })
+        .collect();
+    let mut tree = tree::build(processes.clone()).unwrap();
+    fn attach(node: &mut Node, process: &Process) {
+        if node.reference == "pid:10" {
+            for (source, kind, value, title) in [
+                ("claude", "role", "Helper role", None),
+                (
+                    "playwright",
+                    "session",
+                    "019aa1bb-2222-7333-8444-555566667777",
+                    Some(format!(
+                        "UniqueSessionTitle {} END-TITLE",
+                        "long title ".repeat(50)
+                    )),
+                ),
+                (
+                    "codex",
+                    "session_log",
+                    "019aa1bb-2222-7333-8444-888899990000",
+                    Some("Fourth candidate title".into()),
+                ),
+            ] {
+                let mut hint = hints::value(kind, value);
+                hint.title = title;
+                let basis = if kind == "session_log" {
+                    "open_session_log"
+                } else {
+                    "arguments"
+                };
+                let proposal = hints::proposal(
+                    source,
+                    hint,
+                    basis,
+                    None,
+                    vec![ProcessEvidence {
+                        identity: ProcessIdentity::observed(process).unwrap(),
+                        executable: process.executable.clone().unwrap(),
+                    }],
+                )
+                .unwrap();
+                let ClassificationEvidence::Tags { proposal } = proposal.evidence else {
+                    panic!()
+                };
+                crate::extensions::tags::validate(
+                    std::slice::from_ref(&proposal),
+                    std::slice::from_ref(process),
+                    source,
+                    None,
+                )
+                .unwrap();
+                let Operation::Add { tag } = proposal.operation else {
+                    panic!()
+                };
+                node.process
+                    .as_mut()
+                    .unwrap()
+                    .tag_report
+                    .as_mut()
+                    .unwrap()
+                    .effective
+                    .push(Effective {
+                        source: source.into(),
+                        tag,
+                    });
+            }
+        }
+        for child in &mut node.children {
+            attach(child, process);
+        }
+    }
+    attach(&mut tree, &processes[0]);
+    crate::extensions::host::hints::summarize(&mut tree);
+    (
+        root,
+        Snapshot {
+            schema: crate::model::JSON_SCHEMA_VERSION,
+            captured_unix_ms: 1,
+            sample_ms: 250,
+            collection_ms: 1,
+            system: Default::default(),
+            extensions: vec![],
+            warnings: vec![],
+            scope: "group:all".into(),
+            root: tree,
+        },
+    )
+}
+
+#[test]
+fn aggregated_hint_search_keeps_context_without_matching_unrelated_descendants() {
+    let (root, snapshot) = aggregated_hint_snapshot();
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(snapshot));
+    let saved = app.expanded.clone();
+    for query in [
+        "UniqueProjectHint",
+        "UniqueSessionTitle",
+        "019aa1bb-2222-7333-8444-555566667777",
+    ] {
+        app.query = query.to_lowercase();
+        app.rebuild();
+        let nodes: Vec<_> = (0..app.rows.len())
+            .filter_map(|index| app.node(index))
+            .collect();
+        assert!(
+            nodes.iter().any(|node| node.reference == "pid:10"),
+            "{query}"
+        );
+        assert!(
+            nodes.iter().any(|node| node.name == "First"),
+            "ancestor context missing: {query}"
+        );
+        assert!(
+            !nodes
+                .iter()
+                .any(|node| node.reference == "pid:20" || node.name == "Other"),
+            "unrelated match: {query}"
+        );
+    }
+    app.query = "applications".into();
+    app.rebuild();
+    assert!(
+        (0..app.rows.len())
+            .filter_map(|index| app.node(index))
+            .any(|node| node.reference == "pid:20")
+    );
+    app.query.clear();
+    app.rebuild();
+    assert_eq!(app.expanded, saved);
+    root.close().unwrap();
+}
+
+#[test]
+fn group_hint_details_open_show_all_candidates_and_wrap_scroll_without_losing_data() {
+    let (root, mut snapshot) = aggregated_hint_snapshot();
+    prepare_secondline(&mut snapshot);
+    let group = snapshot
+        .root
+        .children
+        .iter()
+        .flat_map(|category| &category.children)
+        .find(|node| node.name == "First")
+        .unwrap()
+        .clone();
+    assert_eq!(group.hints.len(), 4);
+    let expected = crate::output::hint_lines(&group);
+    let markdown = crate::output::markdown(&snapshot);
+    let json = serde_json::to_value(&snapshot).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(crate::output::JSON_SCHEMA).unwrap();
+    assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&json));
+    let mut pending = vec![&json["selections"][0]["root"]];
+    let wire_group = loop {
+        let node = pending.pop().expect("selected group must be serialized");
+        if node["reference"] == group.reference {
+            break node;
+        }
+        pending.extend(node["children"].as_array().unwrap());
+    };
+    assert_eq!(
+        wire_group["hints"],
+        serde_json::to_value(&group.hints).unwrap()
+    );
+    for hint in &group.hints {
+        assert!(markdown.contains(&hint.value));
+        if let Some(title) = &hint.title {
+            assert!(markdown.contains(title));
+        }
+        assert_eq!(hint.processes, 1);
+    }
+    let totals = serde_json::to_value(&group.totals).unwrap();
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(snapshot));
+    select(&mut app, &group.reference);
+    app.open_details();
+    let details = app
+        .details
+        .as_ref()
+        .expect("hint-only group must be eligible for detail opening");
+    assert!(details.query_pid().is_none());
+    let lines = details.lines();
+    for line in &expected {
+        assert!(lines.contains(line), "missing complete hint: {line}");
+    }
+    assert_eq!(
+        serde_json::to_value(app.node(app.selected).unwrap().totals.clone()).unwrap(),
+        totals
+    );
+    let render = |app: &App, width| {
+        let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, app, &mut TableState::default()))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(usize::from(width))
+            .map(|line| line.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for width in [36, 60, 120] {
+        handle_key(&mut app, KeyCode::Home.into());
+        let first = render(&app, width);
+        let mut pages = first.clone();
+        for _ in 0..32 {
+            handle_key(&mut app, KeyCode::PageDown.into());
+            pages.push_str(&render(&app, width));
+        }
+        assert!(
+            pages.contains("END-TITLE"),
+            "long title tail unreachable at {width}"
+        );
+        assert!(
+            pages.contains("Fourth") && pages.contains("candidate"),
+            "fourth candidate unreachable at {width}"
+        );
+        assert!(
+            pages
+                .replace([' ', '\n', '\r'], "")
+                .contains("UniqueProjectHint"),
+            "fourth aggregate candidate unreachable after joining wrapped cells at {width}"
+        );
+        assert_ne!(
+            render(&app, width),
+            first,
+            "detail did not scroll at {width}"
+        );
+    }
+    handle_key(&mut app, KeyCode::Esc.into());
+    assert!(app.details.is_none());
+    assert_eq!(app.node(app.selected).unwrap().reference, group.reference);
+    root.close().unwrap();
+}
+
+fn prepare_secondline(snapshot: &mut Snapshot) {
+    let settings = crate::extensions::default_settings().unwrap();
+    let cancel = crate::snapshot::Cancellation::default();
+    crate::extensions::summaries::attach(
+        &mut snapshot.root,
+        &crate::extensions::BUILTINS
+            .iter()
+            .map(|p| p as &dyn crate::extensions::Extension)
+            .collect::<Vec<_>>(),
+        &crate::extensions::Context::new(&settings, &cancel),
+    );
+}
+
+fn secondline_snapshot() -> Snapshot {
+    use crate::model::SummaryHint;
+    let mut snapshot = snapshot();
+    snapshot.root = tree::build(
+        [
+            (10, 1, "Google Chrome", "Google Chrome"),
+            (11, 10, "Google Chrome", "Google Chrome Helper (Renderer)"),
+            (12, 10, "Google Chrome", "Google Chrome Helper (GPU)"),
+            (13, 10, "Google Chrome", "Google Chrome Helper"),
+            (20, 1, "bb", "bb"),
+            (30, 1, "Codex", "codex"),
+            (40, 1, "Other Chrome", "Other Chrome"),
+        ]
+        .into_iter()
+        .map(|(pid, ppid, app, name)| Process {
+            pid,
+            ppid: Some(ppid),
+            cwd: (pid == 20).then(|| "/synthetic/projects/reswho/src".into()),
+            uid: Some(501),
+            started_unix_us: Some(u64::from(pid)),
+            name: name.into(),
+            executable: Some(format!("/Applications/{app}.app/Contents/MacOS/{name}").into()),
+            cpu_percent: Some(12.5),
+            resident_bytes: Some(1048576),
+            uptime_seconds: Some(120),
+            ..Default::default()
+        })
+        .collect(),
+    )
+    .unwrap();
+    fn attach(node: &mut Node) {
+        let session = SummaryHint {
+            source: "playwright".into(),
+            basis: "ancestor_arguments".into(),
+            kind: "session".into(),
+            value: "claude-checkout-reswho".into(),
+            title: None,
+            path: None,
+            processes: 1,
+        };
+        node.hints = match node.reference.as_str() {
+            "pid:10" | "pid:11" | "pid:13" | "pid:40" => vec![session],
+            "pid:12" => vec![SummaryHint {
+                value: "distinct-child-session".into(),
+                ..session
+            }],
+            "pid:20" => vec![
+                SummaryHint {
+                    source: "codex".into(),
+                    basis: "open_session_log".into(),
+                    kind: "session_log".into(),
+                    value: "019aa1bb-2222-7333-8444-555566667777".into(),
+                    title: None,
+                    path: Some("/synthetic/session/log.jsonl".into()),
+                    processes: 1,
+                },
+                SummaryHint {
+                    source: "project".into(),
+                    basis: "cwd".into(),
+                    kind: "project".into(),
+                    value: "reswho".into(),
+                    title: None,
+                    path: Some("/synthetic/projects/reswho".into()),
+                    processes: 1,
+                },
+            ],
+            "pid:30" => vec![SummaryHint {
+                source: "codex".into(),
+                basis: "open_session_log".into(),
+                kind: "session_log".into(),
+                value: "019aa1bb-2222-7333-8444-888899990000".into(),
+                title: Some(format!(
+                    "修復👩‍💻 presentation {} END-TITLE",
+                    "長標題👩‍💻".repeat(30)
+                )),
+                path: Some("/synthetic/codex/log.jsonl".into()),
+                processes: 1,
+            }],
+            _ => vec![],
+        };
+        if let Some(process) = &mut node.process {
+            for summary in &node.hints {
+                let mut hint = crate::extensions::host::hints::value(&summary.kind, &summary.value);
+                hint.title = summary.title.clone();
+                let proposal = crate::extensions::host::hints::proposal(
+                    &summary.source,
+                    hint,
+                    &summary.basis,
+                    summary.path.clone(),
+                    vec![crate::extensions::tags::ProcessEvidence {
+                        identity: crate::extensions::ProcessIdentity::observed(process).unwrap(),
+                        executable: process.executable.clone().unwrap(),
+                    }],
+                )
+                .unwrap();
+                let crate::extensions::ClassificationEvidence::Tags { proposal } =
+                    proposal.evidence
+                else {
+                    panic!()
+                };
+                process.tag_report.get_or_insert_default().proposals.push(
+                    crate::extensions::tags::Recorded {
+                        source: summary.source.clone(),
+                        proposal: proposal.clone(),
+                    },
+                );
+                let crate::extensions::tags::Operation::Add { tag } = proposal.operation else {
+                    panic!()
+                };
+                process.tag_report.get_or_insert_default().effective.push(
+                    crate::extensions::tags::Effective {
+                        source: summary.source.clone(),
+                        tag,
+                    },
+                );
+            }
+        }
+        for child in &mut node.children {
+            attach(child);
+        }
+    }
+    attach(&mut snapshot.root);
+    crate::extensions::host::hints::summarize(&mut snapshot.root);
+    prepare_secondline(&mut snapshot);
+    snapshot
+}
+
+fn secondline_render(
+    app: &App,
+    table: &mut TableState,
+    width: u16,
+    height: u16,
+) -> ratatui::buffer::Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, app, table))
+        .unwrap();
+    terminal.backend().buffer().clone()
+}
+
+fn secondline_text(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+    (0..buffer.area.height)
+        .map(|y| {
+            let mut line = String::new();
+            let mut x = 0;
+            while x < buffer.area.width {
+                let symbol = buffer[(x, y)].symbol();
+                line.push_str(symbol);
+                x += ratatui::text::Span::raw(symbol).width().max(1) as u16;
+            }
+            line
+        })
+        .collect()
+}
+
+#[test]
+fn secondline_rows_preserve_first_lines_metrics_and_full_evidence() {
+    let snapshot = secondline_snapshot();
+    let wire = serde_json::to_string(&snapshot).unwrap();
+    let markdown = crate::output::markdown(&snapshot);
+    let mut baseline = snapshot.clone();
+    fn clear(node: &mut Node) {
+        node.hints.clear();
+        node.summary = None;
+        for child in &mut node.children {
+            clear(child);
+        }
+    }
+    clear(&mut baseline.root);
+    let mut baseline_app = App::new("group:all".into(), usize::MAX);
+    baseline_app.update(Ok(baseline));
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(snapshot.clone()));
+    let original_rows = app.rows.len();
+    for width in [60, 100, 180, 240] {
+        let buffer = secondline_render(&app, &mut TableState::default(), width, 32);
+        let rows = secondline_text(&buffer);
+        let text = rows.join("\n");
+        let base = secondline_text(&secondline_render(
+            &baseline_app,
+            &mut TableState::default(),
+            width,
+            32,
+        ));
+        for line in base.iter().filter(|line| {
+            line.contains("12.5%")
+                || line.contains("37.5%")
+                || line.contains("50.0%")
+                || line.contains("Applications")
+        }) {
+            assert!(
+                rows.contains(line),
+                "first line changed at {width}: {line}\n{text}"
+            );
+        }
+        assert!(
+            !text.contains("019aa1bb")
+                && !text.contains("ancestor session")
+                && !text.contains("+1")
+        );
+        if width >= 100 {
+            assert_eq!(
+                text.matches("Playwright session: claude-checkout-reswho")
+                    .count(),
+                2,
+                "{text}"
+            );
+            assert_eq!(
+                text.matches("Playwright session: distinct-child-session")
+                    .count(),
+                1,
+                "{text}"
+            );
+            assert!(text.contains("Project folder: reswho"), "{text}");
+            assert!(text.contains("Codex log: 修復👩‍💻 presentation"), "{text}");
+            let parent = rows
+                .iter()
+                .position(|line| line.contains("Google Chrome pid:10"))
+                .unwrap();
+            let child = rows
+                .iter()
+                .position(|line| line.contains("pid:11"))
+                .unwrap();
+            assert!(rows[parent + 1].contains("Playwright session:"));
+            assert!(!rows[child + 1].contains("Playwright session: claude-checkout-reswho"));
+            let first_x = rows[parent].find("Google Chrome").unwrap();
+            assert_eq!(
+                rows[parent + 1].find("Playwright session:").unwrap(),
+                first_x
+            );
+        } else {
+            assert!(
+                !text.contains("Playwright session"),
+                "label without useful value: {text}"
+            );
+        }
+        let cpu = rows
+            .iter()
+            .position(|line| line.contains("CPU/core"))
+            .unwrap();
+        let cpu_x = rows[cpu].find("CPU/core").unwrap() as u16;
+        for (y, line) in rows.iter().enumerate().filter(|(_, line)| {
+            line.contains("session:") || line.contains("folder:") || line.contains("Codex log:")
+        }) {
+            for x in cpu_x..width - 2 {
+                assert_eq!(
+                    buffer[(x, y as u16)].symbol(),
+                    " ",
+                    "summary metric: {line}"
+                );
+            }
+            let x = line.find(|ch: char| ch.is_ascii_alphabetic()).unwrap() as u16;
+            assert!(
+                buffer[(x, y as u16)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::DIM)
+            );
+        }
+        if let Some(path) = std::env::var_os("RESWHO_UI_EVIDENCE") {
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(
+                std::path::Path::new(&path).join(format!("secondline-{width}x32.txt")),
+                text,
+            )
+            .unwrap();
+        }
+    }
+    assert_eq!(app.rows.len(), original_rows);
+    assert_eq!(
+        serde_json::to_string(app.snapshot.as_ref().unwrap()).unwrap(),
+        wire
+    );
+    assert_eq!(
+        crate::output::markdown(app.snapshot.as_ref().unwrap()),
+        markdown
+    );
+    select(&mut app, "pid:20");
+    app.open_details();
+    app.update(Ok(snapshot));
+    let details = app.details.as_ref().unwrap().lines().join("\n");
+    for value in [
+        "019aa1bb-2222-7333-8444-555566667777",
+        "open_session_log",
+        "/synthetic/session/log.jsonl",
+        "/synthetic/projects/reswho/src",
+        "reswho",
+    ] {
+        assert!(details.contains(value), "{details}");
+        app.details = None;
+        app.query = value.to_lowercase();
+        app.rebuild();
+        assert!(
+            (0..app.rows.len()).any(|i| app.node(i).is_some_and(|node| node.reference == "pid:20"))
+        );
+    }
+}
+
+#[test]
+fn secondline_selection_keeps_both_lines_legible_and_unselected_summary_dim() {
+    use ratatui::style::{Color, Modifier};
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(secondline_snapshot()));
+    let mut table = TableState::default();
+    for reference in ["pid:10", "pid:20"] {
+        select(&mut app, reference);
+        let buffer = secondline_render(&app, &mut table, 180, 32);
+        let rows = secondline_text(&buffer);
+        let y = rows
+            .iter()
+            .position(|line| line.contains(reference))
+            .unwrap();
+        assert!(rows[y].contains(&app.node(app.selected).unwrap().name));
+        assert!(rows[y].contains("12.5%"));
+        assert!(rows[y].contains("1.0MiB"));
+        assert!(rows[y + 1].contains(": "));
+        for line in [y + 1, y] {
+            for x in 1..buffer.area.width - 1 {
+                let cell = &buffer[(x, line as u16)];
+                if cell.symbol().trim().is_empty() {
+                    continue;
+                }
+                assert_eq!(cell.fg, Color::White, "{reference} ({x}, {line})");
+                assert_eq!(cell.bg, Color::DarkGray);
+                assert!(!cell.modifier.contains(Modifier::DIM));
+            }
+        }
+        let mut unselected_summaries = 0;
+        for (line, text) in rows.iter().enumerate().filter(|(line, text)| {
+            *line != y + 1
+                && (text.contains("Playwright session:") || text.contains("Project folder:"))
+        }) {
+            let x = text.find(|ch: char| ch.is_ascii_alphabetic()).unwrap() as u16;
+            let cell = &buffer[(x, line as u16)];
+            assert_eq!(cell.fg, Color::DarkGray);
+            assert_eq!(cell.bg, Color::Reset);
+            assert!(cell.modifier.contains(Modifier::DIM));
+            unselected_summaries += 1;
+        }
+        assert!(unselected_summaries > 0);
+    }
+}
+
+#[test]
+fn secondline_navigation_resize_and_scroll_keep_one_selection_per_item() {
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(secondline_snapshot()));
+    let mut table = TableState::default();
+    for (width, height) in [(180, 14), (60, 14), (100, 10), (240, 32), (36, 10)] {
+        handle_key(&mut app, KeyCode::Home.into());
+        for index in 0..app.rows.len() {
+            assert_eq!(app.selected, index);
+            let buffer = secondline_render(&app, &mut table, width, height);
+            assert_eq!(table.selected(), Some(index));
+            let rows = secondline_text(&buffer);
+            let highlighted: Vec<_> = (0..height)
+                .filter(|y| buffer[(2, *y)].bg == ratatui::style::Color::DarkGray)
+                .collect();
+            assert!(
+                !highlighted.is_empty(),
+                "selection invisible: {width}x{height} index {index}\n{}",
+                rows.join("\n")
+            );
+            assert!(highlighted.len() <= 2);
+            if width >= 100 {
+                let node = app.node(index).unwrap();
+                assert!(
+                    highlighted
+                        .iter()
+                        .any(|y| rows[*y as usize].contains(&node.name)),
+                    "wrong selected item: {rows:?}"
+                );
+            }
+            handle_key(&mut app, KeyCode::Down.into());
+        }
+        handle_key(&mut app, KeyCode::End.into());
+        let buffer = secondline_render(&app, &mut table, width, height);
+        assert_eq!(table.selected(), Some(app.rows.len() - 1));
+        if let Some(path) = std::env::var_os("RESWHO_UI_EVIDENCE") {
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(
+                std::path::Path::new(&path).join(format!("selected-bottom-{width}x{height}.txt")),
+                secondline_text(&buffer).join("\n"),
+            )
+            .unwrap();
+        }
+        handle_key(&mut app, KeyCode::Up.into());
+        assert_eq!(app.selected, app.rows.len() - 2);
+        handle_key(&mut app, KeyCode::PageUp.into());
+        secondline_render(&app, &mut table, width, height);
+        assert_eq!(table.selected(), Some(app.selected));
+    }
+}
+
+#[test]
+fn secondline_uses_full_evidence_identity_and_recognizable_labels() {
+    let mut snapshot = secondline_snapshot();
+    fn alter(node: &mut Node) {
+        match node.reference.as_str() {
+            "pid:10" | "pid:11" => {
+                node.hints[0].value =
+                    format!("shared-human-session-{}{}", "x".repeat(70), node.reference);
+            }
+            "pid:13" => {
+                node.hints = vec![crate::model::SummaryHint {
+                    source: "playwright".into(),
+                    basis: "ancestor_cwd".into(),
+                    kind: "project".into(),
+                    value: "reswho".into(),
+                    title: None,
+                    path: Some("/synthetic/reswho".into()),
+                    processes: 1,
+                }];
+            }
+            "pid:30" => {
+                node.hints[0].title = None;
+                node.hints.push(crate::model::SummaryHint {
+                    source: "codex".into(),
+                    basis: "arguments".into(),
+                    kind: "role".into(),
+                    value: "Codex managed daemon".into(),
+                    title: None,
+                    path: None,
+                    processes: 1,
+                });
+            }
+            _ => {}
+        }
+        for child in &mut node.children {
+            alter(child);
+        }
+    }
+    alter(&mut snapshot.root);
+    prepare_secondline(&mut snapshot);
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(snapshot));
+    let buffer = secondline_render(&app, &mut TableState::default(), 100, 32);
+    let text = secondline_text(&buffer).join("\n");
+    assert_eq!(
+        text.matches("Playwright session: shared-human-session-")
+            .count(),
+        2,
+        "distinct full evidence was hidden after clipping: {text}"
+    );
+    assert!(text.contains("Project via parent: reswho"), "{text}");
+    assert!(text.contains("Tool role: Codex managed daemon"), "{text}");
+    assert!(!text.contains("019aa1bb"), "{text}");
+}
+
+#[test]
+fn secondline_uuid_sessions_fall_back_without_hiding_human_names() {
+    for basis in ["arguments", "ancestor_arguments"] {
+        for (kind, value, fallback) in [
+            (
+                "role",
+                "Playwright CLI daemon",
+                "Tool role: Playwright CLI daemon",
+            ),
+            ("project", "reswho", "Project folder: reswho"),
+        ] {
+            let mut snapshot = secondline_snapshot();
+            fn attach(node: &mut Node, basis: &str, kind: &str, value: &str) {
+                if node.reference == "pid:10" {
+                    let mut session = node.hints[0].clone();
+                    session.basis = basis.into();
+                    session.value = "019AA1BB-2222-7333-8444-555566667777".into();
+                    node.hints = vec![
+                        session.clone(),
+                        crate::model::SummaryHint {
+                            source: if kind == "role" {
+                                "playwright"
+                            } else {
+                                "project"
+                            }
+                            .into(),
+                            basis: if kind == "role" {
+                                "arguments"
+                            } else if basis == "ancestor_arguments" {
+                                "ancestor_cwd"
+                            } else {
+                                "cwd"
+                            }
+                            .into(),
+                            kind: kind.into(),
+                            value: value.into(),
+                            ..session
+                        },
+                    ];
+                }
+                for child in &mut node.children {
+                    attach(child, basis, kind, value);
+                }
+            }
+            attach(&mut snapshot.root, basis, kind, value);
+            prepare_secondline(&mut snapshot);
+            let wire = serde_json::to_string(&snapshot).unwrap();
+            let mut app = App::new("group:all".into(), usize::MAX);
+            app.update(Ok(snapshot));
+            let text = secondline_text(&secondline_render(
+                &app,
+                &mut TableState::default(),
+                180,
+                32,
+            ))
+            .join("\n");
+            let fallback = if kind == "project" && basis == "ancestor_arguments" {
+                "Project via parent: reswho"
+            } else {
+                fallback
+            };
+            assert!(text.contains(fallback), "{basis}: {text}");
+            assert!(!text.contains("019AA1BB"), "{basis}: {text}");
+            assert!(
+                text.contains("Playwright session: claude-checkout-reswho"),
+                "{text}"
+            );
+            assert_eq!(
+                serde_json::to_string(app.snapshot.as_ref().unwrap()).unwrap(),
+                wire
+            );
+            select(&mut app, "pid:10");
+            assert!(
+                crate::output::hint_lines(app.node(app.selected).unwrap())
+                    .join("\n")
+                    .contains("019AA1BB-2222-7333-8444-555566667777")
+            );
+            app.query = "019aa1bb-2222-7333-8444-555566667777".into();
+            app.rebuild();
+            assert!(
+                (0..app.rows.len())
+                    .any(|i| app.node(i).is_some_and(|node| node.reference == "pid:10"))
+            );
+        }
+    }
+}
+
+#[test]
+fn secondline_priority_keeps_production_log_visible_and_groups_clean() {
+    let (root, mut snapshot) = aggregated_hint_snapshot();
+    prepare_secondline(&mut snapshot);
+    let group = snapshot
+        .root
+        .children
+        .iter()
+        .flat_map(|node| &node.children)
+        .find(|node| node.name == "First")
+        .unwrap();
+    assert_eq!(group.hints[0].kind, "role");
+    assert!(group.hints.iter().any(|hint| hint.kind == "project"));
+    let stored = group.hints.clone();
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(snapshot));
+    let text = screen(&app, 180);
+    let row = text.lines().find(|row| row.contains("First")).unwrap();
+    assert!(
+        !row.contains("log:") && text.contains("Codex log: Fourth candidate title"),
+        "{row}"
+    );
+    let group = (0..app.rows.len())
+        .filter_map(|i| app.node(i))
+        .find(|node| node.name == "First")
+        .unwrap();
+    assert_eq!(group.hints, stored);
+    root.close().unwrap();
+}
+
+#[test]
+fn secondline_project_producer_uses_exact_ancestor_path_and_keeps_other_context() {
+    use crate::model::{Attribution, AttributionSource, Grouping};
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().canonicalize().unwrap().join("one/shared");
+    let other = root.path().canonicalize().unwrap().join("two/shared");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname='shared'\nversion='0.0.0'\n",
+    )
+    .unwrap();
+    let produced = tree::build(vec![Process {
+        pid: 91,
+        ppid: Some(1),
+        uid: Some(unsafe { libc::geteuid() }),
+        started_unix_us: Some(91),
+        executable: Some("/fixture/shell".into()),
+        cwd: Some(project.clone()),
+        name: "shell".into(),
+        ..Default::default()
+    }])
+    .unwrap();
+    let process = tree::select(&produced, "pid:91").unwrap();
+    assert_eq!(process.hints[0].path.as_ref(), Some(&project));
+    assert!(
+        process.summary.is_none(),
+        "actual project grouping should already convey the path"
+    );
+    for (grouping, path, visible) in [
+        (Grouping::Project, project.clone(), false),
+        (Grouping::Checkout, project.clone(), false),
+        (Grouping::Project, other, true),
+        (Grouping::App, project, true),
+    ] {
+        let mut snapshot = snapshot();
+        snapshot.root = Node::group("group:all".into(), "shared".into(), vec![], grouping);
+        snapshot.root.attribution = Some(Attribution::new(AttributionSource::GitRoot, Some(path)));
+        snapshot.root.children.push(process.clone());
+        prepare_secondline(&mut snapshot);
+        assert_eq!(snapshot.root.children[0].summary.is_some(), visible);
+        assert_eq!(snapshot.root.children[0].hints, process.hints);
+        let mut app = App::new("group:all".into(), usize::MAX);
+        app.update(Ok(snapshot));
+        assert_eq!(
+            screen(&app, 180).contains("Project folder: shared"),
+            visible
+        );
+    }
+    root.close().unwrap();
+}
+
+#[test]
+fn secondline_unknown_provider_obeys_priority_disable_and_generic_rendering() {
+    use crate::extensions::{
+        self, Capability, Context, Contribution, Descriptor, Extension, Request, Summary,
+        SummaryContext,
+    };
+    struct Provider(&'static str, &'static str, bool);
+    impl Extension for Provider {
+        fn descriptor(&self) -> Descriptor {
+            Descriptor {
+                id: self.0.into(),
+                capabilities: vec![Capability::Classify],
+                enabled: self.2,
+                availability: "available",
+            }
+        }
+        fn execute(&self, _: &Context<'_>, _: Request<'_>) -> anyhow::Result<Contribution> {
+            let process = Process {
+                pid: 93,
+                started_unix_us: Some(93),
+                executable: Some("/fixture/worker".into()),
+                ..Default::default()
+            };
+            Ok(Contribution::Classify {
+                proposals: vec![
+                    extensions::host::hints::proposal(
+                        self.0,
+                        extensions::host::hints::value("role", self.1),
+                        "arguments",
+                        None,
+                        vec![extensions::tags::ProcessEvidence {
+                            identity: extensions::ProcessIdentity::observed(&process).unwrap(),
+                            executable: process.executable.unwrap(),
+                        }],
+                    )
+                    .unwrap(),
+                ],
+            })
+        }
+        fn summary(&self, context: &SummaryContext<'_>) -> Option<Summary> {
+            let hint = context.hints().next()?;
+            Some(Summary::new(
+                "Custom observation",
+                &hint.value,
+                0,
+                vec![hint.clone()],
+            ))
+        }
+    }
+
+    let mut settings = extensions::default_settings().unwrap();
+    let cancel = crate::snapshot::Cancellation::default();
+    for (priority, disabled, expected) in [
+        (vec![], vec![], Some("First evidence")),
+        (vec!["unknown-b".into()], vec![], Some("Second evidence")),
+        (
+            vec!["unknown-b".into()],
+            vec!["unknown-b".into()],
+            Some("First evidence"),
+        ),
+        (vec![], vec!["unknown-a".into(), "unknown-b".into()], None),
+    ] {
+        settings.source_priority = priority;
+        let providers = [
+            Provider(
+                "unknown-a",
+                "First evidence",
+                !disabled.contains(&"unknown-a".to_string()),
+            ),
+            Provider(
+                "unknown-b",
+                "Second evidence",
+                !disabled.contains(&"unknown-b".to_string()),
+            ),
+        ];
+        let mut snapshot = snapshot();
+        snapshot.root = tree::build_with_providers(
+            vec![Process {
+                pid: 93,
+                started_unix_us: Some(93),
+                executable: Some("/fixture/worker".into()),
+                name: "worker".into(),
+                ..Default::default()
+            }],
+            &Context::new(&settings, &cancel),
+            &[&providers[0], &providers[1]],
+        )
+        .unwrap();
+        let node = tree::select(&snapshot.root, "pid:93").unwrap();
+        assert_eq!(
+            node.summary.as_ref().map(|summary| summary.value.as_str()),
+            expected
+        );
+        let mut app = App::new("group:all".into(), usize::MAX);
+        app.update(Ok(snapshot));
+        let text = screen(&app, 180);
+        assert_eq!(text.contains("Custom observation:"), expected.is_some());
+        if let Some(expected) = expected {
+            assert!(text.contains(expected), "{text}");
+        }
+    }
+}
+
+pub(crate) fn snapshot_screen(snapshot: Snapshot) -> String {
+    let mut app = App::new(snapshot.scope.clone(), usize::MAX);
+    app.update(Ok(snapshot));
+    screen(&app, 180)
 }

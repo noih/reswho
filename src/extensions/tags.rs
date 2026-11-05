@@ -12,6 +12,8 @@ pub const MAX_PER_PROCESS: usize = 64;
 #[serde(deny_unknown_fields)]
 pub struct Tag {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<Box<Hint>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_resource: Option<Box<crate::model::HostResource>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supplementary_to: Option<String>,
@@ -30,6 +32,19 @@ pub struct Tag {
     pub projection: Option<Box<super::placement::Projection>>,
     #[serde(skip)]
     pub(crate) assignment: Option<Box<crate::extensions::host::assignment::Assignment>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<crate::model::FileEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_chain: Vec<ProcessEvidence>,
+    pub kind: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -395,25 +410,75 @@ pub(crate) fn validate_registered(
     Ok(())
 }
 
+fn within_observed_cwd(process: &Process, root: &std::path::Path) -> bool {
+    root.canonicalize()
+        .ok()
+        .zip(process.cwd.as_ref().and_then(|cwd| cwd.canonicalize().ok()))
+        .is_some_and(|(root, cwd)| {
+            root.is_dir()
+                && root.parent().is_some()
+                && cwd.starts_with(&root)
+                && cwd
+                    .components()
+                    .count()
+                    .saturating_sub(root.components().count())
+                    <= 128
+        })
+}
+
 fn validate_chain(tag: &Tag, process: &Process, processes: &[Process]) -> Result<()> {
-    if tag.supplementary_to.is_none() && tag.evidence_chain.is_empty() {
+    let chain = tag
+        .hint
+        .as_ref()
+        .map_or(tag.evidence_chain.as_slice(), |hint| {
+            hint.evidence_chain.as_slice()
+        });
+    if let Some(hint) = &tag.hint {
+        if !matches!(hint.kind.as_str(), "project" | "role" | "session" | "session_log" | "session_unavailable")
+            || !text(&hint.value, 1024)
+            || [&hint.value].into_iter().chain(hint.title.iter()).any(|value| value.chars().any(|c| matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}')))
+            || hint.title.as_ref().is_some_and(|title| !matches!(hint.kind.as_str(), "session" | "session_log") || !text(title, 1024))
+            || hint.record.as_ref().is_some_and(|record| {
+                tag.basis != "open_session_log" || chain.len() != 1 || record.fd < 0 || !record.path.is_absolute()
+                    || !text(&record.path.to_string_lossy(), 4096)
+            })
+            || tag.supplementary_to.is_some() || !tag.evidence_chain.is_empty()
+            || (tag.projection.is_some() || tag.assignment.is_some()) && !(tag.basis == "cwd" && chain.is_empty())
+            || !matches!(tag.basis.as_str(), "cwd" | "arguments" | "ancestor_cwd" | "ancestor_arguments" | "open_session_log")
+            || chain.is_empty() && tag.basis != "cwd"
+        {
+            bail!("invalid_hint");
+        }
+        if tag.basis == "cwd" && chain.is_empty() {
+            if !tag
+                .path
+                .as_ref()
+                .is_some_and(|path| within_observed_cwd(process, path))
+            {
+                bail!("invalid_hint_origin");
+            }
+            return Ok(());
+        }
+    }
+    if tag.supplementary_to.is_none() && chain.is_empty() {
         return Ok(());
     }
-    if !tag
-        .supplementary_to
-        .as_deref()
-        .is_some_and(override_dimension)
+    if (tag.hint.is_none()
+        && !tag
+            .supplementary_to
+            .as_deref()
+            .is_some_and(override_dimension))
         || tag.projection.is_some()
         || tag.assignment.is_some()
-        || tag.evidence_chain.len() < 2
-        || tag.evidence_chain.len() > processes.len()
-        || tag.evidence_chain.first().map(|e| e.identity) != ProcessIdentity::observed(process)
+        || chain.len() < if tag.hint.is_some() { 1 } else { 2 }
+        || chain.len() > processes.len()
+        || chain.first().map(|e| e.identity) != ProcessIdentity::observed(process)
     {
         bail!("invalid_supplementary_tag");
     }
     let mut seen = BTreeSet::new();
     let mut child: Option<&Process> = None;
-    for evidence in &tag.evidence_chain {
+    for evidence in chain {
         let observed = processes
             .iter()
             .find(|p| p.pid == evidence.identity.pid)
@@ -440,11 +505,25 @@ fn validate_chain(tag: &Tag, process: &Process, processes: &[Process]) -> Result
         }
         child = Some(observed);
     }
-    if tag.path.as_ref().is_none_or(|path| {
-        !tag.evidence_chain
-            .last()
-            .is_some_and(|e| e.executable.starts_with(path))
-    }) {
+    if tag.hint.is_some() {
+        let origin = child.expect("nonempty validated chain");
+        if (tag.basis.starts_with("ancestor_") != (chain.len() > 1))
+            || tag.basis.ends_with("cwd")
+                && tag
+                    .path
+                    .as_ref()
+                    .is_none_or(|path| !within_observed_cwd(origin, path))
+            || !tag.basis.ends_with("cwd") && tag.path.is_some()
+        {
+            bail!("invalid_hint_origin");
+        }
+        return Ok(());
+    }
+    if tag
+        .path
+        .as_ref()
+        .is_none_or(|path| !chain.last().is_some_and(|e| e.executable.starts_with(path)))
+    {
         bail!("invalid_evidence_root");
     }
     Ok(())
@@ -758,6 +837,7 @@ pub(crate) fn classify(
                         let dimension = if is_role { "role" } else { "project" };
                         Operation::Add {
                             tag: Tag {
+                                hint: None,
                                 dimension: dimension.into(),
                                 id: format!(
                                     "extensions.{source}.{key}.{}",
@@ -1000,6 +1080,7 @@ mod tests {
             identity: ProcessIdentity::observed(&process()).unwrap(),
             operation: Operation::Add {
                 tag: Tag {
+                    hint: None,
                     dimension: dimension.into(),
                     id: tag_id.into(),
                     label: id.into(),

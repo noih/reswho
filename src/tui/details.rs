@@ -178,6 +178,7 @@ impl Details {
             }
             if node.process.is_none() {
                 rows.push(DetailRow::heading(node.display_name()));
+                rows.extend(output::hint_lines(node).into_iter().map(DetailRow::text));
                 if let Some(container) = &node.container {
                     rows.push(DetailRow::text(format!(
                         "{} · CPU {} · RAM {}",

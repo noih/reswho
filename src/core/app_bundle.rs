@@ -11,6 +11,7 @@ use crate::model::Process;
 pub(crate) const ID: &str = "app_bundle";
 
 pub(crate) static MODULE: Module = Module {
+    summary: None,
     registration: crate::extensions::host::no_registration,
     decorate: None,
     id: ID,

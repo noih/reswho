@@ -205,12 +205,32 @@
                     ],
                     "omitted_children": 0,
                     "resource": null,
-                    "version": null
+                    "version": null,
+                    "hints": [
+                      {
+                        "source": "codex",
+                        "basis": "open_session_log",
+                        "kind": "session_log",
+                        "value": "019aa1bb-2222-7333-8444-555566667777",
+                        "title": "Example named thread",
+                        "processes": 1
+                      }
+                    ]
                   }
                 ],
                 "omitted_children": 0,
                 "resource": null,
-                "version": null
+                "version": null,
+                "hints": [
+                  {
+                    "source": "codex",
+                    "basis": "open_session_log",
+                    "kind": "session_log",
+                    "value": "019aa1bb-2222-7333-8444-555566667777",
+                    "title": "Example named thread",
+                    "processes": 1
+                  }
+                ]
               }
             ],
             "omitted_children": 0,

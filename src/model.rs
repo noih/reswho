@@ -42,6 +42,15 @@ pub struct HostUsage {
     pub resident_bytes: Option<u64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileEvidence {
+    pub fd: i32,
+    pub path: PathBuf,
+    pub device: u64,
+    pub inode: u64,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Process {
     #[serde(skip)]
@@ -267,6 +276,10 @@ impl Grouping {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Node {
+    #[serde(skip)]
+    pub summary: Option<crate::extensions::Summary>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hints: Vec<SummaryHint>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub host_resources: Vec<HostUsage>,
     #[serde(skip)]
@@ -287,6 +300,19 @@ pub struct Node {
     pub children: Vec<Node>,
     pub omitted_children: usize,
     pub version: Option<Version>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct SummaryHint {
+    pub source: String,
+    pub basis: String,
+    pub kind: String,
+    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    pub processes: u64,
 }
 
 impl Node {
@@ -314,6 +340,8 @@ impl Node {
         grouping: Grouping,
     ) -> Self {
         Self {
+            summary: None,
+            hints: vec![],
             host_resources: vec![],
             category_order: None,
             reference,

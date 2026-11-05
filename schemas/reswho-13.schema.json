@@ -1465,6 +1465,12 @@
             ],
             "additionalProperties": false
           }
+        },
+        "hints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/summaryHint"
+          }
         }
       },
       "required": [
@@ -2092,6 +2098,9 @@
         },
         "host_resource": {
           "$ref": "#/$defs/hostResource"
+        },
+        "hint": {
+          "$ref": "#/$defs/hint"
         }
       },
       "required": [
@@ -2188,6 +2197,29 @@
               "path": {
                 "type": "string"
               }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "hint"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "supplementary_to"
+                  ]
+                },
+                {
+                  "required": [
+                    "evidence_chain"
+                  ]
+                }
+              ]
             }
           }
         }
@@ -2845,6 +2877,155 @@
         "evidence",
         "diagnostics",
         "configuration"
+      ],
+      "additionalProperties": false
+    },
+    "hint": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "project",
+            "role",
+            "session",
+            "session_log",
+            "session_unavailable"
+          ]
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "evidence_chain": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16384,
+          "items": {
+            "type": "object",
+            "properties": {
+              "identity": {
+                "type": "object",
+                "properties": {
+                  "pid": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  },
+                  "started_unix_us": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 18446744073709551615
+                  }
+                },
+                "required": [
+                  "pid",
+                  "started_unix_us"
+                ],
+                "additionalProperties": false
+              },
+              "executable": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "identity",
+              "executable"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "record": {
+          "$ref": "#/$defs/fileEvidence"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "summaryHint": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "basis": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "project",
+            "role",
+            "session",
+            "session_log",
+            "session_unavailable"
+          ]
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "path": {
+          "type": "string"
+        },
+        "processes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "source",
+        "basis",
+        "kind",
+        "value",
+        "processes"
+      ],
+      "additionalProperties": false
+    },
+    "fileEvidence": {
+      "type": "object",
+      "properties": {
+        "fd": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "device": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "inode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      },
+      "required": [
+        "fd",
+        "path",
+        "device",
+        "inode"
       ],
       "additionalProperties": false
     }

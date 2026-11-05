@@ -1,3 +1,5 @@
+pub(crate) mod summaries;
+pub use summaries::{Summary, SummaryContext};
 pub(crate) mod builtin;
 pub(crate) mod collection;
 pub mod details;
@@ -246,6 +248,9 @@ pub struct Response {
 }
 
 pub trait Extension: Sync {
+    fn summary(&self, _: &SummaryContext<'_>) -> Option<Summary> {
+        None
+    }
     fn tag_contract(&self) -> Option<tags::Contract> {
         None
     }
@@ -451,10 +456,13 @@ pub enum Builtin {
     Node,
     Python,
     LaunchedBy,
+    Codex,
+    Claude,
+    Playwright,
     Vm,
 }
 
-pub const BUILTINS: [Builtin; 10] = [
+pub const BUILTINS: [Builtin; 13] = [
     Builtin::Project,
     Builtin::Ancestor,
     Builtin::VersionedInstall,
@@ -465,9 +473,12 @@ pub const BUILTINS: [Builtin; 10] = [
     Builtin::Podman,
     Builtin::Apple,
     Builtin::Vm,
+    Builtin::Codex,
+    Builtin::Claude,
+    Builtin::Playwright,
 ];
 
-pub(crate) fn round_classifiers() -> [&'static dyn Extension; 7] {
+pub(crate) fn round_classifiers() -> [&'static dyn Extension; 10] {
     [
         &Builtin::Project,
         &Builtin::Ancestor,
@@ -476,6 +487,9 @@ pub(crate) fn round_classifiers() -> [&'static dyn Extension; 7] {
         &Builtin::Python,
         &Builtin::LaunchedBy,
         &Builtin::Vm,
+        &Builtin::Codex,
+        &Builtin::Claude,
+        &Builtin::Playwright,
     ]
 }
 
@@ -496,11 +510,17 @@ impl Builtin {
             Self::Python => &builtin::python::MODULE,
             Self::LaunchedBy => &builtin::launched_by::MODULE,
             Self::Vm => &builtin::vm::MODULE,
+            Self::Codex => &builtin::codex::MODULE,
+            Self::Claude => &builtin::claude::MODULE,
+            Self::Playwright => &builtin::playwright::MODULE,
         }
     }
 }
 
 impl Extension for Builtin {
+    fn summary(&self, context: &SummaryContext<'_>) -> Option<Summary> {
+        self.module().summary.and_then(|summary| summary(context))
+    }
     fn registration(&self) -> placement::Registration {
         (self.module().registration)()
     }

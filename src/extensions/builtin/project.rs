@@ -14,6 +14,7 @@ use std::{
 pub(crate) const ID: &str = "project";
 
 pub(crate) static MODULE: Module = Module {
+    summary: Some(summary),
     registration,
     decorate: Some(decorate),
     id: ID,
@@ -39,7 +40,7 @@ fn proposals(facts: &Facts<'_>) -> Vec<ClassificationProposal> {
             let identity = ProcessIdentity::observed(process)?;
             let assigned = assignment(projects::find(facts, process.cwd.as_deref()?)?);
             let path = assigned.attribution.as_ref().and_then(|a| a.path.clone())?;
-            Some(ownership(
+            let mut proposal = ownership(
                 identity,
                 ID,
                 "project",
@@ -47,7 +48,17 @@ fn proposals(facts: &Facts<'_>) -> Vec<ClassificationProposal> {
                 &assigned.name.clone(),
                 path,
                 assigned,
-            ))
+            );
+            if let crate::extensions::ClassificationEvidence::Tags { proposal } =
+                &mut proposal.evidence
+                && let crate::extensions::tags::Operation::Add { tag } = &mut proposal.operation
+            {
+                tag.basis = "cwd".into();
+                if !tag.label.chars().any(|c| c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}')) {
+                    tag.hint = Some(Box::new(crate::extensions::host::hints::value("project", &tag.label)));
+                }
+            }
+            Some(proposal)
         })
         .collect()
 }
@@ -272,4 +283,39 @@ fn repository_name(common: &Path) -> String {
         .to_string_lossy()
         .trim_end_matches(".git")
         .to_owned()
+}
+
+pub(super) fn summary(
+    context: &crate::extensions::SummaryContext<'_>,
+) -> Option<crate::extensions::Summary> {
+    let hint = context.hints().find(|hint| {
+        hint.kind == "project" && matches!(hint.basis.as_str(), "cwd" | "ancestor_cwd")
+    })?;
+    if let Some(path) = &hint.path
+        && context.ancestors.iter().any(|ancestor| {
+            matches!(
+                ancestor.grouping,
+                Some(Grouping::Project | Grouping::Checkout)
+            ) && ancestor
+                .attribution
+                .as_ref()
+                .and_then(|attribution| attribution.path.as_ref())
+                == Some(path)
+        })
+    {
+        return None;
+    }
+    let inherited = hint.basis == "ancestor_cwd";
+    let mut summary = crate::extensions::Summary::new(
+        if inherited {
+            "Project via parent"
+        } else {
+            "Project folder"
+        },
+        &hint.value,
+        20,
+        vec![hint.clone()],
+    );
+    summary.inherited = inherited;
+    Some(summary)
 }

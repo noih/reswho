@@ -47,6 +47,7 @@ pub(crate) mod fixtures {
                         }));
                 for (dimension, label, subject, value) in tags {
                     let tag = Tag {
+                        hint: None,
                         dimension: dimension.into(),
                         id: format!("{dimension}:{label}"),
                         label: label.into(),

@@ -2,6 +2,7 @@ pub(crate) mod assignment;
 pub(crate) mod bundles;
 pub mod facts;
 pub(crate) mod files;
+pub(crate) mod hints;
 pub(crate) mod projects;
 pub(crate) mod proposals;
 pub(crate) mod runtime;
@@ -21,6 +22,8 @@ use crate::settings::Definition;
 pub type Decoration = fn(&Facts<'_>, &mut crate::extensions::tags::Tag);
 
 pub(crate) struct Module {
+    pub(crate) summary:
+        Option<fn(&crate::extensions::SummaryContext<'_>) -> Option<crate::extensions::Summary>>,
     pub(crate) registration: fn() -> crate::extensions::placement::Registration,
     pub(crate) decorate: Option<Decoration>,
     pub(crate) id: &'static str,

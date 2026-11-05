@@ -25,7 +25,7 @@ fn help_is_available_without_resource_collection() {
     );
     let text = String::from_utf8(result.stdout).unwrap();
     for meaning in [
-        "reswho-md/20",
+        "reswho-md/21",
         "root=0",
         "Group ⏱︎ is the longest",
         "ΣN is the total host process count",
@@ -270,7 +270,10 @@ fn extensions_list_is_offline_and_distinguishes_enabled_from_availability() {
                 "docker",
                 "podman",
                 "apple",
-                "vm"
+                "vm",
+                "codex",
+                "claude",
+                "playwright"
             ]
         );
         assert!(
@@ -617,7 +620,7 @@ fn classifier_builtins_toggle_offline_without_changing_other_config() {
     let root = tempfile::tempdir_in("/private/tmp").unwrap();
     let path = root.path().join("config.json");
     std::fs::write(&path, json!({"version":1,"settings":{"future.key":9},"ownership_priority":["future"],"disabled_builtins":["unknown"]}).to_string()).unwrap();
-    for id in ["launched_by", "vm"] {
+    for id in ["launched_by", "vm", "codex", "claude", "playwright"] {
         for (action, enabled) in [("disable", false), ("enable", true)] {
             let run = |args: &[&str]| {
                 let result = Command::new(env!("CARGO_BIN_EXE_reswho"))

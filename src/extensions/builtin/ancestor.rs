@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 pub(crate) const ID: &str = "ancestor";
 
 pub(crate) static MODULE: Module = Module {
+    summary: None,
     registration: crate::extensions::host::no_registration,
     decorate: None,
     id: ID,

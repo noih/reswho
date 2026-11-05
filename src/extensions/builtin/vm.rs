@@ -21,6 +21,7 @@ use std::{
 pub(crate) const ID: &str = "vm";
 
 pub(crate) static MODULE: Module = Module {
+    summary: None,
     registration,
     decorate: None,
     id: ID,

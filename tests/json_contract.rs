@@ -271,6 +271,12 @@ fn published_examples_validate_and_match_current_serialized_shapes() {
         .unwrap();
         let value: Value = serde_json::from_str(&text).unwrap();
         validate(&value);
+        if name == "host" {
+            let hint = &value["selections"][0]["root"]["children"][0]["children"][0]["hints"][0];
+            assert_eq!(hint["source"], "codex");
+            assert_eq!(hint["basis"], "open_session_log");
+            assert_eq!(hint["value"], "019aa1bb-2222-7333-8444-555566667777");
+        }
         assert_eq!(
             value["selections"][0]["selector"],
             value["selections"][0]["root"]["reference"]
@@ -310,16 +316,18 @@ fn published_examples_validate_and_match_current_serialized_shapes() {
             .as_object()
             .unwrap()
             .keys()
-            .filter(|key| def != "node" || key.as_str() != "host_resources")
+            .filter(|key| def != "node" || !["host_resources", "hints"].contains(&key.as_str()))
             .collect();
         if def == "node" {
-            assert!(actual.get("host_resources").is_none());
-            assert!(
-                !shape["$defs"][def]["required"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&json!("host_resources"))
-            );
+            for optional in ["host_resources", "hints"] {
+                assert!(actual.get(optional).is_none());
+                assert!(
+                    !shape["$defs"][def]["required"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!(optional))
+                );
+            }
         }
         let mut actual: Vec<_> = actual.as_object().unwrap().keys().collect();
         expected.sort();

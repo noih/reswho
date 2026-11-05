@@ -52,6 +52,60 @@ pub(crate) fn version_text(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-'))
 }
 
+pub(crate) fn tail(path: &Path, owner: Option<u32>) -> Trusted {
+    use std::{
+        io::{Seek, SeekFrom},
+        os::unix::fs::{MetadataExt, OpenOptionsExt},
+    };
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+    else {
+        return Trusted::Rejected;
+    };
+    let Ok(before) = file.metadata() else {
+        return Trusted::Rejected;
+    };
+    if !before.is_file() || Some(before.uid()) != owner {
+        return Trusted::Rejected;
+    }
+    let offset = before.len().saturating_sub(MAX_BYTES);
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return Trusted::Rejected;
+    }
+    let mut bytes = Vec::new();
+    if (&mut file)
+        .take(MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > MAX_BYTES
+    {
+        return Trusted::Rejected;
+    }
+    let (Ok(after), Ok(current)) = (file.metadata(), path.symlink_metadata()) else {
+        return Trusted::Rejected;
+    };
+    if before.ino() != current.ino()
+        || before.dev() != current.dev()
+        || !current.is_file()
+        || before.len() != after.len()
+        || before.mtime() != after.mtime()
+        || before.mtime_nsec() != after.mtime_nsec()
+        || before.ctime() != after.ctime()
+        || before.ctime_nsec() != after.ctime_nsec()
+    {
+        return Trusted::Rejected;
+    }
+    if offset > 0 {
+        let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') else {
+            return Trusted::Rejected;
+        };
+        bytes.drain(..=newline);
+    }
+    Trusted::Bytes(bytes)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -108,5 +162,25 @@ pub(crate) mod tests {
         assert_eq!(define(text, "AB"), Some("3"));
         assert_eq!(define(text, "B"), None);
         assert_eq!(define(text, "C"), None);
+    }
+    #[test]
+    fn bounded_index_tail_skips_partial_prefix_and_rejects_untrusted_files() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("index.jsonl");
+        let owner = Some(unsafe { libc::geteuid() });
+        let mut bytes = vec![b'x'; MAX_BYTES as usize + 10];
+        bytes.extend_from_slice(b"\n{\"id\":\"exact\"}\n");
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            tail(&path, owner),
+            Trusted::Bytes(b"{\"id\":\"exact\"}\n".to_vec())
+        );
+        let link = root.path().join("symlink.jsonl");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert_eq!(tail(&link, owner), Trusted::Rejected);
+        if let Some(other) = other_uid() {
+            assert_eq!(tail(&path, Some(other)), Trusted::Rejected);
+        }
+        root.close().unwrap();
     }
 }

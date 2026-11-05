@@ -14,7 +14,7 @@ const MAX_DESCRIPTORS: usize = 65_536;
 const INI_IPV4: u8 = 0x1;
 const INI_IPV6: u8 = 0x2;
 
-fn descriptors(pid: i32, expected: usize) -> io::Result<Vec<libc::proc_fdinfo>> {
+pub(super) fn descriptors(pid: i32, expected: usize) -> io::Result<Vec<libc::proc_fdinfo>> {
     let mut capacity = expected.saturating_add(32).clamp(32, MAX_DESCRIPTORS);
     for _ in 0..3 {
         let mut fds = vec![

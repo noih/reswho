@@ -8,14 +8,14 @@ mod markdown_tests;
 
 pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-13.schema.json");
 
-pub const FORMAT_HELP: &str = r#"# Markdown reading guide — reswho-md/20
+pub const FORMAT_HELP: &str = r#"# Markdown reading guide — reswho-md/21
 
 Synthetic snapshot excerpt (names, refs and values are illustrative):
 
 ```markdown
 # reswho
 
-Format: reswho-md/20 · help: reswho --help-md
+Format: reswho-md/21 · help: reswho --help-md
 Captured: 1793664000000ms Unix · sample 251ms · collection 312ms
 Host CPU 8.0% · RAM 8.0GiB/16.0GiB · swap 0.0KiB · 8 logical CPUs · Σ120
 
@@ -43,6 +43,10 @@ even when a branch is selected. ΣN is the total host process count at the root.
 Category headings carry a ref and totals; selected roots are paragraphs.
 Nested `-` lists use four spaces per level. Indented `>` blocks are attributes
 or evidence, not child resources. Paths use inline code to preserve literals.
+Source-qualified hints are attributes on existing process/group rows. Group hints
+show matched/total process coverage; several candidates may coexist. A session_log
+with open_session_log basis means a writable session-record handle was observed,
+not the foreground/current conversation or session-specific resource usage.
 A sole System services wrapper is flattened; the whole-machine Resources row
 is omitted. Unreadable processes can be combined as `Unreadable  ΣN`, without
 a ref or expandable details.
@@ -212,7 +216,7 @@ fn header(snapshot: &Snapshot, host_count: bool) -> String {
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "# reswho\n\nFormat: reswho-md/20 · help: reswho --help-md  "
+        "# reswho\n\nFormat: reswho-md/21 · help: reswho --help-md  "
     );
     let _ = writeln!(
         text,
@@ -563,6 +567,7 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
         );
     }
     let mut notes = containers::notes(node, level == 0);
+    notes.extend(hint_lines(node).iter().map(|line| escaped(line)));
     notes.extend(
         host_resource_lines(node, level == 0)
             .iter()
@@ -1003,6 +1008,33 @@ pub fn extension_profile(records: &[crate::extensions::report::Record]) -> Strin
     text
 }
 
+pub fn hint_lines(node: &Node) -> Vec<String> {
+    node.hints
+        .iter()
+        .map(|hint| {
+            let title = hint
+                .title
+                .as_ref()
+                .map(|title| format!(" · {title}"))
+                .unwrap_or_default();
+            let path = hint
+                .path
+                .as_ref()
+                .map(|path| format!(" · {}", path.display()))
+                .unwrap_or_default();
+            let coverage = if node.process.is_none() {
+                format!(" · {}/{} processes", hint.processes, node.totals.processes)
+            } else {
+                String::new()
+            };
+            format!(
+                "{} [{} · {}]: {}{title}{path}{coverage}",
+                hint.kind, hint.source, hint.basis, hint.value
+            )
+        })
+        .collect()
+}
+
 pub fn effective_tags_text(report: Option<&crate::extensions::tags::Report>) -> String {
     let Some(report) = report else {
         return "Unavailable".into();
@@ -1073,7 +1105,35 @@ pub fn tag_report_lines(report: &crate::extensions::tags::Report) -> Vec<String>
             operation, record.source, record.proposal.id
         ));
         if let Operation::Add { tag } = &record.proposal.operation {
-            for evidence in &tag.evidence_chain {
+            if let Some(hint) = &tag.hint {
+                lines.push(format!(
+                    "{} [{} · {}]: {}{}",
+                    hint.kind,
+                    record.source,
+                    tag.basis,
+                    hint.value,
+                    hint.title
+                        .as_ref()
+                        .map(|title| format!(" · {title}"))
+                        .unwrap_or_default()
+                ));
+            }
+            if let Some(record) = tag.hint.as_ref().and_then(|hint| hint.record.as_ref()) {
+                lines.push(format!(
+                    "record {} · fd {} · device {} · inode {}",
+                    record.path.display(),
+                    record.fd,
+                    record.device,
+                    record.inode
+                ));
+            }
+            for evidence in tag
+                .hint
+                .as_ref()
+                .map_or(tag.evidence_chain.as_slice(), |hint| {
+                    hint.evidence_chain.as_slice()
+                })
+            {
                 lines.push(format!(
                     "via pid:{} · started {} · executable {}",
                     evidence.identity.pid,
