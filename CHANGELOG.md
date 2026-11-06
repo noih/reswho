@@ -2,15 +2,45 @@
 
 ## 1.1.2
 
-- Use compact extension summaries in Markdown overviews (reswho-md/23), keeping full hints on selected PID/group roots.
-- Add optional node summary display fields to JSON schema 13; full hints remain available.
-- Label project associations and cwd-based summaries explicitly, without implying exclusive ownership.
-- Show native process states, including zombies, in the TUI, Markdown, and JSON; put process facts before classification evidence in the TUI and Markdown.
-- Query Docker disk usage only for a selected runtime's details; TUI runtime details refresh manually with `r`.
-- Preserve Docker runtime identity and container metrics when a disk-usage query times out.
-- Refresh TUI details without a full host snapshot: sample only the selected PID and bounded parent metadata, or query only the selected runtime, container, or resource provider. Cancel closed queries and reject stale results.
-- Identify Herdr session servers as shared services under default Ownership priority from verified launch modes; retain cwd associations and report current clients as unknown.
-- Match and attach batched PID details in one tree traversal rather than rescanning for every selected process.
+### Upgrade effort
+
+Micro: no configuration migration is required. Markdown uses `reswho-md/23`.
+JSON remains `reswho/13`, with optional node `summary`, process `state`, and
+runtime `disk_usage` fields; strict validators should use the updated schema.
+
+Saved Ownership priorities are preserved. To group Herdr session servers under
+Shared services with an older custom order, move `extensions.herdr.role` ahead
+of `project`, or reset the Ownership order.
+
+### Changes
+
+- Bring compact process summaries to Markdown overviews and JSON, matching the
+  TUI. Selected PID/group roots retain full hints. `--depth all` expands the tree
+  without requesting detailed queries for every node.
+- Put process facts, commands, cwd, and connections before classification
+  evidence in the TUI and Markdown. Show native process states, including zombies,
+  in all three output formats.
+- Refresh TUI details without collecting a full host snapshot. PID queries sample
+  the target and bounded parent metadata; runtime, container, and resource queries
+  use only the selected provider. Closed queries are canceled, stale results are
+  rejected, and retained overview context is marked as not refreshed.
+- Identify Herdr session servers from verified identities and supported launch
+  arguments. Show their session-wide service scope while retaining cwd evidence
+  and counting each process once. Current clients and their projects remain unknown.
+- Label cwd-based grouping as Project associations, without implying exclusive
+  ownership. Service scope, process state, and uptime do not establish whether a
+  process can safely be stopped.
+- Show Docker disk usage and reclaimable estimates only when the exact runtime
+  is selected. TUI runtime details query once on open and refresh manually with
+  `r`; estimates do not guarantee host disk space recovery.
+- Keep batched PID detail attachment to one tree traversal and deduplicate
+  repeated selections.
+
+### Fixes
+
+- Preserve runtime identity and container metrics when an optional Docker disk
+  query times out. Report the disk-query failure separately and reap its child
+  process instead of losing the whole runtime result.
 
 ## 1.1.1
 
