@@ -117,6 +117,10 @@ impl Probe {
 pub(super) trait Runner {
     fn run(&mut self, args: &[String]) -> Result<Output>;
 
+    fn run_until(&mut self, _args: &[String], _deadline: Instant) -> Result<Output> {
+        anyhow::bail!("per-command deadlines unsupported")
+    }
+
     fn limits(&self) -> Option<(crate::snapshot::Cancellation, Instant)> {
         None
     }
@@ -164,7 +168,17 @@ impl Runner for RuntimeCommand {
     }
 
     fn run(&mut self, args: &[String]) -> Result<Output> {
-        run_bounded(&self.program, args, None, &self.cancel, self.deadline)
+        self.run_until(args, self.deadline)
+    }
+
+    fn run_until(&mut self, args: &[String], deadline: Instant) -> Result<Output> {
+        run_bounded(
+            &self.program,
+            args,
+            None,
+            &self.cancel,
+            deadline.min(self.deadline),
+        )
     }
 }
 
@@ -353,6 +367,18 @@ mod tests {
         .unwrap();
         assert!(!output.timed_out);
         assert_eq!(reason_of(&output.failure("x")), FailureReason::Unknown);
+        let mut runner = RuntimeCommand {
+            cancel: Default::default(),
+            deadline: Instant::now(),
+            program: directory.path().join("must-not-start"),
+            sample_interval: Duration::ZERO,
+            api_version: None,
+        };
+        let error = runner
+            .run_until(&[], Instant::now() + Duration::from_secs(5))
+            .err()
+            .unwrap();
+        assert_eq!(reason_of(&error), FailureReason::Timeout);
         directory.close().unwrap();
     }
 

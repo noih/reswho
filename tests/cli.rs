@@ -1,6 +1,95 @@
 use std::process::Command;
 
 #[test]
+fn disk_usage_deadline_preserves_selected_runtime_and_container_metrics() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("config.json");
+    std::fs::write(&config, serde_json::json!({
+        "version": 1, "settings": {},
+        "disabled_builtins": ["apple", "podman", "project", "ancestor", "versioned_install", "node", "python", "launched_by", "vm", "codex", "claude", "playwright"]
+    }).to_string()).unwrap();
+    let docker = root.path().join("docker");
+    std::fs::write(&docker, r#"#!/bin/sh
+case "$1" in --host=*) shift;; *) exit 8;; esac
+id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+case "$1 $2" in
+  'info --format') printf '%s\n' '{"id":"review-daemon","os":"linux"}';;
+  'container ls') printf '%s\n' "$id";;
+  'container inspect') printf '{"id":"%s","name":"/fixture","state":"running","started_at":"2026-01-01T00:00:00Z","mounts":[]}\n' "$id";;
+  'container stats') printf '{"id":"%s","cpu":"0.00%%","memory":"1.5MiB / 2GiB"}\n' "$id";;
+  'system df') printf '%s\n' "$$" > "$0.pid"; exec /bin/sleep 15;;
+  *) exit 9;;
+esac
+"#).unwrap();
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let run = |selector: &str| {
+        let result = Command::new(env!("CARGO_BIN_EXE_reswho"))
+            .args(["--json", "--depth", "all", "--from", selector, "--config"])
+            .arg(&config)
+            .env("PATH", root.path())
+            .env("XDG_CONFIG_HOME", root.path())
+            .env("DOCKER_HOST", "tcp://fixture.invalid:2376")
+            .env_remove("DOCKER_CONTEXT")
+            .env_remove("DOCKER_API_VERSION")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap()
+    };
+    let overview = run("group:containers");
+    let runtime = &overview["selections"][0]["root"]["children"][0];
+    let reference = runtime["reference"].as_str().unwrap();
+    assert_eq!(runtime["runtime"]["status"], "available");
+    assert!(!docker.with_extension("pid").exists());
+    let detail = run(reference);
+    let runtime = &detail["selections"][0]["root"];
+    assert_eq!(runtime["reference"], reference);
+    assert_eq!(runtime["runtime"]["status"], "available");
+    assert_eq!(runtime["runtime"]["daemon_id"], "review-daemon");
+    assert!(runtime["runtime"].get("disk_usage").is_none());
+    assert!(
+        runtime["runtime"]["unavailable"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| { d["operation"] == "docker.disk_usage" && d["reason"] == "timeout" })
+    );
+    fn memory(node: &serde_json::Value) -> Option<u64> {
+        node.get("container")
+            .and_then(|container| container["memory_bytes"].as_u64())
+            .or_else(|| node.get("children")?.as_array()?.iter().find_map(memory))
+    }
+    assert_eq!(memory(runtime), Some(1_572_864));
+    assert!(
+        detail["extensions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| {
+                record["provider"] == "docker"
+                    && record["phase"] == "collect"
+                    && record["result"] == "success"
+            })
+    );
+    let pid: i32 = std::fs::read_to_string(docker.with_extension("pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+    root.close().unwrap();
+}
+
+#[test]
 fn help_is_available_without_resource_collection() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("config.json");

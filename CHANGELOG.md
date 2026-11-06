@@ -7,6 +7,7 @@
 - Label project associations and cwd-based summaries explicitly, without implying exclusive ownership.
 - Show native process states, including zombies, in the TUI, Markdown, and JSON; put process facts before Markdown classification evidence.
 - Query Docker disk usage only for a selected runtime's details; TUI runtime details refresh manually with `r`.
+- Preserve Docker runtime identity and container metrics when a disk-usage query times out.
 - Match and attach batched PID details in one tree traversal rather than rescanning for every selected process.
 
 ## 1.1.1

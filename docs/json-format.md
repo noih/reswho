@@ -93,6 +93,8 @@ Optional process `state` is the macOS process state at identity revalidation:
 process awaiting its parent's collection; it is not evidence of reclaimable RSS.
 
 Optional runtime `disk_usage` contains source-qualified daemon storage estimates.
+Its query has a shorter deadline than collection; a disk-query timeout retains
+the runtime and container metrics, with a `docker.disk_usage` diagnostic.
 For Docker, selecting the exact runtime ref requests `docker system df` once;
 overview, container, and category selections do not. TUI runtime details are a
 captured view refreshed with `r`, rather than a recurring disk scan. Each entry

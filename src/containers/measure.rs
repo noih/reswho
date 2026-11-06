@@ -24,6 +24,10 @@ struct TimedRunner {
 }
 
 impl Runner for TimedRunner {
+    fn limits(&self) -> Option<(Cancellation, Instant)> {
+        self.inner.limits()
+    }
+
     fn direct_stats(&mut self, host: &str, ids: &[String]) -> Result<Option<super::stats::Batch>> {
         let start = Instant::now();
         let result = self.inner.direct_stats(host, ids);
@@ -45,6 +49,10 @@ impl Runner for TimedRunner {
     }
 
     fn run(&mut self, args: &[String]) -> Result<Output> {
+        self.run_until(args, self.inner.deadline)
+    }
+
+    fn run_until(&mut self, args: &[String], deadline: Instant) -> Result<Output> {
         let command: Vec<_> = args
             .iter()
             .map(String::as_str)
@@ -72,7 +80,7 @@ impl Runner for TimedRunner {
             0
         };
         let start = Instant::now();
-        let result = self.inner.run(args);
+        let result = self.inner.run_until(args, deadline);
         self.commands.push(CommandTiming {
             phase,
             elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,

@@ -39,6 +39,10 @@ impl Runner for Fake {
         self.calls.push(args.to_vec());
         self.replies.pop_front().expect("unexpected Docker call")
     }
+
+    fn run_until(&mut self, args: &[String], _: Instant) -> Result<Output> {
+        self.run(args)
+    }
 }
 
 fn inspect(id: &str) -> serde_json::Value {
@@ -256,6 +260,10 @@ struct ApiRunner {
 impl Runner for ApiRunner {
     fn run(&mut self, args: &[String]) -> Result<Output> {
         self.cli.run(args)
+    }
+
+    fn run_until(&mut self, args: &[String], deadline: Instant) -> Result<Output> {
+        self.cli.run_until(args, deadline)
     }
 
     fn direct_stats(&mut self, host: &str, ids: &[String]) -> Result<Option<Batch>> {
@@ -775,4 +783,71 @@ fn disk_detail_refs() -> Vec<String> {
     let mut fake = configured(&"a".repeat(64), "tcp://remote.example:2376");
     let (runtime, _) = collect(&mut fake, Some("fixture".into()), None, now());
     vec![runtime.reference()]
+}
+
+#[test]
+fn disk_usage_reserves_collection_time_and_skips_when_budget_is_insufficient() {
+    struct Budget {
+        fake: Fake,
+        deadline: Instant,
+        requested: Option<Instant>,
+    }
+    impl Runner for Budget {
+        fn run(&mut self, args: &[String]) -> Result<Output> {
+            self.fake.run(args)
+        }
+        fn limits(&self) -> Option<(crate::snapshot::Cancellation, Instant)> {
+            Some((Default::default(), self.deadline))
+        }
+        fn run_until(&mut self, args: &[String], deadline: Instant) -> Result<Output> {
+            self.requested = Some(deadline);
+            self.fake.run_until(args, deadline)
+        }
+    }
+    for seconds in [0.5, 3.0, 20.0] {
+        let mut fake = configured(&"a".repeat(64), "tcp://remote.example:2376");
+        if seconds > 1.0 {
+            fake.replies.push_back(Ok(Output {
+                stdout: br#"{"Type":"Images","TotalCount":"1","Active":"0","Size":"1GB","Reclaimable":"1GB"}"#.to_vec(),
+                issue: None, timed_out: false, exit_code: None,
+            }));
+        }
+        let before = Instant::now();
+        let mut runner = Budget {
+            fake,
+            deadline: before + Duration::from_secs_f64(seconds),
+            requested: None,
+        };
+        let (runtime, containers) = super::collect(
+            &mut runner,
+            Some("fixture".into()),
+            None,
+            now(),
+            &disk_detail_refs(),
+        );
+        assert_eq!(containers[0].memory_bytes, Some(1_572_864));
+        assert_eq!(runtime.disk_usage.is_some(), seconds > 1.0);
+        if let Some(deadline) = runner.requested {
+            assert!(deadline <= runner.deadline - COLLECTION_FINISH_RESERVE);
+            assert!(deadline <= Instant::now() + DISK_USAGE_TIMEOUT);
+            assert!(deadline > before);
+        } else {
+            assert_eq!(seconds, 0.5);
+            assert!(
+                !runner
+                    .fake
+                    .calls
+                    .iter()
+                    .any(|args| args.iter().any(|arg| arg == "df"))
+            );
+            assert!(
+                runtime
+                    .unavailable
+                    .iter()
+                    .any(|d| d.operation == "docker.disk_usage"
+                        && d.reason == Some(FailureReason::Timeout))
+            );
+        }
+        assert!(runner.fake.replies.is_empty());
+    }
 }

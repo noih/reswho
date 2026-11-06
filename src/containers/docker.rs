@@ -10,12 +10,14 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 const MAX_CONTAINERS: usize = 256;
 const BATCH_SIZE: usize = 32;
+const DISK_USAGE_TIMEOUT: Duration = Duration::from_secs(5);
+const COLLECTION_FINISH_RESERVE: Duration = Duration::from_secs(1);
 pub(super) const INSPECT_FORMAT: &str = r#"{"id":{{json .Id}},"name":{{json .Name}},"state":{{json .State.Status}},"started_at":{{json .State.StartedAt}},"workdir":{{json .Config.WorkingDir}},"compose_project":{{json (index .Config.Labels "com.docker.compose.project")}},"compose_workdir":{{json (index .Config.Labels "com.docker.compose.project.working_dir")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"network_mode":{{json .HostConfig.NetworkMode}},"ports":{{json .NetworkSettings.Ports}},"mounts":[{{range $i, $m := .Mounts}}{{if $i}},{{end}}{"kind":{{json $m.Type}},"source":{{json $m.Source}},"destination":{{json $m.Destination}}}{{end}}]}"#;
 const STATS_FORMAT: &str =
     r#"{"id":{{json .ID}},"cpu":{{json .CPUPerc}},"memory":{{json .MemUsage}}}"#;
@@ -693,12 +695,22 @@ fn collect_inner(
 }
 
 fn collect_disk_usage(runner: &mut impl Runner, source: &Source) -> Result<super::DiskUsage> {
-    let output = request(
-        runner,
-        source,
-        &["system", "df", "--format", "{{json .}}"],
-        &[],
-    )?;
+    let now = Instant::now();
+    let budget = runner.limits().map_or(DISK_USAGE_TIMEOUT, |(_, deadline)| {
+        deadline
+            .saturating_duration_since(now)
+            .saturating_sub(COLLECTION_FINISH_RESERVE)
+            .min(DISK_USAGE_TIMEOUT)
+    });
+    if budget.is_zero() {
+        return Err(fail(
+            FailureReason::Timeout,
+            "disk usage skipped: insufficient collection time remaining",
+        ));
+    }
+    let mut args = source.args.clone();
+    args.extend(strings(&["system", "df", "--format", "{{json .}}"]));
+    let output = runner.run_until(&args, now + budget)?;
     if let Some(issue) = &output.issue {
         return Err(output.failure(format!("disk usage: {issue}")));
     }
