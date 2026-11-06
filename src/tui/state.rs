@@ -57,6 +57,7 @@ pub(super) struct App {
     pinned_scope: Option<String>,
     initial_depth: usize,
     generation: u64,
+    detail_generation: u64,
 }
 
 fn identity(node: &Node, generation: u64) -> String {
@@ -150,6 +151,7 @@ impl App {
             pinned_scope: None,
             initial_depth,
             generation: 0,
+            detail_generation: 0,
         }
     }
 
@@ -179,11 +181,14 @@ impl App {
             return;
         }
         if let Some(snapshot) = &self.snapshot
-            && let Ok(node) = tree::select(&snapshot.root, &node.reference)
+            && let Ok(node) = tree::select_detail(&snapshot.root, &node.reference)
         {
             let mut node = node;
             crate::model::project_node(&mut node, &[]);
-            self.details = Some(super::details::Details::new(node));
+            self.detail_generation += 1;
+            let mut details = super::details::Details::new(node);
+            details.request_id = self.detail_generation;
+            self.details = Some(details);
         }
     }
 
@@ -253,6 +258,32 @@ impl App {
                 )
             }))
             .collect()
+    }
+
+    pub fn receive(&mut self, reply: super::worker::Reply) {
+        use super::worker::Collected;
+        self.collecting = false;
+        if reply.cancelled {
+            return;
+        }
+        if let Some(id) = reply.detail_id {
+            if let Some(details) = &mut self.details
+                && details.request_id == id
+            {
+                self.manual_refresh = None;
+                details.update_detail(reply.result.and_then(|result| match result {
+                    Collected::Detail(detail) => Ok(detail),
+                    Collected::Overview(_) => Err("Unexpected collection response".into()),
+                }));
+            }
+        } else {
+            let details = self.details.take();
+            self.update(reply.result.and_then(|result| match result {
+                Collected::Overview(snapshot) => Ok(snapshot),
+                Collected::Detail(_) => Err("Unexpected collection response".into()),
+            }));
+            self.details = details;
+        }
     }
 
     pub fn update(&mut self, result: Result<Snapshot, String>) {

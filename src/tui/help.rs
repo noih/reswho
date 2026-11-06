@@ -176,7 +176,12 @@ impl Help {
                             "Home / End",
                             "Process / resource details: first / last line",
                         ),
-                        ("r / p", "Process / resource details: refresh / pause"),
+                        ("r / p", "Selected process / resource: refresh / pause"),
+                        ("Runtime", "Queries once on open; r refreshes this source"),
+                        (
+                            "Overview",
+                            "Unchanged while details refresh; Updated shows detail time",
+                        ),
                     ],
                 ),
                 (

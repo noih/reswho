@@ -1,6 +1,6 @@
 use crate::{
-    model::Snapshot,
-    snapshot::{self, Cancellation, Options},
+    model::{Node, Snapshot},
+    snapshot::{self, Cancellation, DetailSnapshot, Options},
 };
 use std::{
     sync::{
@@ -15,12 +15,27 @@ pub(super) struct Inputs {
     pub settings: Arc<crate::settings::Resolved>,
 }
 
+pub(super) enum Collected {
+    Overview(Snapshot),
+    Detail(DetailSnapshot),
+}
+pub(super) struct Reply {
+    pub cancelled: bool,
+    pub detail_id: Option<u64>,
+    pub result: Result<Collected, String>,
+}
+struct Request {
+    target: Option<(u64, Node)>,
+    cancel: Cancellation,
+}
+
 pub(super) struct Worker {
-    requests: SyncSender<Option<String>>,
-    pub results: Receiver<Result<Snapshot, String>>,
+    requests: SyncSender<Request>,
+    results: Receiver<Reply>,
     pub report: Arc<Mutex<Vec<crate::extensions::report::Record>>>,
     inputs: Option<Arc<Mutex<Inputs>>>,
     cancel: Cancellation,
+    active: Mutex<Option<Cancellation>>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -35,16 +50,18 @@ impl Worker {
             Inputs {
                 settings: Arc::clone(&options.settings),
             },
-            move |cancel, detail_ref, inputs| {
+            move |cancel, target, inputs| {
                 options.settings = inputs.settings;
-                options.command_pids = detail_ref
-                    .as_deref()
-                    .and_then(crate::model::selector_pid)
-                    .into_iter()
-                    .collect();
-                options.detail_refs = detail_ref.into_iter().collect();
-                snapshot::capture_reported(&options, cancel, Arc::clone(&current))
-                    .map_err(|_| "Collection failed; see current extension status".into())
+                if let Some(target) = target {
+                    snapshot::capture_detail(&options, cancel, &target, Arc::clone(&current))
+                        .map(Collected::Detail)
+                } else {
+                    options.command_pids.clear();
+                    options.detail_refs.clear();
+                    snapshot::capture_reported(&options, cancel, Arc::clone(&current))
+                        .map(Collected::Overview)
+                }
+                .map_err(|_| "Collection failed; see current extension status".into())
             },
         );
         worker.report = report;
@@ -53,39 +70,47 @@ impl Worker {
 
     fn with_inputs_collector(
         initial: Inputs,
-        mut collect: impl FnMut(&Cancellation, Option<String>, Inputs) -> Result<Snapshot, String>
+        mut collect: impl FnMut(&Cancellation, Option<Node>, Inputs) -> Result<Collected, String>
         + Send
         + 'static,
     ) -> Self {
         let inputs = Arc::new(Mutex::new(initial));
         let latest = Arc::clone(&inputs);
-        let mut worker = Self::with_collector(move |cancel, command_pid| {
+        let mut worker = Self::with_collector(move |cancel, target| {
             let inputs = latest.lock().expect("inputs lock").clone();
-            collect(cancel, command_pid, inputs)
+            collect(cancel, target, inputs)
         });
         worker.inputs = Some(inputs);
         worker
     }
 
     pub(super) fn with_collector(
-        mut collect: impl FnMut(&Cancellation, Option<String>) -> Result<Snapshot, String>
+        mut collect: impl FnMut(&Cancellation, Option<Node>) -> Result<Collected, String>
         + Send
         + 'static,
     ) -> Self {
-        let (requests, incoming) = mpsc::sync_channel(1);
+        let (requests, incoming) = mpsc::sync_channel::<Request>(1);
         let (outgoing, results) = mpsc::sync_channel(1);
         let cancel = Cancellation::default();
         let stopping = cancel.clone();
         let handle = thread::spawn(move || {
-            while let Ok(command_pid) = incoming.recv() {
+            while let Ok(request) = incoming.recv() {
                 if stopping.check().is_err() {
                     break;
                 }
-                let result = collect(&stopping, command_pid);
+                let detail_id = request.target.as_ref().map(|(id, _)| *id);
+                let result = collect(&request.cancel, request.target.map(|(_, node)| node));
                 if stopping.check().is_err() {
                     break;
                 }
-                if outgoing.try_send(result).is_err() {
+                if outgoing
+                    .try_send(Reply {
+                        cancelled: request.cancel.check().is_err(),
+                        detail_id,
+                        result,
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -96,6 +121,7 @@ impl Worker {
             report: Arc::default(),
             inputs: None,
             cancel,
+            active: Mutex::default(),
             handle: Some(handle),
         }
     }
@@ -106,15 +132,57 @@ impl Worker {
         }
     }
 
-    pub fn request(&self, detail_ref: Option<String>) -> bool {
-        self.requests.try_send(detail_ref).is_ok()
+    pub fn request(&self, target: Option<(u64, Node)>) -> bool {
+        let mut active = self.active.lock().expect("active request lock");
+        if active.is_some() {
+            return false;
+        }
+        let cancel = Cancellation::default();
+        if self
+            .requests
+            .try_send(Request {
+                target,
+                cancel: cancel.clone(),
+            })
+            .is_err()
+        {
+            return false;
+        }
+        *active = Some(cancel);
+        true
+    }
+
+    pub fn try_recv(&self) -> Result<Reply, mpsc::TryRecvError> {
+        let reply = self.results.try_recv()?;
+        self.active.lock().expect("active request lock").take();
+        Ok(reply)
+    }
+
+    #[cfg(test)]
+    pub fn recv_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<Reply, mpsc::RecvTimeoutError> {
+        let reply = self.results.recv_timeout(timeout)?;
+        self.active.lock().expect("active request lock").take();
+        Ok(reply)
+    }
+
+    pub fn cancel_active(&self) {
+        if let Some(cancel) = self.active.lock().expect("active request lock").as_ref() {
+            cancel.cancel();
+        }
     }
 }
 
 impl Drop for Worker {
     fn drop(&mut self) {
         self.cancel.cancel();
-        let _ = self.requests.try_send(None);
+        self.cancel_active();
+        let _ = self.requests.try_send(Request {
+            target: None,
+            cancel: Cancellation::default(),
+        });
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -204,9 +272,9 @@ mod tests {
         );
         assert!(
             worker
-                .results
                 .recv_timeout(Duration::from_secs(2))
                 .unwrap()
+                .result
                 .is_err()
         );
         assert!(worker.request(None));
@@ -231,9 +299,9 @@ mod tests {
         );
         assert!(
             worker
-                .results
                 .recv_timeout(Duration::from_secs(2))
                 .unwrap()
+                .result
                 .is_err()
         );
         drop(worker);

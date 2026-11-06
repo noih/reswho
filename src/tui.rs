@@ -110,11 +110,11 @@ fn event_loop(
     let mut dirty = false;
     let animation_start = Instant::now();
     loop {
-        match worker.results.try_recv() {
+        match worker.try_recv() {
             Ok(result) => {
                 app.extensions = worker.report.lock().expect("report lock").clone();
                 let anchor = SelectionAnchor::capture(&app, &table);
-                app.update(result);
+                app.receive(result);
                 if let Some(anchor) = anchor {
                     anchor.restore(&app, &mut table);
                 }
@@ -148,8 +148,15 @@ fn event_loop(
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     dirty = true;
                     let anchor = SelectionAnchor::capture(&app, &table);
+                    let detail_id = app.details.as_ref().map(|details| details.request_id);
                     if handle_key(&mut app, key) {
                         return Ok(());
+                    }
+                    if detail_id != app.details.as_ref().map(|details| details.request_id) {
+                        if app.collecting {
+                            worker.cancel_active();
+                        }
+                        next_refresh = Instant::now();
                     }
                     if let Some(inputs) = take_applied_inputs(&mut app) {
                         refresh_interval = inputs.settings.interval("refresh.interval_ms");
@@ -186,15 +193,17 @@ fn should_collect(app: &App, next_refresh: Instant, now: Instant) -> bool {
                 .is_some_and(|details| details.needs_query)
             || (!app.paused
                 && now >= next_refresh
-                && !app
-                    .details
-                    .as_ref()
-                    .is_some_and(details::Details::runtime_details)))
+                && !app.details.as_ref().is_some_and(|details| {
+                    details.runtime_details() || details.query_ref().is_none()
+                })))
 }
 
 fn request_snapshot(worker: &Worker, app: &mut App) {
-    let detail_ref = app.details.as_ref().and_then(details::Details::query_ref);
-    app.collecting = worker.request(detail_ref);
+    let target = app
+        .details
+        .as_ref()
+        .and_then(|details| details.query_node().map(|node| (details.request_id, node)));
+    app.collecting = worker.request(target);
     if app.collecting
         && let Some(details) = &mut app.details
     {

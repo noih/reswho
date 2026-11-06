@@ -5,9 +5,10 @@
 - Use compact extension summaries in Markdown overviews (reswho-md/23), keeping full hints on selected PID/group roots.
 - Add optional node summary display fields to JSON schema 13; full hints remain available.
 - Label project associations and cwd-based summaries explicitly, without implying exclusive ownership.
-- Show native process states, including zombies, in the TUI, Markdown, and JSON; put process facts before Markdown classification evidence.
+- Show native process states, including zombies, in the TUI, Markdown, and JSON; put process facts before classification evidence in the TUI and Markdown.
 - Query Docker disk usage only for a selected runtime's details; TUI runtime details refresh manually with `r`.
 - Preserve Docker runtime identity and container metrics when a disk-usage query times out.
+- Refresh TUI details without a full host snapshot: sample only the selected PID and bounded parent metadata, or query only the selected runtime, container, or resource provider. Cancel closed queries and reject stale results.
 - Match and attach batched PID details in one tree traversal rather than rescanning for every selected process.
 
 ## 1.1.1

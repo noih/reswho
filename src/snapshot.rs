@@ -16,6 +16,155 @@ pub struct Options {
     pub detail_refs: Vec<String>,
 }
 
+pub(crate) struct DetailSnapshot {
+    pub captured_unix_ms: u64,
+    pub node: Option<crate::model::Node>,
+}
+
+pub(crate) fn capture_detail(
+    options: &Options,
+    cancel: &Cancellation,
+    target: &crate::model::Node,
+    report: Arc<std::sync::Mutex<Vec<crate::extensions::report::Record>>>,
+) -> Result<DetailSnapshot> {
+    use crate::extensions::Extension;
+    cancel.check()?;
+    let mut context = crate::extensions::Context::new(&options.settings, cancel);
+    *report.lock().expect("report lock") = Vec::new();
+    context.report = report;
+    let refs = [target.reference.clone()];
+    context.detail_refs = &refs;
+    let mut node = if let Some(expected) = &target.process {
+        if !collect::verify_identity(expected) {
+            None
+        } else {
+            let mut processes = collect::detail_processes(&context, expected)?;
+            let valid = processes.first().is_some_and(|fresh| {
+                fresh.started_unix_us == expected.started_unix_us
+                    && fresh.uid == expected.uid
+                    && fresh.executable == expected.executable
+            });
+            if !valid {
+                None
+            } else {
+                let mut root = tree::build_with_providers(
+                    processes.clone(),
+                    &context,
+                    &crate::extensions::default_classifiers(),
+                )?;
+                let providers: Vec<&dyn Extension> = crate::extensions::BUILTINS
+                    .iter()
+                    .filter(|provider| {
+                        provider
+                            .descriptor()
+                            .capabilities
+                            .contains(&crate::extensions::Capability::Details)
+                    })
+                    .map(|provider| provider as &dyn Extension)
+                    .collect();
+                selected_details(
+                    &mut root,
+                    &mut processes,
+                    &[expected.pid],
+                    &providers,
+                    &context,
+                    collect::verify_identity,
+                );
+                if collect::verify_identity(expected) {
+                    tree::select_detail(&root, &target.reference).ok()
+                } else {
+                    None
+                }
+            }
+        }
+    } else {
+        let source = resource_source(target).context("Resource has no detail collector")?;
+        anyhow::ensure!(
+            (options.containers || target.resource.is_some())
+                && !options.settings.is_disabled(source),
+            "Resource source disabled"
+        );
+        let providers: Vec<&dyn Extension> = crate::extensions::BUILTINS
+            .iter()
+            .map(|provider| provider as &dyn Extension)
+            .collect();
+        resource_detail(target, &providers, &context)?
+    };
+    context.check()?;
+    if let Some(node) = &mut node {
+        retain_overview_context(node, target);
+        node.children.clear();
+    }
+    Ok(DetailSnapshot {
+        captured_unix_ms: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64,
+        node,
+    })
+}
+
+fn retain_overview_context(node: &mut crate::model::Node, target: &crate::model::Node) {
+    node.host_resources = target.host_resources.clone();
+    let mut retained = !node.host_resources.is_empty();
+    if let Some(fresh) = node.process.as_mut().and_then(|p| p.host_resource.as_mut())
+        && let Some(old) = target
+            .process
+            .as_ref()
+            .and_then(|p| p.host_resource.as_ref())
+        && fresh.kind == old.kind
+        && fresh.scope == old.scope
+        && fresh.link_key.is_some()
+        && fresh.link_key == old.link_key
+        && fresh.configuration.is_none()
+    {
+        fresh.configuration = old.configuration.clone();
+        retained |= fresh.configuration.is_some();
+    }
+    if retained {
+        node.diagnostics.push(crate::model::Diagnostic::new("not_refreshed", "detail.overview_context",
+            "Linked host usage/configuration is from the overview snapshot; not refreshed by this query"));
+    }
+}
+
+fn resource_source(target: &crate::model::Node) -> Option<&str> {
+    target
+        .runtime
+        .as_ref()
+        .map(|runtime| runtime.name.as_str())
+        .or_else(|| {
+            target
+                .container
+                .as_ref()
+                .map(|container| container.runtime.as_str())
+        })
+        .or_else(|| {
+            target
+                .resource
+                .as_ref()
+                .map(|resource| resource.provider.as_str())
+        })
+}
+
+fn resource_detail(
+    target: &crate::model::Node,
+    providers: &[&dyn crate::extensions::Extension],
+    context: &crate::extensions::Context<'_>,
+) -> Result<Option<crate::model::Node>> {
+    let source = resource_source(target).context("Resource identity unavailable")?;
+    let selected: Vec<_> = providers
+        .iter()
+        .copied()
+        .filter(|provider| provider.descriptor().id == source)
+        .collect();
+    anyhow::ensure!(!selected.is_empty(), "Resource source unavailable");
+    let (containers, resources) =
+        crate::extensions::collect_scoped(&selected, context, target.resource.is_none())?;
+    let root = if target.resource.is_some() {
+        resources
+    } else {
+        containers
+    };
+    Ok(tree::select_detail(&root, &target.reference).ok())
+}
+
 pub fn capture(options: &Options, cancel: &Cancellation) -> Result<Snapshot> {
     capture_reported(options, cancel, Arc::default())
 }

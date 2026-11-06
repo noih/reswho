@@ -563,10 +563,18 @@ pub(crate) fn compose_category(root: &mut Node, mut incoming: Node) -> Result<()
 }
 
 pub fn select(root: &Node, reference: &str) -> Result<Node> {
+    select_with(root, reference, Node::clone)
+}
+
+pub(crate) fn select_detail(root: &Node, reference: &str) -> Result<Node> {
+    select_with(root, reference, Node::without_children)
+}
+
+fn select_with(root: &Node, reference: &str, copy: fn(&Node) -> Node) -> Result<Node> {
     let mut pending = vec![(root, Vec::new(), Vec::new())];
     while let Some((node, context, diagnostics)) = pending.pop() {
         if node.reference == reference {
-            let mut selected = node.clone();
+            let mut selected = copy(node);
             selected.evidence.extend(context);
             selected.diagnostics.extend(diagnostics);
             return Ok(selected);

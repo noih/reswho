@@ -272,27 +272,7 @@ pub(crate) fn collect_with_context(
     let final_cpu = macos::host_cpu_ticks();
     let mut second = macos::scan(true, context, command_pids)?;
     let sample_ms = start.elapsed().as_millis() as u64;
-    for (pid, observation) in &mut second {
-        observation.process.cpu_percent = first.get(pid).and_then(|old| {
-            if old.process.started_unix_us.is_none()
-                || old.process.started_unix_us != observation.process.started_unix_us
-            {
-                return None;
-            }
-            cpu_percent(
-                old.cpu_ticks?,
-                observation.cpu_ticks?,
-                observation.observed_ticks.checked_sub(old.observed_ticks)?,
-            )
-        });
-        if observation.process.cpu_percent.is_none() {
-            observation.process.unavailable.push(Diagnostic::new(
-                "sample_unavailable",
-                "cpu",
-                "cpu: no valid pair of counters for this process identity",
-            ));
-        }
-    }
+    sample_process_cpu(&first, &mut second);
     let system = SystemSummary {
         cpu_percent: initial_cpu
             .zip(final_cpu)
@@ -339,6 +319,91 @@ pub(crate) fn collect_with_context(
         sample_ms,
         warnings,
     })
+}
+
+#[cfg(target_os = "macos")]
+fn sample_process_cpu(
+    first: &HashMap<u32, macos::Observation>,
+    second: &mut HashMap<u32, macos::Observation>,
+) {
+    for (pid, observation) in second {
+        observation.process.cpu_percent = first.get(pid).and_then(|old| {
+            if old.process.started_unix_us.is_none()
+                || old.process.started_unix_us != observation.process.started_unix_us
+            {
+                return None;
+            }
+            cpu_percent(
+                old.cpu_ticks?,
+                observation.cpu_ticks?,
+                observation.observed_ticks.checked_sub(old.observed_ticks)?,
+            )
+        });
+        if observation.process.cpu_percent.is_none() {
+            observation.process.unavailable.push(Diagnostic::new(
+                "sample_unavailable",
+                "cpu",
+                "cpu: no valid pair of counters for this process identity",
+            ));
+        }
+    }
+}
+
+pub(crate) fn detail_processes(
+    context: &crate::extensions::Context<'_>,
+    expected: &Process,
+) -> Result<Vec<Process>> {
+    #[cfg(target_os = "macos")]
+    {
+        context.check()?;
+        let pid = i32::try_from(expected.pid)?;
+        let first = macos::scan_pids(false, false, context, &[], [pid])?;
+        context
+            .cancel
+            .wait(context.settings.interval("sampling.interval_ms"))?;
+        context.check()?;
+        let mut second = macos::scan_pids(true, true, context, &[expected.pid], [pid])?;
+        sample_process_cpu(&first, &mut second);
+        let mut processes = vec![
+            second
+                .remove(&expected.pid)
+                .context("Process unavailable")?
+                .process,
+        ];
+        let mut seen = std::collections::HashSet::from([expected.pid]);
+        for _ in 0..128 {
+            context.check()?;
+            let child = processes.last().expect("selected process");
+            let Some(parent_pid) = child.ppid.filter(|pid| *pid > 1) else {
+                break;
+            };
+            if !seen.insert(parent_pid) {
+                break;
+            }
+            let mut observations =
+                macos::scan_pids(true, false, context, &[], [i32::try_from(parent_pid)?])?;
+            let Some(parent) = observations
+                .remove(&parent_pid)
+                .map(|observation| observation.process)
+            else {
+                break;
+            };
+            if parent.uid.is_none()
+                || parent.uid != child.uid
+                || parent.started_unix_us.is_none()
+                || parent.started_unix_us > child.started_unix_us
+            {
+                break;
+            }
+            processes.push(parent);
+        }
+        Ok(processes)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (context, expected);
+        bail!("process details require macOS")
+    }
 }
 
 fn host_cpu_percent(before: [u32; 4], after: [u32; 4]) -> Option<f64> {
@@ -465,6 +530,8 @@ mod macos {
     }
 
     fn pids() -> Result<Vec<i32>> {
+        #[cfg(test)]
+        super::NATIVE_WORK.with(|work| work.borrow_mut()[0] += 1);
         let count = unsafe { libc::proc_listallpids(ptr::null_mut(), 0) };
         if count <= 0 {
             bail!("cannot enumerate processes: {}", io::Error::last_os_error());
@@ -526,15 +593,26 @@ mod macos {
         context: &crate::extensions::Context<'_>,
         command_pids: &[u32],
     ) -> Result<HashMap<u32, Observation>> {
-        let cancel = context.cancel;
+        scan_pids(details, true, context, command_pids, pids()?)
+    }
+
+    pub(super) fn scan_pids(
+        details: bool,
+        network: bool,
+        context: &crate::extensions::Context<'_>,
+        command_pids: &[u32],
+        selected: impl IntoIterator<Item = i32>,
+    ) -> Result<HashMap<u32, Observation>> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .context("system clock before Unix epoch")?
             .as_secs();
         let mut observations = HashMap::new();
         let command_pids: std::collections::HashSet<_> = command_pids.iter().copied().collect();
-        for pid in pids()? {
-            cancel.check()?;
+        for pid in selected {
+            #[cfg(test)]
+            super::NATIVE_WORK.with(|work| work.borrow_mut()[1] += 1);
+            context.cancel.check()?;
             let mut process = Process {
                 pid: pid as u32,
                 name: format!("process {pid}"),
@@ -568,7 +646,9 @@ mod macos {
                     .push(Diagnostic::io("task_counters", &error)),
             }
             if details {
-                if let Ok(identity) = &initial {
+                if network && let Ok(identity) = &initial {
+                    #[cfg(test)]
+                    super::NATIVE_WORK.with(|work| work.borrow_mut()[2] += 1);
                     match network::collect(pid, identity.pbi_nfiles as usize) {
                         Ok(network) => process.network = Some(network),
                         Err(error) => process.unavailable.push(Diagnostic::io("network", &error)),
@@ -600,6 +680,8 @@ mod macos {
             }
             let command_requested = command_pids.contains(&(pid as u32));
             if command_requested {
+                #[cfg(test)]
+                super::NATIVE_WORK.with(|work| work.borrow_mut()[3] += 1);
                 process.command = Some(if let Ok(identity) = &initial {
                     const PROC_FLAG_LP64: u32 = 0x10;
                     let pointer_width = if identity.pbi_flags & PROC_FLAG_LP64 != 0 {
@@ -881,4 +963,9 @@ mod shared_argv_tests {
         assert!(reader.read("claude", &reused, 2).is_some());
         assert_eq!(reader.costs["claude"].reads, 1);
     }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+thread_local! {
+    pub(crate) static NATIVE_WORK: std::cell::RefCell<[usize; 4]> = const { std::cell::RefCell::new([0; 4]) };
 }

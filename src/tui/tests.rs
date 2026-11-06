@@ -554,21 +554,27 @@ fn details_wait_for_targeted_collection_and_refresh_only_while_open() {
     let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
     let recorded = calls.clone();
     let worker = Worker::with_collector(move |_, reference| {
-        let pid = reference.as_deref().and_then(crate::model::selector_pid);
+        let pid = reference
+            .as_ref()
+            .and_then(|node| node.process.as_ref())
+            .map(|p| p.pid);
         recorded.lock().unwrap().push(pid);
-        Ok(pid.map_or_else(snapshot, command_snapshot))
+        Ok(fixture_collection(
+            reference,
+            pid.map_or_else(snapshot, command_snapshot),
+        ))
     });
     let mut app = app();
     app.paused = true;
     request_snapshot(&worker, &mut app);
     select(&mut app, "pid:11");
     app.open_details();
-    app.update(worker.results.recv_timeout(Duration::from_secs(2)).unwrap());
+    app.receive(worker.recv_timeout(Duration::from_secs(2)).unwrap());
     assert!(app.details.as_ref().unwrap().needs_query);
     assert_eq!(app.details.as_ref().unwrap().query_pid(), Some(11));
     request_snapshot(&worker, &mut app);
     assert!(!app.details.as_ref().unwrap().needs_query);
-    app.update(worker.results.recv_timeout(Duration::from_secs(2)).unwrap());
+    app.receive(worker.recv_timeout(Duration::from_secs(2)).unwrap());
     let lines = app.details.as_ref().unwrap().lines().join("\n");
     assert!(!lines.contains("Loading"));
     assert!(lines.contains("Command  node script.js --token [filtered]"));
@@ -576,10 +582,10 @@ fn details_wait_for_targeted_collection_and_refresh_only_while_open() {
     handle_key(&mut app, KeyEvent::from(KeyCode::Char('r')));
     assert!(app.details.as_ref().unwrap().needs_query);
     request_snapshot(&worker, &mut app);
-    app.update(worker.results.recv_timeout(Duration::from_secs(2)).unwrap());
+    app.receive(worker.recv_timeout(Duration::from_secs(2)).unwrap());
     handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
     request_snapshot(&worker, &mut app);
-    app.update(worker.results.recv_timeout(Duration::from_secs(2)).unwrap());
+    app.receive(worker.recv_timeout(Duration::from_secs(2)).unwrap());
     assert_eq!(*calls.lock().unwrap(), [None, Some(11), Some(11), None]);
     app.open_details();
     assert!(app.details.as_ref().unwrap().needs_query);
@@ -602,9 +608,14 @@ fn runtime_details_query_once_and_only_repeat_on_manual_refresh() {
     let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
     let recorded = calls.clone();
     let worker = Worker::with_collector(move |_, reference| {
-        let detail = reference.as_deref() == Some("group:runtime");
-        recorded.lock().unwrap().push(reference);
-        Ok(source(detail))
+        let detail = reference
+            .as_ref()
+            .is_some_and(|node| node.reference == "group:runtime");
+        recorded
+            .lock()
+            .unwrap()
+            .push(reference.as_ref().map(|node| node.reference.clone()));
+        Ok(fixture_collection(reference, source(detail)))
     });
     let mut app = App::new("group:all".into(), usize::MAX);
     app.update(Ok(source(false)));
@@ -617,7 +628,7 @@ fn runtime_details_query_once_and_only_repeat_on_manual_refresh() {
     let now = Instant::now();
     assert!(should_collect(&app, now, now));
     request_snapshot(&worker, &mut app);
-    app.update(worker.results.recv_timeout(Duration::from_secs(2)).unwrap());
+    app.receive(worker.recv_timeout(Duration::from_secs(2)).unwrap());
     let lines = app.details.as_ref().unwrap().lines().join("\n");
     assert!(lines.contains("11.63MB (70%)"), "{lines}");
     assert!(lines.contains("not host free space"));
@@ -626,12 +637,12 @@ fn runtime_details_query_once_and_only_repeat_on_manual_refresh() {
     app.request_refresh();
     assert!(should_collect(&app, now, now));
     request_snapshot(&worker, &mut app);
-    app.update(worker.results.recv_timeout(Duration::from_secs(2)).unwrap());
+    app.receive(worker.recv_timeout(Duration::from_secs(2)).unwrap());
     assert!(!should_collect(&app, now, now));
     handle_key(&mut app, KeyCode::Esc.into());
     assert!(should_collect(&app, now, now));
     request_snapshot(&worker, &mut app);
-    app.update(worker.results.recv_timeout(Duration::from_secs(2)).unwrap());
+    app.receive(worker.recv_timeout(Duration::from_secs(2)).unwrap());
     assert_eq!(
         *calls.lock().unwrap(),
         [
@@ -1746,7 +1757,7 @@ fn worker_cancels_and_joins_owned_collection() {
         let result = cancel.wait(Duration::from_secs(30));
         finish_flag.store(true, Ordering::SeqCst);
         result
-            .map(|_| snapshot())
+            .map(|_| super::worker::Collected::Overview(snapshot()))
             .map_err(|error| error.to_string())
     });
     assert!(worker.request(None));
@@ -3201,7 +3212,8 @@ fn generic_resource_list_and_details_show_units_without_process_queries() {
     handle_key(&mut app, KeyCode::Right.into());
     let details = app.details.as_ref().unwrap();
     assert_eq!(details.query_pid(), None);
-    assert!(!details.needs_query);
+    assert!(details.needs_query);
+    assert_eq!(details.query_ref().as_deref(), Some("group:fixturevolume"));
     let lines = details.lines().join("\n");
     assert!(lines.contains("Temperature: ? vendor.celsius"));
     assert!(lines.contains("/Volumes/Data"));
@@ -6662,4 +6674,112 @@ fn compact_summary_exports_keep_distinct_evidence_multiple_logs_and_missing_summ
         3
     );
     assert!(text.contains("Codex: 2 session logs"));
+}
+
+fn fixture_collection(
+    target: Option<crate::model::Node>,
+    snapshot: Snapshot,
+) -> super::worker::Collected {
+    match target {
+        Some(target) => super::worker::Collected::Detail(crate::snapshot::DetailSnapshot {
+            captured_unix_ms: snapshot.captured_unix_ms,
+            node: crate::tree::select_detail(&snapshot.root, &target.reference).ok(),
+        }),
+        None => super::worker::Collected::Overview(snapshot),
+    }
+}
+
+#[test]
+fn detail_generations_reject_late_reopened_results_and_leave_overview_unchanged() {
+    let mut app = app();
+    select(&mut app, "pid:11");
+    app.open_details();
+    let old_id = app.details.as_ref().unwrap().request_id;
+    let target = app.details.as_ref().unwrap().query_node();
+    handle_key(&mut app, KeyCode::Esc.into());
+    app.open_details();
+    let current = app.details.as_ref().unwrap().request_id;
+    assert_ne!(old_id, current);
+    let before = crate::output::markdown(app.snapshot.as_ref().unwrap());
+    let reply = |id, cancelled| worker::Reply {
+        detail_id: Some(id),
+        cancelled,
+        result: Ok(fixture_collection(target.clone(), command_snapshot(11))),
+    };
+    app.receive(reply(old_id, false));
+    assert!(app.details.as_ref().unwrap().needs_query);
+    assert!(
+        !app.details
+            .as_ref()
+            .unwrap()
+            .lines()
+            .join("\n")
+            .contains("script.js")
+    );
+    app.receive(reply(current, true));
+    assert!(app.details.as_ref().unwrap().needs_query);
+    app.receive(reply(current, false));
+    assert!(
+        app.details
+            .as_ref()
+            .unwrap()
+            .lines()
+            .join("\n")
+            .contains("script.js")
+    );
+    assert_eq!(
+        crate::output::markdown(app.snapshot.as_ref().unwrap()),
+        before
+    );
+    let mut reused = command_snapshot(11);
+    let mut node = tree::select_detail(&reused.root, "pid:11").unwrap();
+    node.process.as_mut().unwrap().started_unix_us = Some(999);
+    reused.root = node;
+    app.receive(worker::Reply {
+        detail_id: Some(current),
+        cancelled: false,
+        result: Ok(fixture_collection(target, reused)),
+    });
+    assert!(app.details.as_ref().unwrap().query_ref().is_none());
+    assert!(!should_collect(
+        &app,
+        Instant::now(),
+        Instant::now() + Duration::from_secs(60)
+    ));
+    assert!(
+        !app.details
+            .as_ref()
+            .unwrap()
+            .lines()
+            .join("\n")
+            .contains("script.js")
+    );
+}
+
+#[test]
+fn cancelling_detail_unblocks_worker_and_preserves_next_request() {
+    let (entered, started) = std::sync::mpsc::channel();
+    let worker = Worker::with_collector(move |cancel, target| {
+        entered.send(()).unwrap();
+        if target.is_some() {
+            cancel
+                .wait(Duration::from_secs(10))
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(fixture_collection(target, snapshot()))
+    });
+    let target = tree::select_detail(&snapshot().root, "pid:11").unwrap();
+    assert!(worker.request(Some((1, target))));
+    started.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(!worker.request(None), "only one outstanding collection");
+    worker.cancel_active();
+    let reply = worker.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(reply.cancelled && reply.result.is_err());
+    assert!(worker.request(None));
+    assert!(
+        !worker
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .cancelled
+    );
 }

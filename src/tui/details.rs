@@ -20,6 +20,9 @@ enum Status {
 }
 
 pub(super) struct Details {
+    target: Node,
+    pub request_id: u64,
+    observed_unix_ms: Option<u64>,
     resource_ref: Option<String>,
     runtime_query: bool,
     pid: u32,
@@ -34,11 +37,17 @@ pub(super) struct Details {
 
 impl Details {
     pub fn new(mut node: Node) -> Self {
+        node.children.clear();
+        let target = node.clone();
         if node.process.is_none() {
-            let query = node.runtime.is_some();
+            let runtime_query = node.runtime.is_some();
+            let query = runtime_query || node.container.is_some() || node.resource.is_some();
             return Self {
+                target,
+                request_id: 0,
+                observed_unix_ms: None,
                 resource_ref: Some(node.reference.clone()),
-                runtime_query: query,
+                runtime_query,
                 pid: 0,
                 started: None,
                 node: Some(node),
@@ -60,6 +69,9 @@ impl Details {
         process.extension_details.clear();
         node.children.clear();
         Self {
+            target,
+            request_id: 0,
+            observed_unix_ms: None,
             resource_ref: None,
             runtime_query: false,
             pid,
@@ -86,10 +98,50 @@ impl Details {
         self.query_pid()
             .map(|pid| format!("pid:{pid}"))
             .or_else(|| {
-                (self.runtime_details() && !matches!(self.status, Status::Unavailable(_)))
-                    .then(|| self.resource_ref.clone())
-                    .flatten()
+                ((self.runtime_details()
+                    || self.target.container.is_some()
+                    || self.target.resource.is_some())
+                    && !matches!(self.status, Status::Unavailable(_)))
+                .then(|| self.resource_ref.clone())
+                .flatten()
             })
+    }
+
+    pub fn query_node(&self) -> Option<Node> {
+        self.query_ref().map(|_| self.target.clone())
+    }
+
+    pub fn update_detail(&mut self, result: Result<crate::snapshot::DetailSnapshot, String>) {
+        self.needs_query = false;
+        match result {
+            Err(error) => {
+                self.node = None;
+                self.status = Status::Failed(format!("Refresh failed: {error}"));
+            }
+            Ok(result) => {
+                self.observed_unix_ms = Some(result.captured_unix_ms);
+                let valid = result.node.as_ref().is_some_and(|node| {
+                    node.reference == self.target.reference
+                        && match (&self.target.process, &node.process) {
+                            (Some(expected), Some(fresh)) => {
+                                expected.started_unix_us.is_some()
+                                    && expected.started_unix_us == fresh.started_unix_us
+                                    && expected.uid == fresh.uid
+                                    && expected.executable == fresh.executable
+                            }
+                            (None, None) => true,
+                            _ => false,
+                        }
+                });
+                if valid {
+                    self.node = result.node;
+                    self.status = Status::Ready;
+                } else {
+                    self.node = None;
+                    self.status = Status::Unavailable("Resource identity changed or no longer observed; close and select a current resource".into());
+                }
+            }
+        }
     }
 
     pub fn runtime_details(&self) -> bool {
@@ -177,6 +229,23 @@ impl Details {
 
     fn rows(&self) -> Vec<DetailRow> {
         let mut rows = Vec::new();
+        if let Some(time) = self.observed_unix_ms {
+            rows.push(DetailRow::field(
+                "Updated",
+                time::OffsetDateTime::from_unix_timestamp(
+                    i64::try_from(time / 1000).unwrap_or(i64::MAX),
+                )
+                .map(|time| {
+                    format!(
+                        "{:02}:{:02}:{:02} UTC; overview unchanged",
+                        time.hour(),
+                        time.minute(),
+                        time.second()
+                    )
+                })
+                .unwrap_or_else(|_| "Time unavailable; overview unchanged".into()),
+            ));
+        }
         match &self.status {
             Status::Loading => rows.push(DetailRow::notice(if self.resource_ref.is_some() {
                 "Loading details..."
@@ -206,6 +275,11 @@ impl Details {
                 return rows;
             }
             if node.process.is_none() {
+                rows.extend(
+                    node.diagnostics
+                        .iter()
+                        .map(|error| DetailRow::notice(format!("! {error}"))),
+                );
                 rows.push(DetailRow::heading(node.display_name()));
                 rows.extend(
                     output::disk_usage_lines(node)
@@ -240,11 +314,6 @@ impl Details {
                 );
                 return rows;
             }
-            rows.extend(
-                output::host_resource_lines(node, true)
-                    .into_iter()
-                    .map(DetailRow::text),
-            );
             let process = node.process.as_ref().expect("detail process");
             rows.push(DetailRow::heading(node.display_name()));
             rows.push(DetailRow::field("Version", output::version_text(process)));
@@ -263,10 +332,6 @@ impl Details {
                 process.ppid.map_or("?".into(), |v| v.to_string()),
                 process.uid.map_or("?".into(), |v| v.to_string())
             )));
-            rows.push(DetailRow::field(
-                "Tags",
-                output::effective_tags_text(process.tag_report.as_ref()),
-            ));
             rows.push(DetailRow::text(""));
             if let Some(command) = &process.command {
                 if let Some(argv) = &command.argv {
@@ -288,15 +353,6 @@ impl Details {
                         .iter()
                         .map(|error| DetailRow::notice(format!("! {error}"))),
                 );
-            }
-            for details in &process.extension_details {
-                rows.push(DetailRow::heading(format!(
-                    "Extension {}",
-                    details.provider
-                )));
-                for field in &details.fields {
-                    rows.push(DetailRow::field(&field.label, field.value.to_string()));
-                }
             }
             for (label, path) in [("Cwd", &process.cwd), ("Exe", &process.executable)] {
                 if let Some(path) = path {
@@ -333,6 +389,24 @@ impl Details {
             } else {
                 rows.push(DetailRow::text("TCP/UDP sockets ?"));
             }
+            rows.extend(
+                output::host_resource_lines(node, true)
+                    .into_iter()
+                    .map(DetailRow::text),
+            );
+            for details in &process.extension_details {
+                rows.push(DetailRow::heading(format!(
+                    "Extension {}",
+                    details.provider
+                )));
+                for field in &details.fields {
+                    rows.push(DetailRow::field(&field.label, field.value.to_string()));
+                }
+            }
+            rows.push(DetailRow::field(
+                "Tags",
+                output::effective_tags_text(process.tag_report.as_ref()),
+            ));
             if let Some(report) = &process.tag_report {
                 rows.push(DetailRow::text(""));
                 rows.push(DetailRow::heading("Classification"));

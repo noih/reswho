@@ -92,7 +92,10 @@ sample counts, workload sizes, diagnostics and missing metrics alongside timings
 Distinguish full command wall time, `collection_ms`, runtime/module timings and
 TUI CPU time. Collection includes the sampling wait; CLI wall time also includes
 startup and output encoding. `--from` and `--depth` limit presentation, not the
-full collection. Use `--profile` and extension `argv` counters to inspect work;
+full collection. TUI PID details instead resample the target and bounded parent
+metadata; runtime, container, and resource details query only the selected source. The overview retains
+its previous capture while the detail view displays its own update time.
+Use `--profile` and extension `argv` counters to inspect work;
 do not infer argument-read counts from the number of recognized processes.
 
 Host process CPU/RSS and in-VM container metrics have different scopes. Client

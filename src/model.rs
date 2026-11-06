@@ -341,6 +341,31 @@ pub struct SummaryHint {
 }
 
 impl Node {
+    pub(crate) fn without_children(&self) -> Self {
+        Self {
+            summary: self.summary.clone(),
+            hints: self.hints.clone(),
+            host_resources: self.host_resources.clone(),
+            category_order: self.category_order,
+            reference: self.reference.clone(),
+            name: self.name.clone(),
+            kind: self.kind,
+            grouping: self.grouping.clone(),
+            evidence: self.evidence.clone(),
+            attribution: self.attribution.clone(),
+            diagnostics: self.diagnostics.clone(),
+            process: self.process.clone(),
+            resource: self.resource.clone(),
+            container: self.container.clone(),
+            runtime: self.runtime.clone(),
+            container_totals: self.container_totals.clone(),
+            totals: self.totals.clone(),
+            omitted_children: self.omitted_children,
+            version: self.version.clone(),
+            children: Vec::new(),
+        }
+    }
+
     pub fn display_name(&self) -> String {
         let version = match &self.process {
             Some(process) => process.version.as_ref().filter(|version| {
