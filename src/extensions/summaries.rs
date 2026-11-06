@@ -2,16 +2,35 @@ use super::{Context, Extension};
 use crate::model::{Diagnostic, Node, SummaryHint};
 use std::time::{Duration, Instant};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Summary {
     pub label: String,
     pub value: String,
+    #[serde(skip)]
     pub priority: u16,
+    #[serde(skip)]
     pub inherited: bool,
+    #[serde(skip)]
     pub evidence: Vec<SummaryHint>,
 }
 
 impl Summary {
+    pub(crate) fn repeats(&self, ancestor: &Self) -> bool {
+        self.inherited
+            && self.evidence.len() == ancestor.evidence.len()
+            && self
+                .evidence
+                .iter()
+                .zip(&ancestor.evidence)
+                .all(|(hint, parent)| {
+                    hint.source == parent.source
+                        && hint.kind == parent.kind
+                        && hint.value == parent.value
+                        && hint.title == parent.title
+                        && hint.path == parent.path
+                })
+    }
+
     pub fn new(label: &str, value: &str, priority: u16, evidence: Vec<SummaryHint>) -> Self {
         Self {
             label: label.into(),
@@ -297,6 +316,8 @@ mod tests {
         assert_eq!(healthy.summaries.load(Ordering::SeqCst), 2);
         for pid in [81, 82] {
             let node = crate::tree::select(&tree, &format!("pid:{pid}")).unwrap();
+            let wire = serde_json::to_value(&node).unwrap();
+            assert_eq!(wire["summary"]["value"], "Observed worker");
             assert_eq!(node.summary.unwrap().evidence[0].source, "healthy-summary");
         }
         let records = context.report.lock().unwrap().clone();

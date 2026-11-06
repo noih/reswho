@@ -81,6 +81,7 @@ fn mixed_app_group_keeps_distinct_project_coverage_without_changing_tree_or_tota
     assert!(disabled.hints.is_empty());
     assert_eq!(structure(&enabled), structure(&disabled));
     tree::validate_references(&enabled).unwrap();
+    let app_reference = app.reference.clone();
     let snapshot = Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
         captured_unix_ms: 1,
@@ -93,11 +94,15 @@ fn mixed_app_group_keeps_distinct_project_coverage_without_changing_tree_or_tota
         root: enabled,
     };
     let markdown = crate::output::markdown(&snapshot);
-    assert!(
-        markdown.contains(r"project \[project · cwd\]: alpha"),
-        "{markdown}"
-    );
-    assert!(markdown.contains("1/3 processes"));
+    assert!(markdown.contains("Project folder: alpha"), "{markdown}");
+    assert!(markdown.contains("Project folder: beta"));
+    assert!(!markdown.contains("1/3 processes"));
+    let mut selected = snapshot.clone();
+    selected.root = tree::select(&snapshot.root, &app_reference).unwrap();
+    selected.scope = app_reference;
+    let details = crate::output::markdown_with_depth(&selected, 0);
+    assert!(details.contains(r"project \[project · cwd\]: alpha"));
+    assert!(details.contains("1/3 processes"));
     let value = serde_json::to_value(&snapshot).unwrap();
     let schema: serde_json::Value = serde_json::from_str(crate::output::JSON_SCHEMA).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();

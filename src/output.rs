@@ -8,14 +8,14 @@ mod markdown_tests;
 
 pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-13.schema.json");
 
-pub const FORMAT_HELP: &str = r#"# Markdown reading guide — reswho-md/21
+pub const FORMAT_HELP: &str = r#"# Markdown reading guide — reswho-md/22
 
 Synthetic snapshot excerpt (names, refs and values are illustrative):
 
 ```markdown
 # reswho
 
-Format: reswho-md/21 · help: reswho --help-md
+Format: reswho-md/22 · help: reswho --help-md
 Captured: 1793664000000ms Unix · sample 251ms · collection 312ms
 Host CPU 8.0% · RAM 8.0GiB/16.0GiB · swap 0.0KiB · 8 logical CPUs · Σ120
 
@@ -43,8 +43,13 @@ even when a branch is selected. ΣN is the total host process count at the root.
 Category headings carry a ref and totals; selected roots are paragraphs.
 Nested `-` lists use four spaces per level. Indented `>` blocks are attributes
 or evidence, not child resources. Paths use inline code to preserve literals.
-Source-qualified hints are attributes on existing process/group rows. Group hints
-show matched/total process coverage; several candidates may coexist. A session_log
+Process overview attributes show an optional extension-selected compact summary.
+Groups and categories do not repeat process hints. Inherited summaries repeating
+an ancestor's full evidence identity are hidden; distinct branches remain visible.
+Markdown preserves full summary text without terminal clipping.
+Selected PID and group roots show full source-qualified hints instead of a compact
+summary; group hints include matched/total process coverage and all candidates.
+A session_log
 with open_session_log basis means a writable session-record handle was observed,
 not the foreground/current conversation or session-specific resource usage.
 A sole System services wrapper is flattened; the whole-machine Resources row
@@ -216,7 +221,7 @@ fn header(snapshot: &Snapshot, host_count: bool) -> String {
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "# reswho\n\nFormat: reswho-md/21 · help: reswho --help-md  "
+        "# reswho\n\nFormat: reswho-md/22 · help: reswho --help-md  "
     );
     let _ = writeln!(
         text,
@@ -278,9 +283,9 @@ fn body(text: &mut String, snapshot: &Snapshot, heading: &str) {
                 .map(|value| evidence_markdown(value)),
             "",
         );
-        write_children(text, &snapshot.root, 1, Some(heading));
+        write_children(text, &snapshot.root, 1, Some(heading), &[]);
     } else {
-        write_node(text, &snapshot.root, 0);
+        write_node(text, &snapshot.root, 0, &[]);
     }
 }
 
@@ -515,7 +520,12 @@ pub(crate) fn metric_text(metric: &crate::model::ResourceMetric) -> String {
     )
 }
 
-fn write_node(text: &mut String, node: &Node, level: usize) {
+fn write_node<'a>(
+    text: &mut String,
+    node: &'a Node,
+    level: usize,
+    shown: &[&'a crate::extensions::Summary],
+) {
     let indent = "    ".repeat(level.saturating_sub(1));
     let bullet = if level == 0 { "" } else { "- " };
     if let Some(resource) = &node.resource {
@@ -567,7 +577,15 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
         );
     }
     let mut notes = containers::notes(node, level == 0);
-    notes.extend(hint_lines(node).iter().map(|line| escaped(line)));
+    let mut shown = shown.to_vec();
+    if level == 0 {
+        notes.extend(hint_lines(node).iter().map(|line| escaped(line)));
+    } else if let Some(summary) = &node.summary
+        && !shown.iter().any(|ancestor| summary.repeats(ancestor))
+    {
+        notes.push(escaped(&format!("{}: {}", summary.label, summary.value)));
+        shown.push(summary);
+    }
     notes.extend(
         host_resource_lines(node, level == 0)
             .iter()
@@ -610,10 +628,16 @@ fn write_node(text: &mut String, node: &Node, level: usize) {
         notes.extend(node.evidence.iter().map(|value| evidence_markdown(value)));
     }
     write_notes(text, notes, &"    ".repeat(level));
-    write_children(text, node, level + 1, (level == 0).then_some("##"));
+    write_children(text, node, level + 1, (level == 0).then_some("##"), &shown);
 }
 
-fn write_children(text: &mut String, node: &Node, level: usize, categories: Option<&str>) {
+fn write_children<'a>(
+    text: &mut String,
+    node: &'a Node,
+    level: usize,
+    categories: Option<&str>,
+    shown: &[&'a crate::extensions::Summary],
+) {
     if node.children.is_empty() {
         return;
     }
@@ -643,13 +667,13 @@ fn write_children(text: &mut String, node: &Node, level: usize, categories: Opti
                 child.evidence.iter().map(|value| evidence_markdown(value)),
                 "",
             );
-            write_children(text, child, 1, None);
+            write_children(text, child, 1, None, shown);
         } else {
             let is_group = child.process.is_none() && child.container.is_none();
             if previous_group.is_some_and(|previous| previous || is_group) {
                 blank_line(text);
             }
-            write_node(text, child, level);
+            write_node(text, child, level, shown);
             previous_group = Some(is_group);
         }
     }
@@ -1222,7 +1246,7 @@ mod tests {
         let tree =
             tree::build(vec![parent, child, unreadable(20), unreadable(21), partial]).unwrap();
         let mut overview = String::new();
-        write_node(&mut overview, &tree, 0);
+        write_node(&mut overview, &tree, 0, &[]);
         assert!(overview.contains("shell [bin]"));
         assert!(overview.contains("Resources group:all"));
         assert!(overview.contains("## Unclassified\n\ngroup:unclassified"));
@@ -1259,7 +1283,12 @@ mod tests {
         assert!(json.contains("\"grouping\":\"bin\""));
         assert!(json.contains("Operation not permitted"));
         let mut details = String::new();
-        write_node(&mut details, &tree::select(&tree, "pid:10").unwrap(), 0);
+        write_node(
+            &mut details,
+            &tree::select(&tree, "pid:10").unwrap(),
+            0,
+            &[],
+        );
         assert_eq!(details.matches("PPID").count(), 1);
         assert!(details.contains("cwd: `/`"));
         assert!(details.contains("exe: `/bin/shell`"));
@@ -1268,7 +1297,12 @@ mod tests {
         assert!(details.contains("cmd: `shell \"job script.sh\" \"\" [filtered]`"));
         assert!(details.contains("entry: `job script.sh`"));
         details.clear();
-        write_node(&mut details, &tree::select(&tree, "pid:20").unwrap(), 0);
+        write_node(
+            &mut details,
+            &tree::select(&tree, "pid:20").unwrap(),
+            0,
+            &[],
+        );
         assert!(details.contains("Operation not permitted (os error 1)"));
         assert!(!details.contains("Unreadable"));
     }
@@ -1291,7 +1325,7 @@ mod tests {
         assert_eq!(root.totals.uptime_unknown, 1);
         tree::limit_depth(&mut root, 0);
         let mut text = String::new();
-        write_node(&mut text, &root, 0);
+        write_node(&mut text, &root, 0, &[]);
         assert!(text.contains("  ⏱︎ >=2h  Σ3 [+1]\n"));
         root.totals.uptime_unknown = 0;
         assert_eq!(group_uptime(&root.totals), "2h");

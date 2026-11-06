@@ -230,7 +230,11 @@
                     "title": "Example named thread",
                     "processes": 1
                   }
-                ]
+                ],
+                "summary": {
+                  "label": "Codex log",
+                  "value": "Example named thread"
+                }
               }
             ],
             "omitted_children": 0,

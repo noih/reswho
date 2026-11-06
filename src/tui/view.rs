@@ -457,20 +457,7 @@ fn draw_base(frame: &mut Frame, app: &App, table: &mut TableState) {
         let name_width = usize::from(tree_inner.width).saturating_sub(if wide { 46 } else { 31 });
         let mut lines = vec![ratatui::text::Line::raw(name)];
         if let Some(summary) = &node.summary {
-            let redundant =
-                summary.inherited
-                    && shown.iter().any(|(_, ancestor)| {
-                        summary.evidence.len() == ancestor.evidence.len()
-                            && summary.evidence.iter().zip(&ancestor.evidence).all(
-                                |(hint, parent)| {
-                                    hint.source == parent.source
-                                        && hint.kind == parent.kind
-                                        && hint.value == parent.value
-                                        && hint.title == parent.title
-                                        && hint.path == parent.path
-                                },
-                            )
-                    });
+            let redundant = shown.iter().any(|(_, ancestor)| summary.repeats(ancestor));
             let available = name_width.saturating_sub(indent.len() + 2);
             let label_width = ratatui::text::Line::raw(&summary.label).width();
             if !redundant && available > label_width + 3 {

@@ -276,6 +276,10 @@ fn published_examples_validate_and_match_current_serialized_shapes() {
             assert_eq!(hint["source"], "codex");
             assert_eq!(hint["basis"], "open_session_log");
             assert_eq!(hint["value"], "019aa1bb-2222-7333-8444-555566667777");
+            assert_eq!(
+                value["selections"][0]["root"]["children"][0]["children"][0]["summary"],
+                json!({"label":"Codex log", "value":"Example named thread"})
+            );
         }
         assert_eq!(
             value["selections"][0]["selector"],
@@ -316,10 +320,12 @@ fn published_examples_validate_and_match_current_serialized_shapes() {
             .as_object()
             .unwrap()
             .keys()
-            .filter(|key| def != "node" || !["host_resources", "hints"].contains(&key.as_str()))
+            .filter(|key| {
+                def != "node" || !["host_resources", "hints", "summary"].contains(&key.as_str())
+            })
             .collect();
         if def == "node" {
-            for optional in ["host_resources", "hints"] {
+            for optional in ["host_resources", "hints", "summary"] {
                 assert!(actual.get(optional).is_none());
                 assert!(
                     !shape["$defs"][def]["required"]
@@ -513,4 +519,30 @@ fn schema13_rejects_removed_extension_versions_but_keeps_software_versions() {
             .get("version")
             .is_some()
     );
+}
+
+#[test]
+fn compact_summary_is_optional_display_text_with_exact_keys() {
+    let mut root = tree::build(vec![process(71, Path::new("/"))]).unwrap();
+    root.summary = Some(reswho::extensions::Summary::new(
+        "Display label",
+        "Full display value",
+        9,
+        vec![],
+    ));
+    let mut wire = serde_json::to_value(snapshot(root)).unwrap();
+    assert_eq!(
+        wire["selections"][0]["root"]["summary"],
+        json!({"label":"Display label", "value":"Full display value"})
+    );
+    validate(&wire);
+    wire["selections"][0]["root"]["summary"]["priority"] = json!(9);
+    assert!(!validator().is_valid(&wire));
+    wire["selections"][0]["root"]["summary"] = json!(null);
+    assert!(!validator().is_valid(&wire));
+    wire["selections"][0]["root"]
+        .as_object_mut()
+        .unwrap()
+        .remove("summary");
+    validate(&wire);
 }

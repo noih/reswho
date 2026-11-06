@@ -472,7 +472,7 @@ mod tests {
         assert_eq!(node.hints.len(), 2);
         assert_eq!(node.summary.as_ref().unwrap().value, "2 session logs");
         assert_eq!(node.summary.as_ref().unwrap().evidence.len(), 2);
-        let screen = crate::tui::tests::snapshot_screen(Snapshot {
+        let snapshot = Snapshot {
             schema: crate::model::JSON_SCHEMA_VERSION,
             captured_unix_ms: 1,
             sample_ms: 250,
@@ -482,7 +482,21 @@ mod tests {
             warnings: vec![],
             scope: node.reference.clone(),
             root: node.clone(),
-        });
+        };
+        let wire = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(
+            wire["selections"][0]["root"]["summary"],
+            serde_json::json!({"label":"Codex", "value":"2 session logs"})
+        );
+        assert_eq!(
+            wire["selections"][0]["root"]["hints"],
+            serde_json::to_value(&node.hints).unwrap()
+        );
+        let detail = crate::output::markdown(&snapshot);
+        assert!(detail.contains(ID) && detail.contains(second_id));
+        assert!(detail.contains(r"\[rw-61\] Exact synthetic title"));
+        assert!(!detail.contains("Codex: 2 session logs"));
+        let screen = crate::tui::tests::snapshot_screen(snapshot);
         assert!(screen.contains("Codex: 2 session logs"), "{screen}");
         assert!(!screen.contains("Exact synthetic title"), "{screen}");
 
@@ -515,6 +529,10 @@ mod tests {
             "{screen}"
         );
         let value = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(
+            value["selections"][0]["root"]["summary"],
+            serde_json::json!({"label":"Codex log", "value":"[rw-61] Exact synthetic title"})
+        );
         let schema: serde_json::Value = serde_json::from_str(crate::output::JSON_SCHEMA).unwrap();
         assert!(
             jsonschema::validator_for(&schema).unwrap().is_valid(&value),

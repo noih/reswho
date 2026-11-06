@@ -276,7 +276,7 @@ impl Grouping {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Node {
-    #[serde(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<crate::extensions::Summary>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hints: Vec<SummaryHint>,

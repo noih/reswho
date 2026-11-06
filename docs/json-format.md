@@ -96,6 +96,15 @@ unknown. Do not subtract container usage from VM usage to infer exact overhead.
 
 ## Summary hints
 
+Optional node `summary` is the extension-selected compact display object
+`{label, value}`. Both fields are presentation text, not identifiers. An absent
+summary is omitted. Priority, inheritance and duplicate evidence are internal;
+serializers do not select or recompute summaries. Markdown overviews use this
+same selection, suppressing inherited duplicates along the displayed ancestor
+chain by full source/kind/value/title/path identity, not clipped text. Hint basis
+and process coverage describe provenance and aggregation, not display identity.
+Selected Markdown PID/group roots show full hints instead of the compact summary.
+
 Optional node `hints` survive summary projection. Each has `source`, `basis`,
 `kind`, `value`, `processes`, and optional `path`/`title`. Process rows describe
 that process only. Group `processes` is the number of distinct descendant PIDs

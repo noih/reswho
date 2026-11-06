@@ -5602,7 +5602,10 @@ fn group_hint_details_open_show_all_candidates_and_wrap_scroll_without_losing_da
         .clone();
     assert_eq!(group.hints.len(), 4);
     let expected = crate::output::hint_lines(&group);
-    let markdown = crate::output::markdown(&snapshot);
+    let mut selected = snapshot.clone();
+    selected.root = group.clone();
+    selected.scope = group.reference.clone();
+    let markdown = crate::output::markdown(&selected);
     let json = serde_json::to_value(&snapshot).unwrap();
     let schema: serde_json::Value = serde_json::from_str(crate::output::JSON_SCHEMA).unwrap();
     assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&json));
@@ -6312,6 +6315,17 @@ fn secondline_project_producer_uses_exact_ancestor_path_and_keeps_other_context(
         prepare_secondline(&mut snapshot);
         assert_eq!(snapshot.root.children[0].summary.is_some(), visible);
         assert_eq!(snapshot.root.children[0].hints, process.hints);
+        assert_eq!(
+            crate::output::markdown(&snapshot).contains("Project folder: shared"),
+            visible
+        );
+        let wire = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(
+            wire["selections"][0]["root"]["children"][0]
+                .get("summary")
+                .is_some(),
+            visible
+        );
         let mut app = App::new("group:all".into(), usize::MAX);
         app.update(Ok(snapshot));
         assert_eq!(
@@ -6415,6 +6429,13 @@ fn secondline_unknown_provider_obeys_priority_disable_and_generic_rendering() {
             node.summary.as_ref().map(|summary| summary.value.as_str()),
             expected
         );
+        let md = crate::output::markdown(&snapshot);
+        assert_eq!(md.contains("Custom observation:"), expected.is_some());
+        let wire = serde_json::to_value(&node).unwrap();
+        assert_eq!(wire.get("summary").is_some(), expected.is_some());
+        if let Some(expected) = expected {
+            assert_eq!(wire["summary"]["value"], expected);
+        }
         let mut app = App::new("group:all".into(), usize::MAX);
         app.update(Ok(snapshot));
         let text = screen(&app, 180);
@@ -6429,4 +6450,157 @@ pub(crate) fn snapshot_screen(snapshot: Snapshot) -> String {
     let mut app = App::new(snapshot.scope.clone(), usize::MAX);
     app.update(Ok(snapshot));
     screen(&app, 180)
+}
+
+#[test]
+fn compact_summary_json_keeps_display_and_full_hint_evidence() {
+    let snapshot = secondline_snapshot();
+    let wire = serde_json::to_value(&snapshot).unwrap();
+    fn check(node: &Node, wire: &serde_json::Value) {
+        if let Some(summary) = &node.summary {
+            assert_eq!(
+                wire["summary"],
+                serde_json::json!({"label": summary.label, "value": summary.value})
+            );
+        } else {
+            assert!(wire.get("summary").is_none());
+        }
+        if !node.hints.is_empty() {
+            assert_eq!(wire["hints"], serde_json::to_value(&node.hints).unwrap());
+        }
+        for (child, wire) in node
+            .children
+            .iter()
+            .zip(wire["children"].as_array().unwrap())
+        {
+            check(child, wire);
+        }
+    }
+    check(&snapshot.root, &wire["selections"][0]["root"]);
+}
+
+#[test]
+fn compact_summary_markdown_overview_deduplicates_but_selected_details_keep_hints() {
+    let snapshot = secondline_snapshot();
+    let md = crate::output::markdown(&snapshot);
+    assert_eq!(
+        md.matches("Playwright session: claude-checkout-reswho")
+            .count(),
+        2,
+        "{md}"
+    );
+    assert!(
+        md.contains("Playwright session: distinct-child-session"),
+        "{md}"
+    );
+    assert!(
+        md.contains("END-TITLE"),
+        "Markdown must not clip titles: {md}"
+    );
+    assert!(
+        !md.contains(r"\[playwright ·"),
+        "overview leaked hints: {md}"
+    );
+    assert!(!md.contains(r"\[codex ·"), "overview leaked hints: {md}");
+    for selector in ["pid:10", "pid:30", "group:applications"] {
+        let mut selected = snapshot.clone();
+        selected.root = tree::select(&snapshot.root, selector).unwrap();
+        selected.scope = selector.into();
+        let md = crate::output::markdown_with_depth(&selected, 0);
+        for line in crate::output::hint_lines(&selected.root) {
+            assert!(
+                md.contains(
+                    &line
+                        .replace("_", "\\_")
+                        .replace("[", "\\[")
+                        .replace("]", "\\]")
+                ),
+                "missing {line}: {md}"
+            );
+        }
+        assert!(!md.contains("Playwright session:"));
+        assert!(!md.contains("Session title:"));
+        assert!(md.contains(selector));
+        assert!(!md.contains("pid:11"));
+    }
+}
+
+#[test]
+fn compact_summary_exports_keep_distinct_evidence_multiple_logs_and_missing_summary() {
+    let mut snapshot = secondline_snapshot();
+    fn alter(node: &mut Node) {
+        match node.reference.as_str() {
+            "pid:10" => node.hints[0].basis = "arguments".into(),
+            "pid:13" => node.hints[0].path = Some("/synthetic/other-branch".into()),
+            "pid:20" => node.hints.clear(),
+            "pid:30" => {
+                let mut log = node.hints[0].clone();
+                log.value = "019aa1bb-2222-7333-8444-999900001111".into();
+                log.title = None;
+                log.path = Some("/synthetic/codex/second-log.jsonl".into());
+                node.hints.push(log);
+            }
+            _ => {}
+        }
+        for child in &mut node.children {
+            alter(child);
+        }
+    }
+    alter(&mut snapshot.root);
+    prepare_secondline(&mut snapshot);
+    let md = crate::output::markdown(&snapshot);
+    assert_eq!(
+        md.matches("Playwright session: claude-checkout-reswho")
+            .count(),
+        3,
+        "different paths must remain visible: {md}"
+    );
+    assert!(md.contains("Codex: 2 session logs"), "{md}");
+    assert!(!md.contains("END-TITLE"));
+    let log_node = tree::select(&snapshot.root, "pid:30").unwrap();
+    let mut selected = snapshot.clone();
+    selected.root = log_node.clone();
+    selected.scope = "pid:30".into();
+    let details = crate::output::markdown_with_depth(&selected, 0);
+    let wire = serde_json::to_value(&selected).unwrap();
+    assert_eq!(
+        wire["selections"][0]["root"]["summary"],
+        serde_json::json!({"label":"Codex", "value":"2 session logs"})
+    );
+    assert_eq!(
+        wire["selections"][0]["root"]["hints"],
+        serde_json::to_value(&log_node.hints).unwrap()
+    );
+    for hint in &log_node.hints {
+        assert!(details.contains(&hint.value));
+    }
+    assert!(details.contains("END-TITLE"));
+    assert!(
+        wire["selections"][0]["root"]["process"]
+            .get("tag_report")
+            .is_some()
+    );
+    assert!(!details.contains("Codex: 2 session logs"));
+    let missing = tree::select(&snapshot.root, "pid:20").unwrap();
+    assert!(
+        serde_json::to_value(&missing)
+            .unwrap()
+            .get("summary")
+            .is_none()
+    );
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(snapshot));
+    let text = secondline_text(&secondline_render(
+        &app,
+        &mut TableState::default(),
+        180,
+        36,
+    ))
+    .join("\n");
+    assert_eq!(
+        text.matches("Playwright session: claude-checkout-reswho")
+            .count(),
+        3
+    );
+    assert!(text.contains("Codex: 2 session logs"));
 }
