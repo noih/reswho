@@ -184,12 +184,17 @@ fn should_collect(app: &App, next_refresh: Instant, now: Instant) -> bool {
                 .details
                 .as_ref()
                 .is_some_and(|details| details.needs_query)
-            || (!app.paused && now >= next_refresh))
+            || (!app.paused
+                && now >= next_refresh
+                && !app
+                    .details
+                    .as_ref()
+                    .is_some_and(details::Details::runtime_details)))
 }
 
 fn request_snapshot(worker: &Worker, app: &mut App) {
-    let pid = app.details.as_ref().and_then(details::Details::query_pid);
-    app.collecting = worker.request(pid);
+    let detail_ref = app.details.as_ref().and_then(details::Details::query_ref);
+    app.collecting = worker.request(detail_ref);
     if app.collecting
         && let Some(details) = &mut app.details
     {

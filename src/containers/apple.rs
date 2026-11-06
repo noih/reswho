@@ -256,6 +256,7 @@ pub(super) fn collect_with_service(
         &format!("apple\0{SERVICE_LABEL}\0{}", unsafe { libc::geteuid() }),
     );
     let mut runtime = Runtime {
+        disk_usage: None,
         metrics_scope: Some("in_vm".into()),
         host_scope: None,
         configuration: None,

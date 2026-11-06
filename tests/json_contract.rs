@@ -25,6 +25,26 @@ fn validate(value: &Value) {
 }
 
 #[test]
+fn process_state_survives_overview_projection_and_rejects_unknown_values() {
+    let mut observed = process(71, Path::new("/"));
+    observed.state = Some(reswho::model::ProcessState::Zombie);
+    let root = tree::build(vec![observed]).unwrap();
+    let selected = tree::select(&root, "pid:71").unwrap();
+    let mut observed = snapshot(selected);
+    observed.project(&[]);
+    let mut value = serde_json::to_value(&observed).unwrap();
+    assert_eq!(value["selections"][0]["root"]["process"]["state"], "zombie");
+    validate(&value);
+    value["selections"][0]["root"]["process"]["state"] = json!("idle");
+    assert!(!validator().is_valid(&value));
+    value["selections"][0]["root"]["process"]
+        .as_object_mut()
+        .unwrap()
+        .remove("state");
+    validate(&value);
+}
+
+#[test]
 fn command_extension_preserves_argument_boundaries_and_validates_types() {
     let root = tree::build(vec![process(71, Path::new("/"))]).unwrap();
     let selected = tree::select(&root, "pid:71").unwrap();

@@ -114,6 +114,7 @@ fn process() -> Process {
 
 fn runtime(name: &str) -> Runtime {
     Runtime {
+        disk_usage: None,
         metrics_scope: None,
         host_scope: None,
         configuration: None,
@@ -572,6 +573,7 @@ fn every_capability_rejects_expired_admission_and_late_results() {
         };
         for expired in [true, false] {
             let context = Context {
+                detail_refs: &[],
                 report: std::sync::Arc::default(),
                 settings: &settings,
                 cancel: &cancel,

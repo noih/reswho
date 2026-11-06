@@ -48,6 +48,36 @@ fn structure(node: &Node) -> serde_json::Value {
 }
 
 #[test]
+fn project_category_identifies_cwd_association_without_claiming_exclusivity() {
+    let (_root, mut processes) = fixture();
+    for process in &mut processes {
+        process.executable = Some("/opt/shared-server".into());
+    }
+    let root = tree::build(processes).unwrap();
+    let category = root
+        .children
+        .iter()
+        .find(|node| node.reference == "group:projects")
+        .unwrap();
+    assert_eq!(category.name, "Project associations");
+    assert_eq!(root.totals.processes, 3);
+    let server = tree::select(&root, "pid:10").unwrap();
+    assert!(
+        server
+            .hints
+            .iter()
+            .any(|hint| hint.source == "project" && hint.basis == "cwd")
+    );
+    assert_eq!(server.process.as_ref().unwrap().name, "helper");
+    assert!(
+        !server
+            .hints
+            .iter()
+            .any(|hint| matches!(hint.kind.as_str(), "idle" | "shared" | "releasable"))
+    );
+}
+
+#[test]
 fn mixed_app_group_keeps_distinct_project_coverage_without_changing_tree_or_totals() {
     let (root, processes) = fixture();
     let mut settings = extensions::default_settings().unwrap();
@@ -94,8 +124,8 @@ fn mixed_app_group_keeps_distinct_project_coverage_without_changing_tree_or_tota
         root: enabled,
     };
     let markdown = crate::output::markdown(&snapshot);
-    assert!(markdown.contains("Project folder: alpha"), "{markdown}");
-    assert!(markdown.contains("Project folder: beta"));
+    assert!(markdown.contains("Project via cwd: alpha"), "{markdown}");
+    assert!(markdown.contains("Project via cwd: beta"));
     assert!(!markdown.contains("1/3 processes"));
     let mut selected = snapshot.clone();
     selected.root = tree::select(&snapshot.root, &app_reference).unwrap();

@@ -67,7 +67,7 @@ fn manifest_projects_need_no_git_and_same_names_remain_separate() {
     }
     let tree = build(processes.clone()).unwrap();
     let category = select(&tree, "group:projects").unwrap();
-    assert_eq!(category.name, "Projects");
+    assert_eq!(category.name, "Project associations");
     assert_eq!(category.children.len(), markers.len());
     assert_eq!(category.totals.processes, markers.len());
     assert_eq!(category.totals.resident_bytes, markers.len() as u64 * 100);

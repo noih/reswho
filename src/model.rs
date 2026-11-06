@@ -64,6 +64,8 @@ pub struct Process {
     pub pid: u32,
     pub ppid: Option<u32>,
     pub uid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ProcessState>,
     pub started_unix_us: Option<u64>,
     pub uptime_seconds: Option<u64>,
     pub name: String,
@@ -84,6 +86,7 @@ pub struct Process {
 impl Process {
     pub(crate) fn is_unreadable(&self) -> bool {
         self.ppid.is_none()
+            && self.state.is_none()
             && self.uid.is_none()
             && self.started_unix_us.is_none()
             && self.uptime_seconds.is_none()
@@ -93,6 +96,28 @@ impl Process {
             && self.resident_bytes.is_none()
             && self.network.is_none()
             && (self.name.is_empty() || self.name == format!("process {}", self.pid))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessState {
+    Creating,
+    Runnable,
+    Sleeping,
+    Stopped,
+    Zombie,
+}
+
+impl ProcessState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Creating => "creating",
+            Self::Runnable => "runnable",
+            Self::Sleeping => "sleeping",
+            Self::Stopped => "stopped",
+            Self::Zombie => "zombie",
+        }
     }
 }
 
@@ -393,6 +418,10 @@ impl Snapshot {
 }
 
 pub fn project_node(node: &mut Node, detail_pids: &[u32]) {
+    project_node_with_details(node, &detail_pids.iter().copied().collect());
+}
+
+fn project_node_with_details(node: &mut Node, detail_pids: &std::collections::HashSet<u32>) {
     if let Some(process) = &mut node.process {
         process.roles.clear();
         if !detail_pids.contains(&process.pid) {
@@ -448,7 +477,7 @@ pub fn project_node(node: &mut Node, detail_pids: &[u32]) {
         }
     }
     for child in &mut node.children {
-        project_node(child, detail_pids);
+        project_node_with_details(child, detail_pids);
     }
 }
 

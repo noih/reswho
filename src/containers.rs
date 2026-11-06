@@ -16,7 +16,10 @@ use crate::{
     model::{Grouping, Node},
 };
 use anyhow::{Result, bail};
-pub use model::{Container, ContainerTotals, Mount, Port, Project, ProjectSource, Runtime};
+pub use model::{
+    Container, ContainerTotals, DiskUsage, DiskUsageEntry, Mount, Port, Project, ProjectSource,
+    Runtime,
+};
 use std::{
     collections::{BTreeMap, HashSet},
     time::Duration,
@@ -88,6 +91,7 @@ pub(crate) fn collect_docker(
         std::env::var("DOCKER_CONTEXT").ok(),
         std::env::var("DOCKER_HOST").ok(),
         time::OffsetDateTime::now_utc(),
+        context.detail_refs,
     ))
 }
 
@@ -178,12 +182,7 @@ pub(crate) fn validate_containers(containers: &[Container]) -> Result<()> {
 
 fn build(runtime: Runtime, containers: Vec<Container>) -> Result<Node> {
     validate_containers(&containers)?;
-    let endpoint = runtime.endpoint_ref.as_deref().unwrap_or("unresolved");
-    let runtime_key = format!(
-        "{}\0{endpoint}\0{}",
-        runtime.name,
-        runtime.daemon_id.as_deref().unwrap_or("unknown")
-    );
+    let runtime_key = runtime.key();
     let label = runtime
         .context
         .as_deref()
@@ -193,7 +192,7 @@ fn build(runtime: Runtime, containers: Vec<Container>) -> Result<Node> {
             "unresolved"
         });
     let mut runtime_node = Node::group(
-        stable_ref("runtime", &runtime_key),
+        runtime.reference(),
         format!("{} ({label})", runtime.name),
         Vec::new(),
         Grouping::Runtime,

@@ -6,6 +6,7 @@ use crate::{
 
 fn runtime(endpoint: &str) -> Runtime {
     Runtime {
+        disk_usage: None,
         metrics_scope: None,
         host_scope: None,
         configuration: None,

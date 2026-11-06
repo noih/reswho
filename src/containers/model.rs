@@ -5,6 +5,8 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Runtime {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_usage: Option<DiskUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics_scope: Option<String>,
     #[serde(skip)]
     pub host_scope: Option<String>,
@@ -18,6 +20,53 @@ pub struct Runtime {
     pub inventory_complete: bool,
     pub collection_ms: u64,
     pub unavailable: Vec<Diagnostic>,
+}
+
+impl Runtime {
+    pub(crate) fn key(&self) -> String {
+        format!(
+            "{}\0{}\0{}",
+            self.name,
+            self.endpoint_ref.as_deref().unwrap_or("unresolved"),
+            self.daemon_id.as_deref().unwrap_or("unknown")
+        )
+    }
+
+    pub(crate) fn reference(&self) -> String {
+        crate::extensions::host::stable_ref("runtime", &self.key())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DiskUsage {
+    pub source: String,
+    pub entries: Vec<DiskUsageEntry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DiskUsageEntry {
+    pub kind: String,
+    pub total: u64,
+    pub active: u64,
+    pub size: String,
+    pub reclaimable: String,
+}
+
+impl DiskUsage {
+    pub(crate) fn valid(&self) -> bool {
+        let text = |value: &str| {
+            !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)
+        };
+        text(&self.source)
+            && !self.entries.is_empty()
+            && self.entries.len() <= 16
+            && self.entries.iter().all(|entry| {
+                text(&entry.kind)
+                    && text(&entry.size)
+                    && text(&entry.reclaimable)
+                    && entry.active <= entry.total
+            })
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

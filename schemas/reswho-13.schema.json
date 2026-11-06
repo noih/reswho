@@ -686,6 +686,15 @@
         },
         "host_resource": {
           "$ref": "#/$defs/hostResource"
+        },
+        "state": {
+          "enum": [
+            "creating",
+            "runnable",
+            "sleeping",
+            "stopped",
+            "zombie"
+          ]
         }
       },
       "required": [
@@ -898,6 +907,9 @@
         "metrics_scope": {
           "type": "string",
           "maxLength": 64
+        },
+        "disk_usage": {
+          "$ref": "#/$defs/disk_usage"
         }
       },
       "required": [
@@ -3037,6 +3049,64 @@
         "inode"
       ],
       "additionalProperties": false
+    },
+    "disk_usage": {
+      "type": "object",
+      "required": [
+        "source",
+        "entries"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "required": [
+              "kind",
+              "total",
+              "active",
+              "size",
+              "reclaimable"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "size": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "reclaimable": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "total": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "active": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

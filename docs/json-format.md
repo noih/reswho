@@ -47,6 +47,12 @@ hidden direct children, not all descendants. An empty visible tree does not prov
 that collection was complete. Each ref is unique within the full tree, although
 overlapping selections may repeat the same node.
 
+Overview collection does not request per-process command/details or runtime disk
+usage, even at `--depth all`. Explicit PID selections request only those PIDs;
+selecting a group does not request every descendant's details. Repeated selections
+share collection and detail work. Detailed queries remain bounded by the shared
+deadline; partial or unavailable results retain diagnostics.
+
 Refs are opaque query selectors. Copy them from output rather than reconstructing
 them. Paths, classification and runtime endpoints can change group refs. PID refs
 can be reused by the OS: cross-snapshot process matching requires your own host
@@ -81,6 +87,20 @@ A snapshot is not atomic. `captured_unix_ms` is near collection completion;
 excludes serialization. Module timings can overlap and must not be summed to
 obtain wall time. Short CPU windows can fluctuate; uptime includes idle time.
 
+Optional process `state` is the macOS process state at identity revalidation:
+`creating`, `runnable`, `sleeping`, `stopped`, or `zombie`. Missing means unknown.
+`sleeping` is not an application-level idle status. `zombie` means an exited
+process awaiting its parent's collection; it is not evidence of reclaimable RSS.
+
+Optional runtime `disk_usage` contains source-qualified daemon storage estimates.
+For Docker, selecting the exact runtime ref requests `docker system df` once;
+overview, container, and category selections do not. TUI runtime details are a
+captured view refreshed with `r`, rather than a recurring disk scan. Each entry
+has `kind`, `total`, `active`, `size`, and `reclaimable`. The last two fields retain
+the CLI's rounded display strings (including units/percentages), not exact bytes.
+Missing data is not zero. Estimates are separate from RAM totals and do not
+guarantee host disk space recovery or that deletion is safe.
+
 Container memory bases differ: Docker API values subtract applicable cgroup
 inactive-file memory, Docker CLI values are additionally rounded, Apple reports
 raw XPC usage, and Podman reports cgroup usage without that adjustment. These are
@@ -112,7 +132,11 @@ with that hint; compare with the group's host `totals.processes`. Multiple
 candidates coexist. Hints never add usage, resources, refs or tree depth.
 
 Project hints describe discovered cwd candidates, including when app grouping
-wins. Playwright CLI 1.64.x session names come from a verified daemon argument chain;
+wins. The `Project associations` category and `Project via cwd` summaries describe
+an association, not exclusive ownership: a server may serve other projects.
+`Project via parent cwd` identifies an inherited association. Neither establishes
+active use, sharing, abandonment, or permission to stop the process.
+Playwright CLI 1.64.x session names come from a verified daemon argument chain;
 `ancestor_cwd` project hints additionally require project discovery and disappear
 when `project` is disabled. Session names alone are not project evidence.
 

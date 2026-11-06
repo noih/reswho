@@ -222,6 +222,7 @@ pub(crate) fn fixture_snapshot(apple: bool, enabled: bool) -> crate::model::Snap
         cpu_overhead: apple.then_some(1),
     };
     let mut runtime = Runtime {
+        disk_usage: None,
         metrics_scope: Some("in_vm".into()),
         host_scope: (!apple).then(|| "docker".into()),
         configuration: (!apple).then(|| Box::new(configuration.clone())),

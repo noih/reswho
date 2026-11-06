@@ -553,7 +553,8 @@ fn detail_page_wraps_unicode_paths_and_scrolls_visual_lines() {
 fn details_wait_for_targeted_collection_and_refresh_only_while_open() {
     let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
     let recorded = calls.clone();
-    let worker = Worker::with_collector(move |_, pid| {
+    let worker = Worker::with_collector(move |_, reference| {
+        let pid = reference.as_deref().and_then(crate::model::selector_pid);
         recorded.lock().unwrap().push(pid);
         Ok(pid.map_or_else(snapshot, command_snapshot))
     });
@@ -582,6 +583,63 @@ fn details_wait_for_targeted_collection_and_refresh_only_while_open() {
     assert_eq!(*calls.lock().unwrap(), [None, Some(11), Some(11), None]);
     app.open_details();
     assert!(app.details.as_ref().unwrap().needs_query);
+}
+
+#[test]
+fn runtime_details_query_once_and_only_repeat_on_manual_refresh() {
+    fn source(detail: bool) -> Snapshot {
+        let mut source = snapshot();
+        let node = &mut source.root.children.last_mut().unwrap().children[0];
+        node.runtime = Some(Box::new(serde_json::from_value(serde_json::json!({
+            "name":"docker", "context":"test", "endpoint_ref":"endpoint", "daemon_id":"daemon",
+            "status":"available", "inventory_complete":true, "collection_ms":1, "unavailable":[],
+            "disk_usage": detail.then(|| serde_json::json!({"source":"docker system df", "entries":[{
+                "kind":"Images", "total":5, "active":2, "size":"16.43MB", "reclaimable":"11.63MB (70%)"
+            }]}))
+        })).unwrap()));
+        source
+    }
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = calls.clone();
+    let worker = Worker::with_collector(move |_, reference| {
+        let detail = reference.as_deref() == Some("group:runtime");
+        recorded.lock().unwrap().push(reference);
+        Ok(source(detail))
+    });
+    let mut app = App::new("group:all".into(), usize::MAX);
+    app.update(Ok(source(false)));
+    select(&mut app, "group:runtime");
+    app.open_details();
+    assert_eq!(
+        app.details.as_ref().unwrap().query_ref().as_deref(),
+        Some("group:runtime")
+    );
+    let now = Instant::now();
+    assert!(should_collect(&app, now, now));
+    request_snapshot(&worker, &mut app);
+    app.update(worker.results.recv_timeout(Duration::from_secs(2)).unwrap());
+    let lines = app.details.as_ref().unwrap().lines().join("\n");
+    assert!(lines.contains("11.63MB (70%)"), "{lines}");
+    assert!(lines.contains("not host free space"));
+    assert!(!should_collect(&app, now, now + Duration::from_secs(60)));
+    app.update(Err("fixture failure".into()));
+    app.request_refresh();
+    assert!(should_collect(&app, now, now));
+    request_snapshot(&worker, &mut app);
+    app.update(worker.results.recv_timeout(Duration::from_secs(2)).unwrap());
+    assert!(!should_collect(&app, now, now));
+    handle_key(&mut app, KeyCode::Esc.into());
+    assert!(should_collect(&app, now, now));
+    request_snapshot(&worker, &mut app);
+    app.update(worker.results.recv_timeout(Duration::from_secs(2)).unwrap());
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [
+            Some("group:runtime".into()),
+            Some("group:runtime".into()),
+            None
+        ]
+    );
 }
 
 #[test]
@@ -768,6 +826,7 @@ fn runtime_failure_reason_and_hint_show_in_status_bar() {
     let mut source = snapshot();
     let runtime = &mut source.root.children.last_mut().unwrap().children[0];
     runtime.runtime = Some(Box::new(crate::containers::Runtime {
+        disk_usage: None,
         metrics_scope: None,
         host_scope: None,
         configuration: None,
@@ -5920,7 +5979,7 @@ fn secondline_rows_preserve_first_lines_metrics_and_full_evidence() {
                 1,
                 "{text}"
             );
-            assert!(text.contains("Project folder: reswho"), "{text}");
+            assert!(text.contains("Project via cwd: reswho"), "{text}");
             assert!(text.contains("Codex log: 修復👩‍💻 presentation"), "{text}");
             let parent = rows
                 .iter()
@@ -6036,7 +6095,7 @@ fn secondline_selection_keeps_both_lines_legible_and_unselected_summary_dim() {
         let mut unselected_summaries = 0;
         for (line, text) in rows.iter().enumerate().filter(|(line, text)| {
             *line != y + 1
-                && (text.contains("Playwright session:") || text.contains("Project folder:"))
+                && (text.contains("Playwright session:") || text.contains("Project via cwd:"))
         }) {
             let x = text.find(|ch: char| ch.is_ascii_alphabetic()).unwrap() as u16;
             let cell = &buffer[(x, line as u16)];
@@ -6150,7 +6209,7 @@ fn secondline_uses_full_evidence_identity_and_recognizable_labels() {
         2,
         "distinct full evidence was hidden after clipping: {text}"
     );
-    assert!(text.contains("Project via parent: reswho"), "{text}");
+    assert!(text.contains("Project via parent cwd: reswho"), "{text}");
     assert!(text.contains("Tool role: Codex managed daemon"), "{text}");
     assert!(!text.contains("019aa1bb"), "{text}");
 }
@@ -6164,7 +6223,7 @@ fn secondline_uuid_sessions_fall_back_without_hiding_human_names() {
                 "Playwright CLI daemon",
                 "Tool role: Playwright CLI daemon",
             ),
-            ("project", "reswho", "Project folder: reswho"),
+            ("project", "reswho", "Project via cwd: reswho"),
         ] {
             let mut snapshot = secondline_snapshot();
             fn attach(node: &mut Node, basis: &str, kind: &str, value: &str) {
@@ -6212,7 +6271,7 @@ fn secondline_uuid_sessions_fall_back_without_hiding_human_names() {
             ))
             .join("\n");
             let fallback = if kind == "project" && basis == "ancestor_arguments" {
-                "Project via parent: reswho"
+                "Project via parent cwd: reswho"
             } else {
                 fallback
             };
@@ -6316,7 +6375,7 @@ fn secondline_project_producer_uses_exact_ancestor_path_and_keeps_other_context(
         assert_eq!(snapshot.root.children[0].summary.is_some(), visible);
         assert_eq!(snapshot.root.children[0].hints, process.hints);
         assert_eq!(
-            crate::output::markdown(&snapshot).contains("Project folder: shared"),
+            crate::output::markdown(&snapshot).contains("Project via cwd: shared"),
             visible
         );
         let wire = serde_json::to_value(&snapshot).unwrap();
@@ -6329,7 +6388,7 @@ fn secondline_project_producer_uses_exact_ancestor_path_and_keeps_other_context(
         let mut app = App::new("group:all".into(), usize::MAX);
         app.update(Ok(snapshot));
         assert_eq!(
-            screen(&app, 180).contains("Project folder: shared"),
+            screen(&app, 180).contains("Project via cwd: shared"),
             visible
         );
     }

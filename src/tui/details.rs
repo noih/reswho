@@ -21,6 +21,7 @@ enum Status {
 
 pub(super) struct Details {
     resource_ref: Option<String>,
+    runtime_query: bool,
     pid: u32,
     started: Option<u64>,
     node: Option<Node>,
@@ -34,13 +35,19 @@ pub(super) struct Details {
 impl Details {
     pub fn new(mut node: Node) -> Self {
         if node.process.is_none() {
+            let query = node.runtime.is_some();
             return Self {
                 resource_ref: Some(node.reference.clone()),
+                runtime_query: query,
                 pid: 0,
                 started: None,
                 node: Some(node),
-                status: Status::Ready,
-                needs_query: false,
+                status: if query {
+                    Status::Loading
+                } else {
+                    Status::Ready
+                },
+                needs_query: query,
                 vertical: Cell::new(0),
                 height: Cell::new(1),
                 width: Cell::new(1),
@@ -54,6 +61,7 @@ impl Details {
         node.children.clear();
         Self {
             resource_ref: None,
+            runtime_query: false,
             pid,
             started,
             node: Some(node),
@@ -74,6 +82,20 @@ impl Details {
             .then_some(self.pid)
     }
 
+    pub fn query_ref(&self) -> Option<String> {
+        self.query_pid()
+            .map(|pid| format!("pid:{pid}"))
+            .or_else(|| {
+                (self.runtime_details() && !matches!(self.status, Status::Unavailable(_)))
+                    .then(|| self.resource_ref.clone())
+                    .flatten()
+            })
+    }
+
+    pub fn runtime_details(&self) -> bool {
+        self.runtime_query
+    }
+
     pub fn retryable_error(&self) -> bool {
         matches!(self.status, Status::Failed(_))
             || self
@@ -85,7 +107,7 @@ impl Details {
     }
 
     pub fn refresh(&mut self) {
-        if self.query_pid().is_some() {
+        if self.query_ref().is_some() {
             self.needs_query = true;
             if matches!(self.status, Status::Failed(_)) {
                 self.status = Status::Loading;
@@ -95,6 +117,9 @@ impl Details {
 
     pub fn update(&mut self, result: &Result<Snapshot, String>) {
         if let Some(reference) = &self.resource_ref {
+            if self.needs_query {
+                return;
+            }
             match result {
                 Ok(snapshot) => match tree::select(&snapshot.root, reference) {
                     Ok(node) => {
@@ -153,7 +178,11 @@ impl Details {
     fn rows(&self) -> Vec<DetailRow> {
         let mut rows = Vec::new();
         match &self.status {
-            Status::Loading => rows.push(DetailRow::notice("Loading command...")),
+            Status::Loading => rows.push(DetailRow::notice(if self.resource_ref.is_some() {
+                "Loading details..."
+            } else {
+                "Loading command..."
+            })),
             Status::Failed(error) | Status::Unavailable(error) => {
                 rows.push(DetailRow::notice(format!("! {error}")));
             }
@@ -178,6 +207,19 @@ impl Details {
             }
             if node.process.is_none() {
                 rows.push(DetailRow::heading(node.display_name()));
+                rows.extend(
+                    output::disk_usage_lines(node)
+                        .into_iter()
+                        .map(DetailRow::text),
+                );
+                if let Some(runtime) = &node.runtime {
+                    rows.extend(
+                        runtime
+                            .unavailable
+                            .iter()
+                            .map(|error| DetailRow::notice(format!("! {error}"))),
+                    );
+                }
                 rows.extend(output::hint_lines(node).into_iter().map(DetailRow::text));
                 if let Some(container) = &node.container {
                     rows.push(DetailRow::text(format!(
@@ -206,6 +248,10 @@ impl Details {
             let process = node.process.as_ref().expect("detail process");
             rows.push(DetailRow::heading(node.display_name()));
             rows.push(DetailRow::field("Version", output::version_text(process)));
+            rows.push(DetailRow::field(
+                "State",
+                process.state.map_or("unknown", |state| state.label()),
+            ));
             if let Some(text) = output::original_name_text(process) {
                 rows.push(DetailRow::field("Reported name", text));
             }

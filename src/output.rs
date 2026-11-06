@@ -8,18 +8,18 @@ mod markdown_tests;
 
 pub const JSON_SCHEMA: &str = include_str!("../schemas/reswho-13.schema.json");
 
-pub const FORMAT_HELP: &str = r#"# Markdown reading guide — reswho-md/22
+pub const FORMAT_HELP: &str = r#"# Markdown reading guide — reswho-md/23
 
 Synthetic snapshot excerpt (names, refs and values are illustrative):
 
 ```markdown
 # reswho
 
-Format: reswho-md/22 · help: reswho --help-md
+Format: reswho-md/23 · help: reswho --help-md
 Captured: 1793664000000ms Unix · sample 251ms · collection 312ms
 Host CPU 8.0% · RAM 8.0GiB/16.0GiB · swap 0.0KiB · 8 logical CPUs · Σ120
 
-## Projects
+## Project associations
 
 group:projects · 25.0%  300.0MiB  ⏱︎ 2h  Σ3
 
@@ -49,6 +49,9 @@ an ancestor's full evidence identity are hidden; distinct branches remain visibl
 Markdown preserves full summary text without terminal clipping.
 Selected PID and group roots show full source-qualified hints instead of a compact
 summary; group hints include matched/total process coverage and all candidates.
+Depth controls tree expansion, not per-node detail. A process state before the
+ports is a native OS observation, not an application idle/release decision.
+Project associations and cwd summaries do not establish exclusive ownership.
 A session_log
 with open_session_log basis means a writable session-record handle was observed,
 not the foreground/current conversation or session-specific resource usage.
@@ -143,6 +146,12 @@ Environment variables and container-internal processes are not collected.
 
 ## Tags, Classification and evidence
 
+Selected PID output lists process facts before classification evidence.
+An explicitly selected Docker runtime includes daemon disk usage/reclaimable
+estimates from `docker system df`. These rounded display values are separate from
+RAM and do not guarantee host free space or safe deletion. Other selections do
+not request this scan, including `--depth all`.
+
 Tags lists effective hashtags (`bin` displays as #executable, runtime tags
 as their name), then the effective `name LABEL`, `work LABEL (BASIS)` and
 `version SUBJECT VALUE` after `·`. A work comes from a node or python entry:
@@ -221,7 +230,7 @@ fn header(snapshot: &Snapshot, host_count: bool) -> String {
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "# reswho\n\nFormat: reswho-md/22 · help: reswho --help-md  "
+        "# reswho\n\nFormat: reswho-md/23 · help: reswho --help-md  "
     );
     let _ = writeln!(
         text,
@@ -520,6 +529,27 @@ pub(crate) fn metric_text(metric: &crate::model::ResourceMetric) -> String {
     )
 }
 
+pub(crate) fn disk_usage_lines(node: &Node) -> Vec<String> {
+    let Some(usage) = node
+        .runtime
+        .as_ref()
+        .and_then(|runtime| runtime.disk_usage.as_ref())
+    else {
+        return Vec::new();
+    };
+    let mut lines = vec![format!(
+        "Disk usage [{}] (daemon storage; reclaimable estimates, not host free space)",
+        usage.source
+    )];
+    lines.extend(usage.entries.iter().map(|entry| {
+        format!(
+            "{}: {} total / {} active · size {} · reclaimable {}",
+            entry.kind, entry.total, entry.active, entry.size, entry.reclaimable,
+        )
+    }));
+    lines
+}
+
 fn write_node<'a>(
     text: &mut String,
     node: &'a Node,
@@ -557,7 +587,7 @@ fn write_node<'a>(
             percent(process.cpu_percent),
             memory(process.resident_bytes),
             uptime(process.uptime_seconds),
-            ports(process.network.as_ref())
+            process_status(process)
         );
     } else {
         let grouping = node
@@ -577,6 +607,12 @@ fn write_node<'a>(
         );
     }
     let mut notes = containers::notes(node, level == 0);
+    notes.extend(disk_usage_lines(node).iter().map(|line| escaped(line)));
+    if level == 0
+        && let Some(process) = &node.process
+    {
+        notes.extend(process_details(process));
+    }
     let mut shown = shown.to_vec();
     if level == 0 {
         notes.extend(hint_lines(node).iter().map(|line| escaped(line)));
@@ -618,11 +654,6 @@ fn write_node<'a>(
         )));
         notes.push("Classification".into());
         notes.extend(tag_report_lines(report).iter().map(|line| escaped(line)));
-    }
-    if level == 0
-        && let Some(process) = &node.process
-    {
-        notes.extend(process_details(process));
     }
     if node.process.is_none() || level == 0 {
         notes.extend(node.evidence.iter().map(|value| evidence_markdown(value)));
@@ -729,6 +760,10 @@ fn process_details(process: &Process) -> Vec<String> {
         process.ppid.map_or("?".into(), |pid| pid.to_string()),
         process.uid.map_or("?".into(), |uid| uid.to_string())
     )];
+    notes.push(format!(
+        "state: {}",
+        process.state.map_or("unknown", |state| state.label())
+    ));
     notes.push(format!("version {}", escaped(&version_text(process))));
     if let Some(text) = original_name_text(process) {
         notes.push(format!("reported name {}", escaped(&text)));
@@ -812,6 +847,14 @@ fn process_details(process: &Process) -> Vec<String> {
         notes.push(format!("! Unavailable: {}", escaped(&reasons.join("; "))));
     }
     notes
+}
+
+pub(crate) fn process_status(process: &Process) -> String {
+    let ports = ports(process.network.as_ref());
+    match process.state {
+        Some(state) => format!("{} · {ports}", state.label()),
+        None => ports,
+    }
 }
 
 pub(crate) fn group_uptime(totals: &Totals) -> String {

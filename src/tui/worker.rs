@@ -16,7 +16,7 @@ pub(super) struct Inputs {
 }
 
 pub(super) struct Worker {
-    requests: SyncSender<Option<u32>>,
+    requests: SyncSender<Option<String>>,
     pub results: Receiver<Result<Snapshot, String>>,
     pub report: Arc<Mutex<Vec<crate::extensions::report::Record>>>,
     inputs: Option<Arc<Mutex<Inputs>>>,
@@ -35,9 +35,14 @@ impl Worker {
             Inputs {
                 settings: Arc::clone(&options.settings),
             },
-            move |cancel, command_pid, inputs| {
+            move |cancel, detail_ref, inputs| {
                 options.settings = inputs.settings;
-                options.command_pids = command_pid.into_iter().collect();
+                options.command_pids = detail_ref
+                    .as_deref()
+                    .and_then(crate::model::selector_pid)
+                    .into_iter()
+                    .collect();
+                options.detail_refs = detail_ref.into_iter().collect();
                 snapshot::capture_reported(&options, cancel, Arc::clone(&current))
                     .map_err(|_| "Collection failed; see current extension status".into())
             },
@@ -48,7 +53,7 @@ impl Worker {
 
     fn with_inputs_collector(
         initial: Inputs,
-        mut collect: impl FnMut(&Cancellation, Option<u32>, Inputs) -> Result<Snapshot, String>
+        mut collect: impl FnMut(&Cancellation, Option<String>, Inputs) -> Result<Snapshot, String>
         + Send
         + 'static,
     ) -> Self {
@@ -63,7 +68,9 @@ impl Worker {
     }
 
     pub(super) fn with_collector(
-        mut collect: impl FnMut(&Cancellation, Option<u32>) -> Result<Snapshot, String> + Send + 'static,
+        mut collect: impl FnMut(&Cancellation, Option<String>) -> Result<Snapshot, String>
+        + Send
+        + 'static,
     ) -> Self {
         let (requests, incoming) = mpsc::sync_channel(1);
         let (outgoing, results) = mpsc::sync_channel(1);
@@ -99,8 +106,8 @@ impl Worker {
         }
     }
 
-    pub fn request(&self, command_pid: Option<u32>) -> bool {
-        self.requests.try_send(command_pid).is_ok()
+    pub fn request(&self, detail_ref: Option<String>) -> bool {
+        self.requests.try_send(detail_ref).is_ok()
     }
 }
 

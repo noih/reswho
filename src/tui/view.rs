@@ -114,7 +114,7 @@ fn state_label(node: &Node) -> String {
         );
     }
     if let Some(process) = &node.process {
-        let ports = output::ports(process.network.as_ref());
+        let ports = output::process_status(process);
         return if process.roles.is_empty() {
             ports
         } else {

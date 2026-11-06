@@ -13,6 +13,7 @@ pub struct Options {
     pub settings: Arc<crate::settings::Resolved>,
     pub containers: bool,
     pub command_pids: Vec<u32>,
+    pub detail_refs: Vec<String>,
 }
 
 pub fn capture(options: &Options, cancel: &Cancellation) -> Result<Snapshot> {
@@ -30,10 +31,12 @@ pub fn capture_reported(
     cancel.check()?;
     let mut context = crate::extensions::Context::new(&options.settings, cancel);
     context.report = Arc::clone(&report);
+    context.detail_refs = &options.detail_refs;
     let mut collection = collect::collect_with_context(&context, &options.command_pids)?;
     cancel.check()?;
     let mut context = crate::extensions::Context::new(&options.settings, cancel);
     context.report = Arc::clone(&report);
+    context.detail_refs = &options.detail_refs;
     let classifiers = [&crate::core::Core::AppBundle as &dyn crate::extensions::Extension];
     let mut root =
         tree::build_with_providers(collection.processes.clone(), &context, &classifiers)?;
@@ -122,6 +125,11 @@ fn selected_details(
     context: &crate::extensions::Context<'_>,
     verify: impl Fn(&crate::model::Process) -> bool,
 ) {
+    if pids.is_empty() {
+        return;
+    }
+    let pids: std::collections::HashSet<_> = pids.iter().copied().collect();
+    let mut updates = std::collections::HashMap::new();
     for process in processes
         .iter_mut()
         .filter(|process| pids.contains(&process.pid) && process.started_unix_us.is_some())
@@ -130,17 +138,22 @@ fn selected_details(
         if !providers.is_empty() {
             validate_details_identity(context, process, &verify);
         }
-        attach_details(root, process, &diagnostics);
+        updates.insert(process.pid, (&*process, diagnostics));
     }
+    attach_details(root, &updates);
 }
 
 fn attach_details(
     node: &mut crate::model::Node,
-    process: &crate::model::Process,
-    diagnostics: &[crate::model::Diagnostic],
+    updates: &std::collections::HashMap<
+        u32,
+        (&crate::model::Process, Vec<crate::model::Diagnostic>),
+    >,
 ) {
-    if let Some(old) = node.process.as_mut().filter(|old| old.pid == process.pid) {
-        let mut updated = process.clone();
+    if let Some(old) = node.process.as_mut()
+        && let Some((process, diagnostics)) = updates.get(&old.pid)
+    {
+        let mut updated = (*process).clone();
         updated.tag_report = old.tag_report.take();
         updated.roles = std::mem::take(&mut old.roles);
         updated.name = std::mem::take(&mut old.name);
@@ -153,7 +166,7 @@ fn attach_details(
         node.diagnostics.extend_from_slice(diagnostics);
     }
     for child in &mut node.children {
-        attach_details(child, process, diagnostics);
+        attach_details(child, updates);
     }
 }
 

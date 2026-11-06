@@ -625,6 +625,154 @@ fn collect(
 ) -> (Runtime, Vec<Container>) {
     crate::extensions::collection::assert_adapter(
         "docker",
-        super::collect(runner, context, host, now),
+        super::collect(runner, context, host, now, &[]),
     )
+}
+
+#[test]
+fn disk_usage_only_queries_selected_runtime_and_preserves_reported_estimates() {
+    let id = "a".repeat(64);
+    let unrelated = vec![
+        "group:all".into(),
+        "group:containers".into(),
+        "group:stale-runtime".into(),
+        "pid:42".into(),
+    ];
+    let mut fake = configured(&id, "tcp://remote.example:2376");
+    let (runtime, _) = super::collect(&mut fake, Some("fixture".into()), None, now(), &unrelated);
+    assert!(runtime.disk_usage.is_none());
+    assert!(
+        !fake
+            .calls
+            .iter()
+            .any(|args| args.iter().any(|arg| arg == "df"))
+    );
+    let mut fake = configured(&id, "tcp://remote.example:2376");
+    let (_, containers) = collect(&mut fake, Some("fixture".into()), None, now());
+    assert_eq!(containers.len(), 1);
+    assert!(
+        !fake
+            .calls
+            .iter()
+            .any(|args| args.iter().any(|arg| arg == "df"))
+    );
+
+    let mut fake = configured(&id, "tcp://remote.example:2376");
+    fake.replies.push_back(Ok(Output {
+        stdout: br#"{"Type":"Images","TotalCount":"5","Active":"2","Size":"16.43MB","Reclaimable":"11.63MB (70%)"}
+{"Type":"Build Cache","TotalCount":"0","Active":"0","Size":"0B","Reclaimable":"0B"}
+"#.to_vec(),
+        issue: None, timed_out: false, exit_code: None,
+    }));
+    let mut selected = disk_detail_refs();
+    selected.push(selected[0].clone());
+    let (runtime, containers) = crate::extensions::collection::assert_adapter(
+        "docker",
+        super::collect(&mut fake, Some("fixture".into()), None, now(), &selected),
+    );
+    assert!(runtime.inventory_complete);
+    assert_eq!(containers[0].memory_bytes, Some(1572864));
+    let usage = runtime.disk_usage.as_ref().unwrap();
+    assert_eq!(usage.source, "docker system df");
+    assert_eq!(usage.entries.len(), 2);
+    assert_eq!(usage.entries[0].reclaimable, "11.63MB (70%)");
+    assert_eq!(usage.entries[1].reclaimable, "0B");
+    assert_eq!(
+        fake.calls.last().unwrap(),
+        &[
+            "--context=fixture",
+            "system",
+            "df",
+            "--format",
+            "{{json .}}"
+        ]
+    );
+    assert!(fake.replies.is_empty());
+    let root = crate::containers::build(runtime, containers).unwrap();
+    let mut snapshot = crate::model::Snapshot {
+        extensions: vec![],
+        schema: crate::model::JSON_SCHEMA_VERSION,
+        captured_unix_ms: 1,
+        sample_ms: 250,
+        collection_ms: 1,
+        system: Default::default(),
+        scope: "group:containers".into(),
+        root,
+        warnings: vec![],
+    };
+    snapshot.project(&[]);
+    let json = serde_json::to_value(&snapshot).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(crate::output::JSON_SCHEMA).unwrap();
+    assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&json));
+    let markdown = crate::output::markdown(&snapshot);
+    assert!(markdown.contains("11.63MB (70%)"), "{markdown}");
+    assert!(markdown.contains("not host free space"));
+    assert_eq!(snapshot.root.totals.resident_bytes, 0);
+}
+
+#[test]
+fn invalid_or_failed_disk_usage_does_not_discard_container_metrics() {
+    for payload in [
+        "",
+        "{}",
+        "not json",
+        r#"{"Type":"Images","TotalCount":"1","Active":"2","Size":"1GB","Reclaimable":"0B"}"#,
+        r#"{"Type":"Images","TotalCount":"-1","Active":"0","Size":"1GB","Reclaimable":"0B"}"#,
+        r#"{"Type":"Images","TotalCount":"1","Active":"0","Size":"1GB","Reclaimable":"bad\nvalue"}"#,
+        r#"{"Type":"Images","TotalCount":"1","Active":"0","Size":"1GB","Reclaimable":"0B"} {}"#,
+    ] {
+        let id = "a".repeat(64);
+        let mut fake = configured(&id, "tcp://remote.example:2376");
+        fake.replies.push_back(Ok(Output {
+            stdout: payload.as_bytes().to_vec(),
+            issue: None,
+            timed_out: false,
+            exit_code: None,
+        }));
+        let (runtime, containers) = crate::extensions::collection::assert_adapter(
+            "docker",
+            super::collect(
+                &mut fake,
+                Some("fixture".into()),
+                None,
+                now(),
+                &disk_detail_refs(),
+            ),
+        );
+        assert_eq!(runtime.status, "available");
+        assert!(runtime.disk_usage.is_none());
+        assert!(
+            runtime
+                .unavailable
+                .iter()
+                .any(|d| d.operation == "docker.disk_usage")
+        );
+        assert_eq!(containers[0].memory_bytes, Some(1572864));
+    }
+    let mut fake = configured(&"a".repeat(64), "tcp://remote.example:2376");
+    fake.replies.push_back(Ok(Output {
+        stdout: vec![],
+        issue: Some("command timed out".into()),
+        timed_out: true,
+        exit_code: None,
+    }));
+    let (runtime, containers) = crate::extensions::collection::assert_adapter(
+        "docker",
+        super::collect(
+            &mut fake,
+            Some("fixture".into()),
+            None,
+            now(),
+            &disk_detail_refs(),
+        ),
+    );
+    assert!(runtime.disk_usage.is_none());
+    assert!(runtime.unavailable.iter().any(|d| d.operation == "docker.disk_usage" && d.reason == Some(FailureReason::Timeout)));
+    assert_eq!(containers[0].memory_bytes, Some(1572864));
+}
+
+fn disk_detail_refs() -> Vec<String> {
+    let mut fake = configured(&"a".repeat(64), "tcp://remote.example:2376");
+    let (runtime, _) = collect(&mut fake, Some("fixture".into()), None, now());
+    vec![runtime.reference()]
 }

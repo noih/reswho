@@ -50,11 +50,30 @@ fn fixture_snapshot() -> Snapshot {
 }
 
 #[test]
+fn process_states_remain_visible_in_overviews_without_classification_details() {
+    let mut snapshot = fixture_snapshot();
+    snapshot.root = tree::select(&snapshot.root, "pid:10").unwrap();
+    snapshot.root.process.as_mut().unwrap().state = Some(crate::model::ProcessState::Sleeping);
+    snapshot.root.children[0].process.as_mut().unwrap().state =
+        Some(crate::model::ProcessState::Zombie);
+    let totals = snapshot.root.totals.clone();
+    let overview = markdown(&snapshot);
+    assert!(overview.contains("sleeping · -"), "{overview}");
+    assert!(overview.contains("zombie · -"), "{overview}");
+    assert!(!overview.contains("Classification"));
+    snapshot.scope = "pid:10".into();
+    let details = markdown(&snapshot);
+    assert!(details.find("state: sleeping").unwrap() < details.find("Classification").unwrap());
+    assert_eq!(snapshot.root.totals.resident_bytes, totals.resident_bytes);
+    assert_eq!(snapshot.root.totals.processes, totals.processes);
+}
+
+#[test]
 fn report_categories_quotes_and_process_lists_have_distinct_structure() {
     let snapshot = fixture_snapshot();
     let md = markdown(&snapshot);
     assert!(md.starts_with("# reswho\n\n"));
-    assert!(md.contains("reswho-md/22 · help: reswho --help-md"));
+    assert!(md.contains("reswho-md/23 · help: reswho --help-md"));
     assert!(!md.contains("Collection prototype:"));
     assert_eq!(md.matches("> ! Host swap:").count(), 1);
     assert!(!md.contains("Resources group:all"));
@@ -372,6 +391,14 @@ fn effective_hashtags_preserve_labels_and_markdown_keeps_selected_pid_scope() {
     let md = markdown(&snapshot);
     assert_eq!(md.matches("Tags #executable").count(), 1, "{md}");
     assert_eq!(md.matches("Classification").count(), 1, "{md}");
+    assert!(
+        md.find("PPID").unwrap() < md.find("Classification").unwrap(),
+        "{md}"
+    );
+    assert!(
+        md.find("cwd:").unwrap() < md.find("Classification").unwrap(),
+        "{md}"
+    );
     assert!(!md.contains("runtime:hash"));
     snapshot.scope = "group:all".into();
     assert!(!markdown(&snapshot).contains("#executable"));

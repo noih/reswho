@@ -25,7 +25,7 @@ fn help_is_available_without_resource_collection() {
     );
     let text = String::from_utf8(result.stdout).unwrap();
     for meaning in [
-        "reswho-md/22",
+        "reswho-md/23",
         "root=0",
         "Group ⏱︎ is the longest",
         "ΣN is the total host process count",

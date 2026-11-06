@@ -446,9 +446,11 @@ pub(super) fn collect(
     context: Option<String>,
     host: Option<String>,
     now: OffsetDateTime,
+    detail_refs: &[String],
 ) -> (Runtime, Vec<Container>) {
     let started = Instant::now();
     let mut runtime = Runtime {
+        disk_usage: None,
         metrics_scope: None,
         host_scope: None,
         configuration: None,
@@ -473,7 +475,20 @@ pub(super) fn collect(
         &mut probe,
     );
     let containers = match result {
-        Ok(containers) => containers,
+        Ok((containers, source)) => {
+            if !detail_refs.is_empty() && detail_refs.contains(&runtime.reference()) {
+                match collect_disk_usage(runner, &source) {
+                    Ok(usage) => runtime.disk_usage = Some(usage),
+                    Err(error) => runtime.unavailable.push(probe.diagnose(
+                        "unavailable",
+                        "docker.disk_usage",
+                        &error,
+                        Some(&source.host),
+                    )),
+                }
+            }
+            containers
+        }
         Err(error) => {
             runtime.unavailable.push(probe.diagnose(
                 "collection_failed",
@@ -500,7 +515,7 @@ fn collect_inner(
     runtime: &mut Runtime,
     endpoint: &mut Option<String>,
     probe: &mut command::Probe,
-) -> Result<Vec<Container>> {
+) -> Result<(Vec<Container>, Source)> {
     let source = source(runner, context, host)?;
     *endpoint = Some(source.host.clone());
     runtime.context = source.context.clone();
@@ -674,7 +689,61 @@ fn collect_inner(
             format!("inspect/state unavailable for {missing_details} containers"),
         ));
     }
-    Ok(containers)
+    Ok((containers, source))
+}
+
+fn collect_disk_usage(runner: &mut impl Runner, source: &Source) -> Result<super::DiskUsage> {
+    let output = request(
+        runner,
+        source,
+        &["system", "df", "--format", "{{json .}}"],
+        &[],
+    )?;
+    if let Some(issue) = &output.issue {
+        return Err(output.failure(format!("disk usage: {issue}")));
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct Row {
+        #[serde(rename = "Type")]
+        kind: String,
+        total_count: String,
+        active: String,
+        size: String,
+        reclaimable: String,
+    }
+    let invalid = || {
+        fail(
+            FailureReason::DaemonError,
+            "invalid Docker disk usage summary",
+        )
+    };
+    let mut entries = Vec::new();
+    if output.stdout.len() > 64 * 1024 {
+        return Err(invalid());
+    }
+    let mut kinds = BTreeSet::new();
+    for row in serde_json::Deserializer::from_slice(&output.stdout).into_iter::<Row>() {
+        let row = row.map_err(|_| invalid())?;
+        if entries.len() >= 16 || !kinds.insert(row.kind.clone()) {
+            return Err(invalid());
+        }
+        entries.push(super::DiskUsageEntry {
+            kind: row.kind,
+            total: row.total_count.parse().map_err(|_| invalid())?,
+            active: row.active.parse().map_err(|_| invalid())?,
+            size: row.size,
+            reclaimable: row.reclaimable,
+        });
+    }
+    let usage = super::DiskUsage {
+        source: "docker system df".into(),
+        entries,
+    };
+    if !usage.valid() {
+        return Err(invalid());
+    }
+    Ok(usage)
 }
 
 #[cfg(test)]

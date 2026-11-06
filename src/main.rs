@@ -359,6 +359,7 @@ fn run() -> Result<usize> {
                         settings: Arc::clone(&resolved),
                         containers: !args.no_containers,
                         command_pids: Vec::new(),
+                        detail_refs: Vec::new(),
                     },
                     selectors[0].clone(),
                     args.depth,
@@ -377,6 +378,7 @@ fn run() -> Result<usize> {
                 &Options {
                     settings: Arc::clone(&resolved),
                     containers: !args.no_containers,
+                    detail_refs: selectors.clone(),
                     command_pids: selectors
                         .iter()
                         .filter_map(|selector| reswho::model::selector_pid(selector))

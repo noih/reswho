@@ -113,6 +113,7 @@ fn measure_docker_collection() {
             std::env::var("DOCKER_CONTEXT").ok(),
             std::env::var("DOCKER_HOST").ok(),
             time::OffsetDateTime::now_utc(),
+            &[],
         );
         let collection_ms = start.elapsed().as_secs_f64() * 1000.0;
         let command_ms: f64 = runner
@@ -165,6 +166,7 @@ fn measure_full_snapshot() {
                 settings: std::sync::Arc::new(crate::extensions::default_settings().unwrap()),
                 containers: true,
                 command_pids: Vec::new(),
+                detail_refs: Vec::new(),
             },
             &Cancellation::default(),
         )

@@ -38,6 +38,75 @@ impl Extension for Details {
 }
 
 #[test]
+fn large_detail_selection_queries_each_requested_identity_once() {
+    let mut processes: Vec<_> = (10..1010)
+        .map(|pid| Process {
+            pid,
+            started_unix_us: Some(u64::from(pid)),
+            name: "fixture".into(),
+            resident_bytes: Some(100),
+            ..Default::default()
+        })
+        .collect();
+    let mut root = crate::model::Node::group(
+        "group:all".into(),
+        "Resources".into(),
+        vec![],
+        crate::model::Grouping::Category,
+    );
+    for process in &processes {
+        let mut node = crate::model::Node::group(
+            format!("pid:{}", process.pid),
+            process.name.clone(),
+            vec![],
+            crate::model::Grouping::Category,
+        );
+        node.kind = "process";
+        node.grouping = None;
+        node.process = Some(Box::new(process.clone()));
+        root.totals.add_process(process);
+        root.children.push(node);
+    }
+    let settings = extensions::default_settings().unwrap();
+    let cancel = Cancellation::default();
+    let context = extensions::Context::new(&settings, &cancel);
+    let provider = Details("fixture", false);
+    selected_details(
+        &mut root,
+        &mut processes,
+        &[],
+        &[&provider],
+        &context,
+        |_| panic!("overview must not query details"),
+    );
+    let mut requested: Vec<_> = (10..1010).filter(|pid| pid % 2 == 0).collect();
+    requested.extend([10, 10, 9999]);
+    let verified = std::cell::Cell::new(0);
+    selected_details(
+        &mut root,
+        &mut processes,
+        &requested,
+        &[&provider],
+        &context,
+        |_| {
+            verified.set(verified.get() + 1);
+            true
+        },
+    );
+    assert_eq!(verified.get(), 500);
+    crate::model::project_node(&mut root, &requested);
+    for node in &root.children {
+        let process = node.process.as_ref().unwrap();
+        assert_eq!(
+            process.extension_details.len(),
+            usize::from(process.pid % 2 == 0)
+        );
+    }
+    assert_eq!(root.totals.processes, 1000);
+    assert_eq!(root.totals.resident_bytes, 100_000);
+}
+
+#[test]
 fn final_identity_rejection_invalidates_only_contributing_details_and_suppresses_retry() {
     let settings = extensions::default_settings().unwrap();
     let cancel = Cancellation::default();
@@ -201,7 +270,10 @@ fn tag_names_and_versions_survive_projects_apps_and_selected_details() {
     }
     let mut detailed = in_project.clone();
     detailed.command = Some(Default::default());
-    attach_details(&mut root, &detailed, &[]);
+    attach_details(
+        &mut root,
+        &std::collections::HashMap::from([(detailed.pid, (&detailed, vec![]))]),
+    );
     let mut snapshot = Snapshot {
         schema: crate::model::JSON_SCHEMA_VERSION,
         extensions: vec![],
@@ -313,7 +385,10 @@ fn vm_host_resource_survives_selected_detail_refresh() {
         started_unix_us: Some(40),
         ..Default::default()
     };
-    super::attach_details(&mut snapshot.root, &fresh, &[]);
+    super::attach_details(
+        &mut snapshot.root,
+        &std::collections::HashMap::from([(fresh.pid, (&fresh, vec![]))]),
+    );
     let process = crate::tree::select(&snapshot.root, "pid:40")
         .unwrap()
         .process

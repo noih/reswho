@@ -170,10 +170,7 @@ impl App {
             && node.resource.is_none()
             && node.host_resources.is_empty()
             && node.hints.is_empty()
-            && node
-                .runtime
-                .as_ref()
-                .is_none_or(|r| r.configuration.is_none())
+            && node.runtime.is_none()
             && node
                 .container
                 .as_ref()
@@ -208,7 +205,7 @@ impl App {
         if self
             .details
             .as_ref()
-            .is_some_and(|details| details.query_pid().is_none())
+            .is_some_and(|details| details.query_ref().is_none())
         {
             return "";
         }
@@ -223,7 +220,7 @@ impl App {
         if self
             .details
             .as_ref()
-            .is_some_and(|details| details.query_pid().is_none())
+            .is_some_and(|details| details.query_ref().is_none())
         {
             return;
         }

@@ -66,7 +66,7 @@ fn proposals(facts: &Facts<'_>) -> Vec<ClassificationProposal> {
 fn registration() -> crate::extensions::placement::Registration {
     use crate::extensions::placement::*;
     Registration {
-        categories: vec![Category::new("projects", "Projects", 200)],
+        categories: vec![Category::new("projects", "Project associations", 200)],
         ownership: vec![Ownership {
             grouping: crate::model::Grouping::Project,
             ..Ownership::new("project", "projects", 200)
@@ -78,7 +78,7 @@ fn assignment(project: Project) -> crate::extensions::host::assignment::Assignme
     crate::extensions::host::assignment::Assignment {
         group_key: None,
         category: "projects".into(),
-        category_name: "Projects".into(),
+        category_name: "Project associations".into(),
         key: project.root.to_string_lossy().into_owned(),
         name: project
             .root
@@ -308,9 +308,9 @@ pub(super) fn summary(
     let inherited = hint.basis == "ancestor_cwd";
     let mut summary = crate::extensions::Summary::new(
         if inherited {
-            "Project via parent"
+            "Project via parent cwd"
         } else {
-            "Project folder"
+            "Project via cwd"
         },
         &hint.value,
         20,

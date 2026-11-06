@@ -43,6 +43,7 @@ pub struct Descriptor {
 }
 
 pub struct Context<'a> {
+    pub(crate) detail_refs: &'a [String],
     pub settings: &'a Resolved,
     pub cancel: &'a Cancellation,
     pub deadline: Instant,
@@ -54,6 +55,7 @@ pub struct Context<'a> {
 impl<'a> Context<'a> {
     pub fn new(settings: &'a Resolved, cancel: &'a Cancellation) -> Self {
         Self {
+            detail_refs: &[],
             settings,
             cancel,
             deadline: Instant::now() + Duration::from_secs(10),
@@ -803,6 +805,7 @@ pub fn collect_scoped(
             _ => Some((
                 label.clone(),
                 Runtime {
+                    disk_usage: None,
                     metrics_scope: None,
                     host_scope: None,
                     configuration: None,

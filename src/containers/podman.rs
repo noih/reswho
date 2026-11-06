@@ -227,6 +227,7 @@ fn stable(before: &Inspect, after: &Inspect, now: OffsetDateTime) -> bool {
 }
 fn empty_runtime() -> Runtime {
     Runtime {
+        disk_usage: None,
         metrics_scope: None,
         host_scope: None,
         configuration: None,

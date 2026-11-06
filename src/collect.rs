@@ -376,13 +376,13 @@ mod macos {
         pub observed_ticks: u64,
     }
 
-    unsafe fn info<T>(pid: i32, flavor: i32) -> io::Result<T> {
+    unsafe fn info<T>(pid: i32, flavor: i32, argument: u64) -> io::Result<T> {
         let mut value = MaybeUninit::<T>::zeroed();
         let bytes = unsafe {
             libc::proc_pidinfo(
                 pid,
                 flavor,
-                0,
+                argument,
                 value.as_mut_ptr().cast(),
                 size_of::<T>() as i32,
             )
@@ -397,7 +397,8 @@ mod macos {
     }
 
     fn bsd_info(pid: i32) -> io::Result<libc::proc_bsdinfo> {
-        unsafe { info(pid, libc::PROC_PIDTBSDINFO) }
+        const INCLUDE_ZOMBIES: u64 = 1;
+        unsafe { info(pid, libc::PROC_PIDTBSDINFO, INCLUDE_ZOMBIES) }
     }
 
     fn text(bytes: impl IntoIterator<Item = libc::c_char>) -> String {
@@ -411,6 +412,56 @@ mod macos {
 
     fn started(info: &libc::proc_bsdinfo) -> u64 {
         info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
+    }
+
+    pub(super) fn process_state(status: u32) -> Option<crate::model::ProcessState> {
+        use crate::model::ProcessState;
+        match status {
+            libc::SIDL => Some(ProcessState::Creating),
+            libc::SRUN => Some(ProcessState::Runnable),
+            libc::SSLEEP => Some(ProcessState::Sleeping),
+            libc::SSTOP => Some(ProcessState::Stopped),
+            libc::SZOMB => Some(ProcessState::Zombie),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn owned_zombie_is_observed_before_parent_reaps_it() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                self.0.wait().expect("reap owned exited child");
+            }
+        }
+        let child = Child(std::process::Command::new("/usr/bin/true").spawn().unwrap());
+        let mut status = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+        assert_eq!(
+            unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    child.0.id(),
+                    status.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOWAIT,
+                )
+            },
+            0
+        );
+        let settings = crate::extensions::default_settings().unwrap();
+        let cancel = crate::snapshot::Cancellation::default();
+        let context = crate::extensions::Context::new(&settings, &cancel);
+        let observations = scan(false, &context, &[]).unwrap();
+        let observed = &observations
+            .get(&child.0.id())
+            .expect("owned zombie in inventory")
+            .process;
+        assert_eq!(
+            observed.state,
+            Some(crate::model::ProcessState::Zombie),
+            "{observed:?}"
+        );
+        assert_eq!(observed.ppid, Some(std::process::id()));
+        assert!(observed.started_unix_us.is_some());
     }
 
     fn pids() -> Result<Vec<i32>> {
@@ -481,6 +532,7 @@ mod macos {
             .context("system clock before Unix epoch")?
             .as_secs();
         let mut observations = HashMap::new();
+        let command_pids: std::collections::HashSet<_> = command_pids.iter().copied().collect();
         for pid in pids()? {
             cancel.check()?;
             let mut process = Process {
@@ -492,6 +544,7 @@ mod macos {
             if let Ok(info) = &initial {
                 process.ppid = Some(info.pbi_ppid);
                 process.uid = Some(info.pbi_uid);
+                process.state = process_state(info.pbi_status);
                 process.started_unix_us = Some(started(info));
                 process.uptime_seconds = now.checked_sub(info.pbi_start_tvsec);
                 process.name = text(info.pbi_name);
@@ -502,7 +555,7 @@ mod macos {
                 process.unavailable.push(Diagnostic::io("identity", error));
             }
             let task: io::Result<libc::proc_taskinfo> =
-                unsafe { info(pid, libc::PROC_PIDTASKINFO) };
+                unsafe { info(pid, libc::PROC_PIDTASKINFO, 0) };
             let observed_ticks = unsafe { mach2::mach_time::mach_absolute_time() };
             let mut cpu_ticks = None;
             match task {
@@ -528,7 +581,7 @@ mod macos {
                         .push(Diagnostic::io("executable", &error)),
                 }
                 let cwd: io::Result<libc::proc_vnodepathinfo> =
-                    unsafe { info(pid, libc::PROC_PIDVNODEPATHINFO) };
+                    unsafe { info(pid, libc::PROC_PIDVNODEPATHINFO, 0) };
                 match cwd {
                     Ok(info) => {
                         let path = text(info.pvi_cdir.vip_path.into_iter().flatten());
@@ -590,7 +643,12 @@ mod macos {
                         .is_some_and(|(before, after)| before.pbi_uid == after.pbi_uid)
                     && process.executable.is_some()
                     && executable(pid).ok() == process.executable);
-            if !consistent {
+            if consistent {
+                process.state = final_identity
+                    .as_ref()
+                    .ok()
+                    .and_then(|info| process_state(info.pbi_status));
+            } else {
                 process = Process {
                     pid: pid as u32,
                     name: format!("process {pid}"),
@@ -777,6 +835,23 @@ mod tests {
         assert_eq!(cpu_percent(10, 210, 100), Some(200.0));
         assert_eq!(cpu_percent(10, 9, 100), None);
         assert_eq!(cpu_percent(10, 20, 0), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_process_states_do_not_confuse_sleeping_with_zombie_or_unknown() {
+        use crate::model::ProcessState;
+        for (raw, expected) in [
+            (libc::SIDL, Some(ProcessState::Creating)),
+            (libc::SRUN, Some(ProcessState::Runnable)),
+            (libc::SSLEEP, Some(ProcessState::Sleeping)),
+            (libc::SSTOP, Some(ProcessState::Stopped)),
+            (libc::SZOMB, Some(ProcessState::Zombie)),
+            (0, None),
+            (u32::MAX, None),
+        ] {
+            assert_eq!(macos::process_state(raw), expected);
+        }
     }
 }
 

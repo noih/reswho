@@ -55,6 +55,10 @@ fn containers(provider: &str, runtime: &Runtime, containers: &[Container]) -> Re
             && runtime.daemon_id.as_deref().is_none_or(|s| text(s, 256))
             && scope(runtime.metrics_scope.as_deref())
             && configuration(runtime.configuration.as_deref())
+            && runtime
+                .disk_usage
+                .as_ref()
+                .is_none_or(|usage| usage.valid())
             && diagnostics(&runtime.unavailable)
             && containers.len() <= 4096,
         "invalid extension runtime"
