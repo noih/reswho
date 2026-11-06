@@ -9,6 +9,7 @@
 - Query Docker disk usage only for a selected runtime's details; TUI runtime details refresh manually with `r`.
 - Preserve Docker runtime identity and container metrics when a disk-usage query times out.
 - Refresh TUI details without a full host snapshot: sample only the selected PID and bounded parent metadata, or query only the selected runtime, container, or resource provider. Cancel closed queries and reject stale results.
+- Identify Herdr session servers as shared services under default Ownership priority from verified launch modes; retain cwd associations and report current clients as unknown.
 - Match and attach batched PID details in one tree traversal rather than rescanning for every selected process.
 
 ## 1.1.1

@@ -97,7 +97,8 @@ pub fn attach_details(
             validation_started.elapsed(),
             result,
         ) {
-            Ok(details) => process.extension_details.push(details),
+            Ok(details) if !details.fields.is_empty() => process.extension_details.push(details),
+            Ok(_) => {}
             Err(_) => diagnostics.push(super::invalid(
                 id.as_deref().unwrap_or(&format!("unidentified-{index}")),
                 "details",

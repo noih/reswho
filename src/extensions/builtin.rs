@@ -12,3 +12,5 @@ pub(crate) mod vm;
 pub(crate) mod claude;
 pub(crate) mod codex;
 pub(crate) mod playwright;
+
+pub(crate) mod herdr;

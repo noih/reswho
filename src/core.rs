@@ -23,7 +23,7 @@ impl Extension for Core {
         let module = self.module();
         Descriptor {
             id: module.id.into(),
-            capabilities: vec![module.capability],
+            capabilities: module.capabilities.to_vec(),
             enabled: true,
             availability: "available",
         }

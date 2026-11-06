@@ -52,6 +52,9 @@ summary; group hints include matched/total process coverage and all candidates.
 Depth controls tree expansion, not per-node detail. A process state before the
 ports is a native OS observation, not an application idle/release decision.
 Project associations and cwd summaries do not establish exclusive ownership.
+The Herdr extension groups verified server launch modes under Shared services.
+Its session-wide scope can span projects; current clients and their projects
+remain unknown. cwd evidence is retained and usage is counted once.
 A session_log
 with open_session_log basis means a writable session-record handle was observed,
 not the foreground/current conversation or session-specific resource usage.

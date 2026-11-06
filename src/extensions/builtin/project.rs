@@ -18,7 +18,7 @@ pub(crate) static MODULE: Module = Module {
     registration,
     decorate: Some(decorate),
     id: ID,
-    capability: Capability::Classify,
+    capabilities: &[Capability::Classify],
     execute,
     settings: no_settings,
 };

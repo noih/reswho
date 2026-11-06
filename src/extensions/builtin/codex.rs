@@ -13,7 +13,7 @@ pub(crate) static MODULE: Module = Module {
     registration: no_registration,
     decorate: None,
     id: "codex",
-    capability: Capability::Classify,
+    capabilities: &[Capability::Classify],
     execute,
     settings: no_settings,
 };

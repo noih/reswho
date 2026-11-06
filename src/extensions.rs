@@ -461,10 +461,11 @@ pub enum Builtin {
     Codex,
     Claude,
     Playwright,
+    Herdr,
     Vm,
 }
 
-pub const BUILTINS: [Builtin; 13] = [
+pub const BUILTINS: [Builtin; 14] = [
     Builtin::Project,
     Builtin::Ancestor,
     Builtin::VersionedInstall,
@@ -478,9 +479,10 @@ pub const BUILTINS: [Builtin; 13] = [
     Builtin::Codex,
     Builtin::Claude,
     Builtin::Playwright,
+    Builtin::Herdr,
 ];
 
-pub(crate) fn round_classifiers() -> [&'static dyn Extension; 10] {
+pub(crate) fn round_classifiers() -> [&'static dyn Extension; 11] {
     [
         &Builtin::Project,
         &Builtin::Ancestor,
@@ -492,6 +494,7 @@ pub(crate) fn round_classifiers() -> [&'static dyn Extension; 10] {
         &Builtin::Codex,
         &Builtin::Claude,
         &Builtin::Playwright,
+        &Builtin::Herdr,
     ]
 }
 
@@ -515,6 +518,7 @@ impl Builtin {
             Self::Codex => &builtin::codex::MODULE,
             Self::Claude => &builtin::claude::MODULE,
             Self::Playwright => &builtin::playwright::MODULE,
+            Self::Herdr => &builtin::herdr::MODULE,
         }
     }
 }
@@ -533,7 +537,7 @@ impl Extension for Builtin {
         let module = self.module();
         Descriptor {
             id: module.id.into(),
-            capabilities: vec![module.capability],
+            capabilities: module.capabilities.to_vec(),
             enabled: cfg!(target_os = "macos"),
             availability: "unknown",
         }

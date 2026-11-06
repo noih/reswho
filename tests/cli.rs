@@ -7,7 +7,7 @@ fn disk_usage_deadline_preserves_selected_runtime_and_container_metrics() {
     let config = root.path().join("config.json");
     std::fs::write(&config, serde_json::json!({
         "version": 1, "settings": {},
-        "disabled_builtins": ["apple", "podman", "project", "ancestor", "versioned_install", "node", "python", "launched_by", "vm", "codex", "claude", "playwright"]
+        "disabled_builtins": ["apple", "podman", "project", "ancestor", "versioned_install", "node", "python", "launched_by", "vm", "codex", "claude", "playwright", "herdr"]
     }).to_string()).unwrap();
     let docker = root.path().join("docker");
     std::fs::write(&docker, r#"#!/bin/sh
@@ -362,7 +362,8 @@ fn extensions_list_is_offline_and_distinguishes_enabled_from_availability() {
                 "vm",
                 "codex",
                 "claude",
-                "playwright"
+                "playwright",
+                "herdr"
             ]
         );
         assert!(
@@ -709,7 +710,14 @@ fn classifier_builtins_toggle_offline_without_changing_other_config() {
     let root = tempfile::tempdir_in("/private/tmp").unwrap();
     let path = root.path().join("config.json");
     std::fs::write(&path, json!({"version":1,"settings":{"future.key":9},"ownership_priority":["future"],"disabled_builtins":["unknown"]}).to_string()).unwrap();
-    for id in ["launched_by", "vm", "codex", "claude", "playwright"] {
+    for id in [
+        "launched_by",
+        "vm",
+        "codex",
+        "claude",
+        "playwright",
+        "herdr",
+    ] {
         for (action, enabled) in [("disable", false), ("enable", true)] {
             let run = |args: &[&str]| {
                 let result = Command::new(env!("CARGO_BIN_EXE_reswho"))
@@ -737,7 +745,14 @@ fn classifier_builtins_toggle_offline_without_changing_other_config() {
                 .unwrap();
             assert_eq!(entry["enabled"], enabled);
             assert!(entry.get("version").is_none());
-            assert_eq!(entry["capabilities"], json!(["classify"]));
+            assert_eq!(
+                entry["capabilities"],
+                if id == "herdr" {
+                    json!(["classify", "details"])
+                } else {
+                    json!(["classify"])
+                }
+            );
             let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             assert_eq!(saved["settings"], json!({"future.key":9}));
             assert_eq!(saved["ownership_priority"], json!(["future"]));

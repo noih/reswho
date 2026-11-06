@@ -189,9 +189,9 @@ def verify_priority(config):
         send(b"e\t")
         frame = full_frame(slave, process, transcript, drain)
         assert b"Ownership" in frame, frame
-        send(b"jjjj\x1b[1;2A\x13")
+        send(b"jjjjj\x1b[1;2A\x13")
         saved = json.loads(config.read_text())
-        assert saved["ownership_priority"] == ["extensions.vm.app", "extensions.vm.helper", "extensions.vm.system", "project", "app", "work", "bin"], saved
+        assert saved["ownership_priority"] == ["extensions.vm.app", "extensions.vm.helper", "extensions.vm.system", "extensions.herdr.role", "project", "app", "work", "bin"], saved
         frame = full_frame(slave, process, transcript, drain)
         assert b"Rank / Name" in frame and b"Ownership" in frame, frame
         send(b"\x1b")

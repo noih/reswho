@@ -3445,6 +3445,7 @@ fn priority_reset_discards_saves_defaults_and_moves_module_sources() {
             "codex",
             "claude",
             "playwright",
+            "herdr",
         ]
     );
     assert_eq!(&order[builtin_count..], ["z_module", "a_module"]);

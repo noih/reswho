@@ -10,7 +10,7 @@ pub(crate) static MODULE: Module = Module {
     registration: crate::extensions::host::no_registration,
     decorate: None,
     id: ID,
-    capability: Capability::Details,
+    capabilities: &[Capability::Details],
     execute,
     settings: no_settings,
 };

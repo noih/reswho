@@ -200,3 +200,12 @@ reswho --json --depth all | jq '
      cpu: .process.cpu_percent, rss: .process.resident_bytes}
 '
 ```
+
+The `herdr` extension identifies session-wide server scope from a verified
+process identity and supported launch arguments. Its Shared services category
+does not establish active clients or their projects. Project/cwd evidence remains
+in the process tags; usage is not duplicated. Selected PID details explain this
+scope and report current clients as unknown.
+Saved Ownership priorities still take precedence: move `extensions.herdr.role`
+ahead of `project` (or reset the order) to use service grouping with an older
+custom order. The service-scope evidence remains available under either grouping.

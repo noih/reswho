@@ -27,7 +27,7 @@ pub(crate) struct Module {
     pub(crate) registration: fn() -> crate::extensions::placement::Registration,
     pub(crate) decorate: Option<Decoration>,
     pub(crate) id: &'static str,
-    pub(crate) capability: Capability,
+    pub(crate) capabilities: &'static [Capability],
     pub(crate) execute: fn(&Context<'_>, Request<'_>) -> anyhow::Result<Contribution>,
     pub(crate) settings: fn() -> anyhow::Result<Vec<Definition>>,
 }
