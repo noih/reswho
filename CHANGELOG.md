@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.2
 
 - Use compact extension summaries in Markdown overviews (reswho-md/23), keeping full hints on selected PID/group roots.
 - Add optional node summary display fields to JSON schema 13; full hints remain available.
